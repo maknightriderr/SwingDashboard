@@ -482,25 +482,28 @@ def compute_indicators(symbol, period="1y", prefetched_df=None):
 # ─── Expert Signal Engine ─────────────────────────────────────────────────────
 def generate_signals(trades_df):
     signals = []
-    open_trades = trades_df[trades_df["status"] == "Open"].copy()
-    if open_trades.empty: return signals
+    
+    # Process all records passed to the function
+    target_trades = trades_df.copy()
+    if target_trades.empty: 
+        return signals
 
     market = get_market_regime()
     is_bear = market["regime"] in ("Strong Bear", "Bear")
 
-    raw_symbols = open_trades["stock"].unique().tolist()
+    unique_symbols = target_trades["stock"].unique().tolist()
     
     # Sanitize symbols map for underlying quantitative fetching engines
     symbol_map = {}
     sanitized_symbols = []
-    for s in raw_symbols:
+    for s in unique_symbols:
         sanitized_str = sanitize_ticker(s)
         sanitized_symbols.append(sanitized_str)
         symbol_map[s] = sanitized_str
         
     bulk_data = _bulk_fetch_history(sanitized_symbols, period="1y")
 
-    for _, row in open_trades.iterrows():
+    for _, row in target_trades.iterrows():
         symbol, buy_at, qty, tid = row["stock"], row["buy_at"], row["quantity"], row["id"]
         
         yf_symbol = symbol_map.get(symbol, sanitize_ticker(symbol))
