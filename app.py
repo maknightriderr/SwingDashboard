@@ -511,7 +511,7 @@ def chart_alloc(df, theme_t=None):
     d = df.groupby("stock")["invested"].sum().reset_index()
     fig = go.Figure(go.Pie(
         labels=d["stock"], values=d["invested"], hole=0.4,
-        marker=dict(colors=px.colors.qualitative.Dark24, line=dict(color="transparent", width=2)),
+        marker=dict(colors=px.colors.qualitative.Dark24, line=dict(color="rgba(0,0,0,0)", width=0)),
         textinfo="percent+label", textfont=dict(size=11, color="#ffffff")))
     return base_layout(fig, "Portfolio Allocation", theme_t)
 
@@ -535,7 +535,7 @@ def chart_donut(df, theme_t=None):
     cols = {"Open": "#f59e0b", "Closed": "#10b981"}
     fig = go.Figure(go.Pie(
         labels=counts["Status"], values=counts["Count"], hole=.6,
-        marker=dict(colors=[cols.get(s, "#94a3b8") for s in counts["Status"]], line=dict(color="transparent", width=2)),
+        marker=dict(colors=[cols.get(s, "#94a3b8") for s in counts["Status"]], line=dict(color="rgba(0,0,0,0)", width=0)),
         textinfo="percent+value", textfont=dict(size=12, color="#ffffff")))
     fig.add_annotation(text=f"<b>{len(df)}</b><br><span style='font-size:10px'>TRADES</span>",
                        font=dict(size=18, color="#f8fafc"), showarrow=False, x=.5, y=.5)
