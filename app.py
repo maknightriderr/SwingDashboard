@@ -555,24 +555,19 @@ if st.session_state.last_refresh is None or (datetime.now() - st.session_state.l
     st.session_state.last_refresh = datetime.now()
 
 # ── 🤖 Deep Background Scan ───────────────────────────────────────────────────
-# Initialize session state variable if not already present
+# ── Auto quantitative Market Engine Trigger ───────────────────────────────────
+
 if "last_auto_scan" not in st.session_state:
     st.session_state.last_auto_scan = 0.0
 
-# Trigger auto-scan every 15 minutes (900 seconds) or on initial load
 if st.session_state.last_auto_scan == 0.0 or (time.time() - st.session_state.last_auto_scan) >= 900:
     try:
         with st.spinner("🤖 Running Deep Quantitative Market Scan..."):
+            # Pass the full 'raw' dataset instead of filtering for 'Open' status
+            all_trades_df = raw if "raw" in locals() and not raw.empty else pd.DataFrame()
+            st.session_state.signals_cache = generate_signals(all_trades_df) if not all_trades_df.empty else []
             
-            # Ensure safe handling of open trades DataFrame
-            open_trades_df = raw[raw["status"] == "Open"] if "raw" in locals() and not raw.empty else pd.DataFrame()
-            
-            # Generate signals only if the filtered dataset is not empty
-            st.session_state.signals_cache = generate_signals(open_trades_df) if not open_trades_df.empty else []
-            
-            # Run sector rotation and analytics
             st.session_state.sector_cache = sector_rotation()
-            
             if st.session_state.sector_cache is not None and not st.session_state.sector_cache.empty:
                 st.session_state.outlook_cache = predict_sector_outlook(st.session_state.sector_cache)
                 top_sectors = st.session_state.sector_cache.head(5)["sector"].tolist()
@@ -581,13 +576,12 @@ if st.session_state.last_auto_scan == 0.0 or (time.time() - st.session_state.las
                 st.session_state.outlook_cache = pd.DataFrame()
                 st.session_state.picks_cache = []
                 
-            # Generate market scanner and update timestamp
             st.session_state.scanner_cache = generate_market_scanner()
             st.session_state.last_auto_scan = time.time()
             
     except Exception as scan_error:
         st.error(f"⚠️ Background market scan encountered an error: {str(scan_error)}")
-
+        
 # ── Metrics Calc ─────────────────────────────────────────────────────────────
 if not df.empty:
     odf, cdf = df[df["status"]=="Open"], df[df["status"]=="Closed"]
