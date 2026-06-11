@@ -56,11 +56,12 @@ if "user_id" not in st.session_state or st.session_state.user_id is None:
         # If no valid cookie is found, the loading veil will exit naturally 
         # and drop down to render your standard login/signup tabs.
 
+# Ensure your signal functions are imported correctly at the top of app.py
 from signals import (
-    generate_signals, sector_rotation, predict_sector_outlook,
-    find_sector_picks, send_telegram, build_telegram_message,
-    get_sector, get_market_regime, generate_market_scanner,
-    SECTOR_MAP, _bulk_fetch_history, compute_indicators
+    generate_signals, fetch_price, sanitize_ticker, 
+    sector_rotation, get_market_regime, _bulk_fetch_history, 
+    compute_indicators, get_sector, predict_sector_outlook, 
+    find_sector_picks, generate_market_scanner
 )
 
 # ── Auto-refresh config ────────────────────────────────────────────────────────
