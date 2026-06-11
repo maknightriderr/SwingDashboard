@@ -1,6 +1,11 @@
-# Ignore Python cache files
+# Databases
+*.db
+*.sqlite
+*.sqlite3
+
+# Python Cache
 __pycache__/
 *.pyc
 
-# Ignore environment variables if you use them later
+# Environment Variables (for future API keys)
 .env
