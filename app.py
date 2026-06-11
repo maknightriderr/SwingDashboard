@@ -396,25 +396,26 @@ _CACHE = {}
 _TTL = 300
 
 def fetch_price(symbol):
-    # Sanitize symbol
+    # 1. Sanitize the symbol (remove whitespace, force uppercase)
     clean_symbol = symbol.strip().upper()
     cache_key = clean_symbol
     
-    # Check cache
+    # 2. Check the cache to avoid hitting the yfinance API too frequently
     if cache_key in _CACHE and time.time() - _CACHE[cache_key][1] < _TTL:
         return _CACHE[cache_key][0]
         
-    # Determine ticker candidates: if a suffix is already present, don't double append
+    # 3. Determine ticker candidates (prevent double-appending suffixes)
     if "." in clean_symbol:
         tickers_to_try = [clean_symbol]
     else:
         tickers_to_try = [f"{clean_symbol}.NS", f"{clean_symbol}.BO"]
         
+    # 4. Try fetching from yfinance using fast_info or history fallback
     for ticker_str in tickers_to_try:
         try:
             t = yf.Ticker(ticker_str)
             
-            # Attempt fast info
+            # Attempt fast info (instant fetch)
             val = t.fast_info.get("last_price")
             if val is not None and not pd.isna(val):
                 p = round(float(val), 2)
