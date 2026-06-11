@@ -421,7 +421,12 @@ def render_signals(signals, theme_t):
         c = ("sell" if "SELL" in s.get("action","") else "avg" if "AVERAGE" in s.get("action","") else "hold" if "HOLD" in s.get("action","") else "watch")
         clr = theme_t["red"] if c=="sell" else theme_t["yellow"] if c=="avg" else theme_t["green"] if c=="hold" else theme_t["muted"]
         ph = (f"🎯 Exit: ₹{s.get('target','—')} | 🛑 Re-entry: ₹{s.get('stop_loss','—')}<br>📉 {s.get('trend','—')} | MACD: {s.get('macd_signal','—')}" if c=="sell" else f"💰 Avg: ₹{s.get('avg_price','—')} | New Avg: ₹{s.get('new_avg','—')}<br>🛑 SL: ₹{s.get('new_sl','—')} | 🎯 Target: ₹{s.get('target','—')}" if c=="avg" else f"🎯 Target: ₹{s.get('target','—')} | 🛑 SL: ₹{s.get('stop_loss','—')}<br>📊 R:R {s.get('risk_reward','—')} | {s.get('trend','—')}")
-        html += f"""<div class="sig-card {c}"><div class="sig-action" style="color:{clr}">{s.get('action','')}</div><div style="font-size:.9rem;font-weight:800;margin-bottom:.3rem">{s['stock']} <span class="nse-lbl">{s.get('sector','')}</span></div><div class="sig-meta">CMP ₹{s.get('cmp','—')} · RSI {s.get('rsi','—')} · {s.get('pct_from_buy',0):+.1f}%</div><div class="sig-reason">{s.get('reason','')}</div><div class="sig-price">{ph}</div><div class="str-bar"><div class="str-fill" style="width:{s.get('strength',30)}%;background:{clr}"></div></div></div>"""
+        
+        # Null-safe percentage formatter
+        pct = s.get('pct_from_buy')
+        pct_str = f"{pct:+.1f}%" if pct is not None else "—%"
+        
+        html += f"""<div class="sig-card {c}"><div class="sig-action" style="color:{clr}">{s.get('action','')}</div><div style="font-size:.9rem;font-weight:800;margin-bottom:.3rem">{s['stock']} <span class="nse-lbl">{s.get('sector','')}</span></div><div class="sig-meta">CMP ₹{s.get('cmp','—')} · RSI {s.get('rsi','—')} · {pct_str}</div><div class="sig-reason">{s.get('reason','')}</div><div class="sig-price">{ph}</div><div class="str-bar"><div class="str-fill" style="width:{s.get('strength',30)}%;background:{clr}"></div></div></div>"""
     st.markdown(html + "</div>", unsafe_allow_html=True)
 
 def render_sector(sdf, t):
