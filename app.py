@@ -41,7 +41,7 @@ def verify_hash(password, hashed_pw):
     return make_hash(password) == hashed_pw
 
 # ── Multi-Tenant Database Architecture ─────────────────────────────────────────
-DB = "trades.db"
+DB = "trades_v2.db"
 
 def init_db():
     c = sqlite3.connect(DB)
