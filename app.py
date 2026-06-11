@@ -63,7 +63,6 @@ from signals import (
     compute_indicators, get_sector, predict_sector_outlook, 
     find_sector_picks, generate_market_scanner
 )
-
 # ── Auto-refresh config ────────────────────────────────────────────────────────
 REFRESH_SEC = 300
 try:
