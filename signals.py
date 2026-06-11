@@ -4,7 +4,6 @@ Features: Nifty 500 CSV, ₹1Cr Liquidity Gate, Sensex Tracking, Risk Metrics, C
 """
 
 import os
-import streamlit as st
 import yfinance as yf
 import pandas as pd
 import numpy as np
@@ -13,10 +12,6 @@ import time
 from datetime import datetime
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from scipy.signal import find_peaks
-
-# Global Cache and TTL Setup for the module
-_CACHE = {}
-_TTL = 300  # 5 minutes cache TTL for price checks
 
 # ==============================================================================
 # 1. COMPREHENSIVE NSE SWING TRADING WATCHLIST (NIFTY 500 INTEGRATION)
@@ -482,34 +477,20 @@ def compute_indicators(symbol, period="1y", prefetched_df=None):
 # ─── Expert Signal Engine ─────────────────────────────────────────────────────
 def generate_signals(trades_df):
     signals = []
-    
-    # Process all records passed to the function
-    target_trades = trades_df.copy()
-    if target_trades.empty: 
-        return signals
+    open_trades = trades_df[trades_df["status"] == "Open"].copy()
+    if open_trades.empty: return signals
 
     market = get_market_regime()
     is_bear = market["regime"] in ("Strong Bear", "Bear")
 
-    unique_symbols = target_trades["stock"].unique().tolist()
-    
-    # Sanitize symbols map for underlying quantitative fetching engines
-    symbol_map = {}
-    sanitized_symbols = []
-    for s in unique_symbols:
-        sanitized_str = sanitize_ticker(s)
-        sanitized_symbols.append(sanitized_str)
-        symbol_map[s] = sanitized_str
-        
-    bulk_data = _bulk_fetch_history(sanitized_symbols, period="1y")
+    unique_symbols = open_trades["stock"].unique().tolist()
+    bulk_data = _bulk_fetch_history(unique_symbols, period="1y")
 
-    for _, row in target_trades.iterrows():
+    for _, row in open_trades.iterrows():
         symbol, buy_at, qty, tid = row["stock"], row["buy_at"], row["quantity"], row["id"]
         
-        yf_symbol = symbol_map.get(symbol, sanitize_ticker(symbol))
-        
-        df = bulk_data.get(yf_symbol)
-        ind = compute_indicators(yf_symbol, period="1y", prefetched_df=df)
+        df = bulk_data.get(symbol)
+        ind = compute_indicators(symbol, period="1y", prefetched_df=df)
 
         if ind is None:
             signals.append({
@@ -652,35 +633,6 @@ def generate_signals(trades_df):
                            "50%": ind.get("fib_500"), "61.8%": ind.get("fib_618")},
         })
     return signals
-
-# ── Auto quantitative Market Engine Trigger ───────────────────────────────────
-
-if "last_auto_scan" not in st.session_state:
-    st.session_state.last_auto_scan = 0.0
-
-if st.session_state.last_auto_scan == 0.0 or (time.time() - st.session_state.last_auto_scan) >= 900:
-    try:
-        with st.spinner("🤖 Running Deep Quantitative Market Scan..."):
-            open_trades_df = raw[raw["status"] == "Open"] if "raw" in locals() and not raw.empty else pd.DataFrame()
-            st.session_state.signals_cache = generate_signals(open_trades_df) if not open_trades_df.empty else []
-            
-            st.session_state.sector_cache = sector_rotation()
-            if st.session_state.sector_cache is not None and not st.session_state.sector_cache.empty:
-                st.session_state.outlook_cache = predict_sector_outlook(st.session_state.sector_cache)
-                top_sectors = st.session_state.sector_cache.head(5)["sector"].tolist()
-                st.session_state.picks_cache = find_sector_picks(top_sectors, 3)
-            else:
-                st.session_state.outlook_cache = pd.DataFrame()
-                st.session_state.picks_cache = []
-                
-            st.session_state.scanner_cache = generate_market_scanner()
-            st.session_state.last_auto_scan = time.time()
-            
-    except Exception as scan_error:
-        st.error(f"⚠️ Background market scan encountered an error: {str(scan_error)}")
-
-# ── Main Rendering Layout (Tab 3 Integration Example) ───────────────────────────
-# (Include remaining UI layout, tabs, database connections, and signal displays below)
 
 # ─── Sector Rotation ──────────────────────────────────────────────────────────
 def sector_rotation(trades_df=None): 
