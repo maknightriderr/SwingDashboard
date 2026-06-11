@@ -13,12 +13,48 @@ import plotly.graph_objects as go
 from datetime import datetime
 import time
 import hashlib
-import streamlit as st
 from streamlit_cookies_controller import CookieController, RemoveEmptyElementContainer
 
 # Hide the invisible iframe element that the controller injects
 RemoveEmptyElementContainer()
 controller = CookieController(key='app_cookies')
+
+# ── Seamless Boot Handshake ──────────────────────────────────────────────────
+if "user_id" not in st.session_state or st.session_state.user_id is None:
+    # Use a temporary container to display a smooth loading state
+    with st.empty():
+        st.info("🔄 Restoring secure terminal session...")
+        
+        if "fetched_cookies" not in st.session_state:
+            st.session_state.fetched_cookies = controller.getAll()
+            
+        cookies = st.session_state.fetched_cookies
+        
+        # Give the iframe a split second to fetch browser storage
+        if cookies is None:
+            time.sleep(0.2)
+            st.rerun()
+            
+        if cookies and cookies.get("swing_user_id"):
+            cookie_user_id = cookies.get("swing_user_id")
+            try:
+                st.session_state.user_id = int(cookie_user_id)
+                
+                # Fetch matching username securely from SQLite
+                conn = sqlite3.connect("trades_v2.db")
+                cursor = conn.cursor()
+                cursor.execute("SELECT username FROM users WHERE id = ?", (cookie_user_id,))
+                user_row = cursor.fetchone()
+                if user_row:
+                    st.session_state.username = user_row[0]
+                conn.close()
+                
+                st.rerun()
+            except Exception:
+                st.session_state.fetched_cookies = {}
+        
+        # If no valid cookie is found, the loading veil will exit naturally 
+        # and drop down to render your standard login/signup tabs.
 
 from signals import (
     generate_signals, sector_rotation, predict_sector_outlook,
