@@ -159,43 +159,62 @@ table.t tr.row-loss:hover td{{background:rgba(248,81,73,.12)!important}}
 .outlook-card .outlook-label{{font-size:.72rem;margin-top:.25rem}}
 .outlook-card .outlook-meta{{font-size:.65rem;color:var(--muted);margin-top:.2rem}}
 
-.stButton>button{{background:var(--input);border:1px solid var(--border);
-  color:var(--text);border-radius:6px;font-size:.78rem;font-weight:500;
-  padding:.35rem .7rem;transition:all .15s}}
-.stButton>button:hover{{border-color:var(--accent);color:var(--accent);
-  background:rgba(88,166,255,.08)}}
-
+/* ─── CRITICAL UI FORM FIXES FOR LIGHT THEME BLEED ─── */
 [data-testid="stSidebar"]{{background:var(--card);border-right:1px solid var(--border)}}
-.stTextInput input,.stNumberInput input{{
-  background:var(--input)!important;border:1px solid var(--border)!important;
-  color:var(--text)!important;border-radius:6px!important;font-size:.8rem!important}}
-.stSelectbox div[data-baseweb="select"]{{background:var(--input)!important;
-  border:1px solid var(--border)!important;border-radius:6px!important}}
-.stTabs [data-baseweb="tab-list"]{{background:var(--card);border-bottom:1px solid var(--border);gap:0;padding:0 .5rem}}
-.stTabs [data-baseweb="tab"]{{background:transparent;color:var(--muted);font-size:.78rem;
-  font-weight:500;padding:.5rem 1rem;border:none;border-bottom:2px solid transparent}}
-.stTabs [aria-selected="true"]{{background:transparent!important;color:var(--accent)!important;
-  border-bottom-color:var(--accent)!important}}
-.js-plotly-plot .plotly{{border-radius:8px}}
-.refresh-badge{{display:inline-block;background:rgba(63,185,80,.12);
-  color:var(--green);padding:.15rem .5rem;border-radius:4px;
-  font-size:.65rem;font-weight:600;margin-left:.5rem}}
-.regime-banner{{border-radius:6px;padding:.5rem .85rem;display:flex;
-  align-items:center;gap:.5rem;margin-bottom:.75rem;flex-wrap:wrap}}
-  
-[data-testid="stExpander"] {{
-    background-color: var(--card) !important;
+
+/* 1. Text Inputs */
+[data-testid="stTextInput"] div[data-baseweb="input"] {{
+    background-color: var(--input) !important;
     border: 1px solid var(--border) !important;
-    border-radius: 8px;
-    margin-bottom: 0.5rem;
+    border-radius: 6px !important;
 }}
-[data-testid="stExpander"] summary p {{
-    font-weight: 700 !important;
-    font-size: 0.9rem !important;
+[data-testid="stTextInput"] input {{
+    color: var(--text) !important;
+    -webkit-text-fill-color: var(--text) !important;
+    background-color: transparent !important;
+}}
+
+/* 2. Number Inputs (+/- Buttons Wrapper) */
+[data-testid="stNumberInputContainer"] {{
+    background-color: var(--input) !important;
+    border: 1px solid var(--border) !important;
+    border-radius: 6px !important;
+    overflow: hidden;
+}}
+[data-testid="stNumberInputContainer"] input {{
+    color: var(--text) !important;
+    -webkit-text-fill-color: var(--text) !important;
+    background-color: transparent !important;
+    border: none !important;
+}}
+[data-testid="stNumberInputStepDown"], [data-testid="stNumberInputStepUp"] {{
+    background-color: var(--card2) !important;
+    color: var(--text) !important;
+    border: none !important;
+    border-radius: 0px !important;
+}}
+[data-testid="stNumberInputStepDown"]:hover, [data-testid="stNumberInputStepUp"]:hover {{
+    color: var(--accent) !important;
+    background-color: var(--border) !important;
+}}
+
+/* 3. Selectboxes (Filters Dropdown) */
+[data-testid="stSelectbox"] div[data-baseweb="select"] {{
+    background-color: var(--input) !important;
+    border: 1px solid var(--border) !important;
+    border-radius: 6px !important;
+}}
+[data-testid="stSelectbox"] div[data-baseweb="select"] span {{
     color: var(--text) !important;
 }}
-</style>
-"""
+[data-testid="stSelectbox"] svg {{
+    fill: var(--text) !important;
+}}
+
+/* 4. Action Buttons */
+.stButton>button{{
+    background:var(--card2)!important;
+    border:1px solid var(--border
 
 # ── Database ───────────────────────────────────────────────────────────────────
 DB = "trades.db"
