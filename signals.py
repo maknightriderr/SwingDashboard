@@ -4,6 +4,7 @@ Features: Nifty 500 CSV, ₹1Cr Liquidity Gate, Sensex Tracking, Risk Metrics, C
 """
 
 import os
+import streamlit as st
 import yfinance as yf
 import pandas as pd
 import numpy as np
@@ -12,6 +13,10 @@ import time
 from datetime import datetime
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from scipy.signal import find_peaks
+
+# Global Cache and TTL Setup for the module
+_CACHE = {}
+_TTL = 300  # 5 minutes cache TTL for price checks
 
 # ==============================================================================
 # 1. COMPREHENSIVE NSE SWING TRADING WATCHLIST (NIFTY 500 INTEGRATION)
