@@ -15,10 +15,11 @@ import time
 import hashlib
 
 from signals import (
-    generate_signals, sector_rotation, predict_sector_outlook,
-    find_sector_picks, send_telegram, build_telegram_message,
-    get_sector, get_market_regime, generate_market_scanner,
-    SECTOR_MAP, _bulk_fetch_history, compute_indicators
+    generate_signals, fetch_price, sanitize_ticker, 
+    sector_rotation, get_market_regime, _bulk_fetch_history, 
+    compute_indicators, get_sector, predict_sector_outlook, 
+    find_sector_picks, generate_market_scanner,
+    fetch_portfolio_news  # 👈 Added here
 )
 
 # ── Auto-refresh config ────────────────────────────────────────────────────────
@@ -612,12 +613,38 @@ with tab2:
 with tab3:
     st.markdown('<div class="sec">Active Portfolio Signals & Risk Management</div>', unsafe_allow_html=True)
     s1, s2 = st.columns([2, 1])
-    with s1: st.caption("🤖 Neural background scan refreshes signal intelligence every 15 minutes.")
+    
+    with s1: 
+        st.caption("🤖 Neural background scan refreshes signal intelligence every 15 minutes.")
+        
     with s2:
+        # --- NEW MINI-AGENT TELEGRAM BLOCK ---
         if st.button("📲 Push to Telegram", width="stretch", disabled=not bool(saved_tok and saved_cid)):
             if st.session_state.signals_cache is not None:
-                ok = send_telegram(saved_tok, saved_cid, build_telegram_message(st.session_state.signals_cache, st.session_state.sector_cache if st.session_state.sector_cache is not None else pd.DataFrame(), st.session_state.picks_cache if st.session_state.picks_cache is not None else []))
-                st.success("✅ Broadcast successful!") if ok else st.error("❌ Broadcast failed.")
+                with st.spinner("🤖 Agent gathering latest news and compiling report..."):
+                    
+                    # 1. Trigger the mini-agent to find news on open trades
+                    open_trades = raw[raw["status"] == "Open"] if "raw" in locals() and not raw.empty else pd.DataFrame()
+                    latest_news = fetch_portfolio_news(open_trades)
+                    
+                    # 2. Build the standard metric message
+                    msg_payload = build_telegram_message(
+                        st.session_state.signals_cache, 
+                        st.session_state.sector_cache if st.session_state.sector_cache is not None else pd.DataFrame(), 
+                        st.session_state.picks_cache if st.session_state.picks_cache is not None else []
+                    )
+                    
+                    # 3. Append the news gathered by the mini-agent
+                    if latest_news:
+                        msg_payload += "\n\n🌍 <b>LATEST HOLDINGS NEWS</b>\n"
+                        msg_payload += "\n".join(latest_news[:8])
+                        
+                    # 4. Broadcast
+                    ok = send_telegram(saved_tok, saved_cid, msg_payload)
+                    st.success("✅ Broadcast successful!") if ok else st.error("❌ Broadcast failed.")
+        # -------------------------------------
+
+    # --- THIS BOTTOM PART REMAINS UNTOUCHED ---
     if st.session_state.signals_cache is not None:
         nc = {"SELL": 0, "AVERAGE": 0, "HOLD": 0, "WATCH": 0}
         for s in st.session_state.signals_cache:
