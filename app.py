@@ -724,20 +724,54 @@ with tab2:
 
 with tab3:
     st.markdown('<div class="sec">Active Portfolio Signals & Risk Management</div>', unsafe_allow_html=True)
+    
+    # 🚨 MANUAL FORCE REFRESH BUTTON 🚨
+    if st.button("🔄 Force Scan / Refresh Signals Now", use_container_width=True):
+        with st.spinner("🤖 Running Deep Quantitative Market Scan..."):
+            if "raw" in locals() and not raw.empty:
+                st.session_state.signals_cache = generate_signals(raw)
+                st.rerun()
+            else:
+                st.error("⚠️ No local trade data ('raw') found to generate signals.")
+
     s1, s2 = st.columns([2, 1])
-    with s1: st.caption("🤖 Neural background scan refreshes signal intelligence every 15 minutes.")
+    with s1: 
+        st.caption("🤖 Neural background scan refreshes signal intelligence every 15 minutes.")
+    
     with s2:
-        if st.button("📲 Push to Telegram", width="stretch", disabled=not bool(saved_tok and saved_cid)):
-            if st.session_state.signals_cache is not None:
-                ok = send_telegram(saved_tok, saved_cid, build_telegram_message(st.session_state.signals_cache, st.session_state.sector_cache if st.session_state.sector_cache is not None else pd.DataFrame(), st.session_state.picks_cache if st.session_state.picks_cache is not None else []))
-                st.success("✅ Broadcast successful!") if ok else st.error("❌ Broadcast failed.")
-    if st.session_state.signals_cache is not None:
+        # Fallback references to safely resolve scopes
+        tok = saved_tok if "saved_tok" in locals() else ""
+        cid = saved_cid if "saved_cid" in locals() else ""
+        
+        if st.button("📲 Push to Telegram", use_container_width=True, disabled=not bool(tok and cid)):
+            if "signals_cache" in st.session_state and st.session_state.signals_cache:
+                sector_df = st.session_state.sector_cache if st.session_state.sector_cache is not None else pd.DataFrame()
+                picks_list = st.session_state.picks_cache if st.session_state.picks_cache is not None else []
+                
+                msg_payload = build_telegram_message(st.session_state.signals_cache, sector_df, picks_list)
+                ok = send_telegram(tok, cid, msg_payload)
+                
+                if ok:
+                    st.success("✅ Broadcast successful!") 
+                else: 
+                    st.error("❌ Broadcast failed.")
+
+    # Safely retrieve signals cache from session state
+    signals = st.session_state.get("signals_cache")
+
+    if signals:
         nc = {"SELL": 0, "AVERAGE": 0, "HOLD": 0, "WATCH": 0}
-        for s in st.session_state.signals_cache:
+        for s in signals:
             for k in nc:
-                if k in s.get("action", ""): nc[k] += 1
+                if k in s.get("action", ""): 
+                    nc[k] += 1
+                    
         st.markdown(f'<div style="display:flex;gap:.8rem;margin:.5rem 0 1rem"><span style="background:rgba(239,68,68,0.15);color:#ef4444;padding:.3rem .8rem;border-radius:6px;font-size:.8rem;font-weight:800;border:1px solid rgba(239,68,68,0.3)">🔴 SELL: {nc["SELL"]}</span><span style="background:rgba(245,158,11,0.15);color:#f59e0b;padding:.3rem .8rem;border-radius:6px;font-size:.8rem;font-weight:800;border:1px solid rgba(245,158,11,0.3)">🟡 AVERAGE: {nc["AVERAGE"]}</span><span style="background:rgba(16,185,129,0.15);color:#10b981;padding:.3rem .8rem;border-radius:6px;font-size:.8rem;font-weight:800;border:1px solid rgba(16,185,129,0.3)">🟢 HOLD: {nc["HOLD"]}</span></div>', unsafe_allow_html=True)
-        render_signals(st.session_state.signals_cache, theme_t)
+        
+        theme = theme_t if "theme_t" in locals() else "dark"
+        render_signals(signals, theme)
+    else:
+        st.info("⏳ Signals cache is currently empty or rebuilding Quantitative Scan data. Please wait a moment or click the Force Scan button above.")
 
 with tab4:
     st.markdown('<div class="sec">Macro Sector Rotation & Capital Flow</div>', unsafe_allow_html=True)
