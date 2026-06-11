@@ -507,6 +507,10 @@ rc_bg, rc_clr, rc_border = {"Strong Bull": ("rgba(16,185,129,0.15)", "#10b981", 
 indices_html = "".join([f'<span style="color:var(--text);font-size:0.8rem;padding:0 0.8rem;border-right:1px solid rgba(255,255,255,0.1)">{name} <b>{f"₹{d['price']:,.0f}" if d.get("price") else "—"}</b> <span style="color:{"var(--red)" if (name=="India VIX" and d.get("chg_pct",0)>0) else "var(--green)" if (name=="India VIX" and d.get("chg_pct",0)<0) else "var(--green)" if d.get("chg_pct",0)>0 else "var(--red)"};font-weight:700">{d.get("chg_pct",0):+.2f}%</span></span>' for name, d in market.get("indices", {}).items()])
 st.markdown(f'<div class="regime-banner" style="background:{rc_bg};{rc_border};backdrop-filter:blur(10px);"><span style="color:{rc_clr};font-weight:800;font-size:0.9rem;white-space:nowrap;letter-spacing:0.05em">🌐 {market["regime"].upper()} (CONF: {market.get("confidence", "—")}%)</span>{indices_html}<span style="color:var(--muted);font-size:0.75rem;white-space:nowrap;padding-left:0.5rem;font-weight:600">SUP: {f"₹{market.get("support"):,.0f}" if market.get("support") else "—"} | RES: {f"₹{market.get("resistance"):,.0f}" if market.get("resistance") else "—"} | RSI {market.get("nifty_rsi", "—")} | RISK: {market.get("risk_level","—")}</span></div>', unsafe_allow_html=True)
 
+pnl_c = "green" if t_pnl >= 0 else "red"
+r_c = "green" if t_real >= 0 else "red"
+u_c = "green" if t_unreal >= 0 else "red"
+
 st.markdown('<div class="cards">' + card("Total Invested", fi(t_inv), "", "blue") + card("Portfolio Value", fi(t_cur), "", "blue") + card("Total P&L", fi(t_pnl), fp(t_pnl_pct), pnl_c) + card("Realized P&L", fi(t_real), "", r_c) + card("Unrealized P&L", fi(t_unreal), "", u_c) + card("Open Trades", str(len(odf)), "Active", "yellow") + card("Closed Trades", str(len(cdf)), "Historical", "green" if len(cdf)>0 else "") + card("Best Trade 🏆", best, "", "green") + card("Worst Trade 📉", worst, "", "red") + '</div>', unsafe_allow_html=True)
 
 tab1, tab2, tab3, tab4, tab5, tab6, tab7, tab8 = st.tabs(["📋 Portfolio", "📊 Analytics Charts", "🔔 Active Signals", "🔄 Sector Rotation", "🌌 Universe Scanner", "📐 Metrics", "👁 Watchlist", "📤 Export Data"])
