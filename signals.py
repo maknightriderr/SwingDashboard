@@ -483,14 +483,27 @@ def generate_signals(trades_df):
     market = get_market_regime()
     is_bear = market["regime"] in ("Strong Bear", "Bear")
 
-    unique_symbols = open_trades["stock"].unique().tolist()
-    bulk_data = _bulk_fetch_history(unique_symbols, period="1y")
+    raw_symbols = open_trades["stock"].unique().tolist()
+    
+    # 🛠️ Sanitize symbols to automatically append .NS for Indian exchanges
+    symbol_map = {}
+    sanitized_symbols = []
+    for s in raw_symbols:
+        s_clean = str(s).strip().upper()
+        t_str = f"{s_clean}.NS" if "." not in s_clean else s_clean
+        sanitized_symbols.append(t_str)
+        symbol_map[s] = t_str
+        
+    bulk_data = _bulk_fetch_history(sanitized_symbols, period="1y")
 
     for _, row in open_trades.iterrows():
         symbol, buy_at, qty, tid = row["stock"], row["buy_at"], row["quantity"], row["id"]
         
-        df = bulk_data.get(symbol)
-        ind = compute_indicators(symbol, period="1y", prefetched_df=df)
+        # Grab the sanitized/suffixed symbol for yfinance queries
+        yf_symbol = symbol_map.get(symbol, symbol)
+        
+        df = bulk_data.get(yf_symbol)
+        ind = compute_indicators(yf_symbol, period="1y", prefetched_df=df)
 
         if ind is None:
             signals.append({
