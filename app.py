@@ -396,16 +396,41 @@ _CACHE = {}
 _TTL = 300
 
 def fetch_price(symbol):
-    key = symbol.upper()
-    if key in _CACHE and time.time() - _CACHE[key][1] < _TTL: return _CACHE[key][0]
-    for sfx in [".NS", ".BO"]:
+    # Sanitize symbol
+    clean_symbol = symbol.strip().upper()
+    cache_key = clean_symbol
+    
+    # Check cache
+    if cache_key in _CACHE and time.time() - _CACHE[cache_key][1] < _TTL:
+        return _CACHE[cache_key][0]
+        
+    # Determine ticker candidates: if a suffix is already present, don't double append
+    if "." in clean_symbol:
+        tickers_to_try = [clean_symbol]
+    else:
+        tickers_to_try = [f"{clean_symbol}.NS", f"{clean_symbol}.BO"]
+        
+    for ticker_str in tickers_to_try:
         try:
-            t = yf.Ticker(key + sfx)
+            t = yf.Ticker(ticker_str)
+            
+            # Attempt fast info
             val = t.fast_info.get("last_price")
-            if val is not None and not pd.isna(val): p = round(float(val), 2); _CACHE[key] = (p, time.time()); return p
-            h = t.history(period="1d", interval="1d", auto_adjust=True)
-            if h is not None and not h.empty and "Close" in h.columns: p = round(float(h["Close"].iloc[-1]), 2); _CACHE[key] = (p, time.time()); return p
-        except Exception: continue
+            if val is not None and not pd.isna(val):
+                p = round(float(val), 2)
+                _CACHE[cache_key] = (p, time.time())
+                return p
+                
+            # Fallback to history with a 5-day window to guarantee the last close is found
+            h = t.history(period="5d", interval="1d", auto_adjust=True)
+            if h is not None and not h.empty and "Close" in h.columns:
+                p = round(float(h["Close"].iloc[-1]), 2)
+                _CACHE[cache_key] = (p, time.time())
+                return p
+                
+        except Exception:
+            continue
+            
     return None
 
 def enrich(df):
