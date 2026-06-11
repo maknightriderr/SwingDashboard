@@ -164,8 +164,7 @@ if st.session_state.user_id is None:
     st.markdown("<h1 style='text-align: center; margin-top: 5rem;'>🔐 Quantitative Swing Dashboard</h1>", unsafe_allow_html=True)
     st.markdown("<p style='text-align: center; color: gray;'>Secure Multi-Tenant Gateway</p>", unsafe_allow_html=True)
     
-    _, auth_col2, _ = st.columns([1, 1.5, 1])
-    
+    auth_col1, auth_col2, auth_col3 = st.columns([1, 1.5, 1])
     with auth_col2:
         tab_login, tab_signup = st.tabs(["Login", "Create Account"])
         
@@ -203,7 +202,7 @@ if st.session_state.user_id is None:
                         else:
                             st.error("❌ Username already exists.")
                             
-    st.stop()  # Halts the rest of the app from rendering while logged out
+    st.stop()
                         
         with tab_signup:
             with st.form("signup_form"):
