@@ -195,12 +195,13 @@ if st.session_state.user_id is None:
     with auth_col2:
         tab_login, tab_signup = st.tabs(["Login", "Create Account"])
         
-        with tab_login:
+       with tab_login:
             with st.form("login_form"):
                 l_user = st.text_input("Username")
                 l_pass = st.text_input("Password", type="password")
+                l_submit = st.form_submit_button("Access Terminal", use_container_width=True)
                 
-                if st.form_submit_button("Access Terminal", use_container_width=True):
+                if l_submit:
                     if not l_user.strip() or not l_pass.strip():
                         st.error("⚠️ Please fill in all fields.")
                     else:
