@@ -642,6 +642,27 @@ with tab3:
                     # 4. Broadcast
                     ok = send_telegram(saved_tok, saved_cid, msg_payload)
                     st.success("✅ Broadcast successful!") if ok else st.error("❌ Broadcast failed.")
+
+    # --- UI NEWS DISPLAY ADD-ON ---
+    st.markdown("<br>", unsafe_allow_html=True)
+    st.markdown('<div class="sec">🌍 Live Portfolio News</div>', unsafe_allow_html=True)
+    
+    with st.expander("📰 View Latest Headlines for Active Holdings", expanded=False):
+        open_trades = raw[raw["status"] == "Open"] if "raw" in locals() and not raw.empty else pd.DataFrame()
+        
+        if not open_trades.empty:
+            if st.button("Fetch Latest News Now"):
+                with st.spinner("Agent gathering headlines..."):
+                    news_list = fetch_portfolio_news(open_trades)
+                    if news_list:
+                        for item in news_list:
+                            # Render the HTML links safely in Streamlit
+                            st.markdown(f"<div style='margin-bottom:0.5rem; font-size:0.9rem;'>{item}</div>", unsafe_allow_html=True)
+                    else:
+                        st.info("No recent news found for your current holdings.")
+        else:
+            st.info("No active trades found. Execute a trade to see related news.")
+            
         # -------------------------------------
 
     # --- THIS BOTTOM PART REMAINS UNTOUCHED ---
