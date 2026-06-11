@@ -280,6 +280,45 @@ if st.session_state.user_id is None:
                             st.error("❌ Username already exists.")
                             
     st.stop()
+
+# ⬇️ PASTE THIS EXACT BLOCK RIGHT BELOW YOUR LOGIN ST.STOP() ⬇️
+
+UID = st.session_state.user_id
+raw = get_trades(UID)
+df = enrich(raw) if not raw.empty else pd.DataFrame()
+
+if "last_refresh" not in st.session_state:
+    st.session_state.last_refresh = None
+
+if st.session_state.last_refresh is None or (datetime.now() - st.session_state.last_refresh).seconds >= _TTL:
+    st.session_state.last_refresh = datetime.now()
+
+# Quantitative Market Engine Trigger
+if "last_auto_scan" not in st.session_state:
+    st.session_state.last_auto_scan = 0.0
+
+if st.session_state.last_auto_scan == 0.0 or (time.time() - st.session_state.last_auto_scan) >= 900:
+    try:
+        with st.spinner("🤖 Running Deep Quantitative Market Scan..."):
+            st.session_state.signals_cache = generate_signals(raw) if not raw.empty else []
+            
+            st.session_state.sector_cache = sector_rotation()
+            if st.session_state.sector_cache is not None and not st.session_state.sector_cache.empty:
+                st.session_state.outlook_cache = predict_sector_outlook(st.session_state.sector_cache)
+                top_sectors = st.session_state.sector_cache.head(5)["sector"].tolist()
+                st.session_state.picks_cache = find_sector_picks(top_sectors, 3)
+            else:
+                st.session_state.outlook_cache = pd.DataFrame()
+                st.session_state.picks_cache = []
+                
+            st.session_state.scanner_cache = generate_market_scanner()
+            st.session_state.last_auto_scan = time.time()
+            
+    except Exception as scan_error:
+        st.error(f"⚠️ Background market scan encountered an error: {str(scan_error)}")
+
+# --- Your tabs (tab1, tab2, tab3, etc.) render below this ---
+
 # ==============================================================================
 # MAIN APPLICATION (Only runs if Authenticated)
 # ==============================================================================
