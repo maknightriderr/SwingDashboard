@@ -148,6 +148,9 @@ def delete_watchlist_item(wid, user_id):
     db("DELETE FROM watchlist WHERE id=? AND user_id=?", (wid, user_id))
 
 # ── Init & Session State Setup ──────────────────────────────────────────────────
+from streamlit_cookies_controller import CookieController
+controller = CookieController(key='app_cookies')
+
 init_db()
 
 # Ensure session state variables exist
@@ -161,6 +164,28 @@ for k, v in [("user_id", None), ("username", None), ("edit_id", None), ("close_i
 
 # ── Auth Gatekeeper (Stops execution if not logged in) ──────────────────────────
 if st.session_state.user_id is None:
+    # 1. Silently check for persistent cookie before showing UI
+    cookies = controller.getAll()
+    
+    if cookies is None:
+        st.info("Loading secure tunnel...")
+        time.sleep(0.5)
+        st.rerun()
+        
+    if cookies and cookies.get("swing_user_id"):
+        try:
+            cookie_uid = int(cookies.get("swing_user_id"))
+            st.session_state.user_id = cookie_uid
+            conn = sqlite3.connect(DB)
+            user_row = conn.execute("SELECT username FROM users WHERE id=?", (cookie_uid,)).fetchone()
+            conn.close()
+            if user_row:
+                st.session_state.username = user_row[0]
+                st.rerun()
+        except Exception:
+            pass # Malformed cookie, proceed to login UI
+
+    # 2. Render Login UI if no valid cookie exists
     st.markdown("<h1 style='text-align: center; margin-top: 5rem;'>🔐 Quantitative Swing Dashboard</h1>", unsafe_allow_html=True)
     st.markdown("<p style='text-align: center; color: gray;'>Secure Multi-Tenant Gateway</p>", unsafe_allow_html=True)
     
@@ -179,6 +204,7 @@ if st.session_state.user_id is None:
                     if uid:
                         st.session_state.user_id = uid
                         st.session_state.username = l_user
+                        controller.set("swing_user_id", str(uid), max_age=604800) # Save 7-day cookie
                         st.success("Authenticated. Booting Engine...")
                         time.sleep(1)
                         st.rerun()
@@ -200,7 +226,7 @@ if st.session_state.user_id is None:
                             st.success(f"✅ Account {s_user} registered! You can now log in.")
                         else:
                             st.error("❌ Username already exists.")
-    st.stop() # Halts all code execution below this line if not authenticated
+    st.stop()
 
 # ==============================================================================
 # MAIN APPLICATION (Only runs if Authenticated)
