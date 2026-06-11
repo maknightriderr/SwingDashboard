@@ -87,14 +87,26 @@ def _fetch_history(ticker, period="1y", interval="1d"):
     except Exception:
         return None
 
+def sanitize_ticker(sym):
+    """Strips existing extensions to prevent SNOWMAN.NS.NS"""
+    clean = str(sym).upper().strip()
+    for suffix in [".NS", ".BO", ".NSE", ".BSE"]:
+        if clean.endswith(suffix):
+            clean = clean[:-len(suffix)]
+    return clean
+
 def _bulk_fetch_history(symbols, period="1y"):
     results = {}
     with ThreadPoolExecutor(max_workers=5) as executor:
         def fetch_single(sym):
-            fetch_sym = sym if sym.startswith("^") else sym + ".NS"
-            df = _fetch_history(fetch_sym, period)
-            if df is None and not sym.startswith("^"):
-                df = _fetch_history(sym + ".BO", period)
+            if sym.startswith("^"):
+                df = _fetch_history(sym, period)
+                return sym, df
+                
+            clean_sym = sanitize_ticker(sym)
+            df = _fetch_history(clean_sym + ".NS", period)
+            if df is None:
+                df = _fetch_history(clean_sym + ".BO", period)
             return sym, df
 
         future_to_sym = {executor.submit(fetch_single, sym): sym for sym in symbols}
