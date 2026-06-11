@@ -203,23 +203,6 @@ if st.session_state.user_id is None:
                             st.error("❌ Username already exists.")
                             
     st.stop()
-                        
-        with tab_signup:
-            with st.form("signup_form"):
-                s_user = st.text_input("New Username")
-                s_pass = st.text_input("New Password", type="password")
-                s_submit = st.form_submit_button("Register Account", width="stretch")
-                
-                if s_submit:
-                    if len(s_user) < 3 or len(s_pass) < 4:
-                        st.error("Username > 3 chars and Password > 4 chars required.")
-                    else:
-                        success = register_user(s_user, s_pass)
-                        if success:
-                            st.success(f"✅ Account {s_user} registered! You can now log in.")
-                        else:
-                            st.error("❌ Username already exists.")
-    st.stop() # Halts all code execution below this line if not authenticated
 
 # ==============================================================================
 # MAIN APPLICATION (Only runs if Authenticated)
