@@ -13,56 +13,14 @@ import plotly.graph_objects as go
 from datetime import datetime
 import time
 import hashlib
-from streamlit_cookies_controller import CookieController, RemoveEmptyElementContainer
 
-# Hide the invisible iframe element that the controller injects
-RemoveEmptyElementContainer()
-controller = CookieController(key='app_cookies')
-
-# ── Seamless Boot Handshake ──────────────────────────────────────────────────
-if "user_id" not in st.session_state or st.session_state.user_id is None:
-    # Use a temporary container to display a smooth loading state
-    with st.empty():
-        st.info("🔄 Restoring secure terminal session...")
-        
-        if "fetched_cookies" not in st.session_state:
-            st.session_state.fetched_cookies = controller.getAll()
-            
-        cookies = st.session_state.fetched_cookies
-        
-        # Give the iframe a split second to fetch browser storage
-        if cookies is None:
-            time.sleep(0.2)
-            st.rerun()
-            
-        if cookies and cookies.get("swing_user_id"):
-            cookie_user_id = cookies.get("swing_user_id")
-            try:
-                st.session_state.user_id = int(cookie_user_id)
-                
-                # Fetch matching username securely from SQLite
-                conn = sqlite3.connect("trades_v2.db")
-                cursor = conn.cursor()
-                cursor.execute("SELECT username FROM users WHERE id = ?", (cookie_user_id,))
-                user_row = cursor.fetchone()
-                if user_row:
-                    st.session_state.username = user_row[0]
-                conn.close()
-                
-                st.rerun()
-            except Exception:
-                st.session_state.fetched_cookies = {}
-        
-        # If no valid cookie is found, the loading veil will exit naturally 
-        # and drop down to render your standard login/signup tabs.
-
-# Ensure your signal functions are imported correctly at the top of app.py
 from signals import (
-    generate_signals, fetch_price, sanitize_ticker, 
-    sector_rotation, get_market_regime, _bulk_fetch_history, 
-    compute_indicators, get_sector, predict_sector_outlook, 
-    find_sector_picks, generate_market_scanner
+    generate_signals, sector_rotation, predict_sector_outlook,
+    find_sector_picks, send_telegram, build_telegram_message,
+    get_sector, get_market_regime, generate_market_scanner,
+    SECTOR_MAP, _bulk_fetch_history, compute_indicators
 )
+
 # ── Auto-refresh config ────────────────────────────────────────────────────────
 REFRESH_SEC = 300
 try:
@@ -201,41 +159,12 @@ for k, v in [("user_id", None), ("username", None), ("edit_id", None), ("close_i
     if k not in st.session_state:
         st.session_state[k] = v
 
-# ── Persistent Cookie Restore ──────────────────────────────────────────────────
-# ── Hardened Persistent Cookie Restore ──────────────────────────────────────────
-if ("user_id" not in st.session_state or st.session_state.user_id is None):
-    cookies = controller.getAll()
-    
-    # If cookies are not yet loaded from the frontend, give it a moment
-    if cookies is None:
-        st.info("Loading secure tunnel...")
-        st.rerun()
-        
-    if cookies:
-        cookie_user_id = cookies.get("swing_user_id")
-        if cookie_user_id:
-            try:
-                st.session_state.user_id = int(cookie_user_id)
-                # Fetch associated username to maintain state integrity
-                import sqlite3
-                conn = sqlite3.connect("trades_v2.db")
-                cursor = conn.cursor()
-                cursor.execute("SELECT username FROM users WHERE id = ?", (cookie_user_id,))
-                user_row = cursor.fetchone()
-                if user_row:
-                    st.session_state.username = user_row[0]
-                conn.close()
-                st.rerun()
-            except Exception:
-                pass # Malformed cookie, proceed to standard login
-
 # ── Auth Gatekeeper (Stops execution if not logged in) ──────────────────────────
 if st.session_state.user_id is None:
     st.markdown("<h1 style='text-align: center; margin-top: 5rem;'>🔐 Quantitative Swing Dashboard</h1>", unsafe_allow_html=True)
     st.markdown("<p style='text-align: center; color: gray;'>Secure Multi-Tenant Gateway</p>", unsafe_allow_html=True)
     
-    _, auth_col2, _ = st.columns([1, 1.5, 1])
-    
+    auth_col1, auth_col2, auth_col3 = st.columns([1, 1.5, 1])
     with auth_col2:
         tab_login, tab_signup = st.tabs(["Login", "Create Account"])
         
@@ -243,80 +172,35 @@ if st.session_state.user_id is None:
             with st.form("login_form"):
                 l_user = st.text_input("Username")
                 l_pass = st.text_input("Password", type="password")
-                l_submit = st.form_submit_button("Access Terminal", use_container_width=True)
+                l_submit = st.form_submit_button("Access Terminal", width="stretch")
                 
                 if l_submit:
-                    if not l_user.strip() or not l_pass.strip():
-                        st.error("⚠️ Please fill in all fields.")
+                    uid = login_user(l_user, l_pass)
+                    if uid:
+                        st.session_state.user_id = uid
+                        st.session_state.username = l_user
+                        st.success("Authenticated. Booting Engine...")
+                        time.sleep(1)
+                        st.rerun()
                     else:
-                        uid = login_user(l_user, l_pass)
-                        if uid:
-                            st.session_state.user_id = uid
-                            st.session_state.username = l_user.strip().lower()
-                            
-                            # Store persistent cookie
-                            controller.set("swing_user_id", str(uid), max_age=604800)
-                            
-                            st.success("Authenticated. Booting Engine...")
-                            time.sleep(0.5)
-                            st.rerun()
-                        else:
-                            st.error("❌ Invalid Username or Password")
-                            
+                        st.error("❌ Invalid Username or Password")
+                        
         with tab_signup:
             with st.form("signup_form"):
                 s_user = st.text_input("New Username")
                 s_pass = st.text_input("New Password", type="password")
+                s_submit = st.form_submit_button("Register Account", width="stretch")
                 
-                if st.form_submit_button("Register Account", use_container_width=True):
+                if s_submit:
                     if len(s_user) < 3 or len(s_pass) < 4:
-                        st.error("⚠️ Username > 3 chars and Password > 4 chars required.")
+                        st.error("Username > 3 chars and Password > 4 chars required.")
                     else:
                         success = register_user(s_user, s_pass)
                         if success:
-                            st.success(f"✅ Account {s_user} registered! Switch to Login tab to enter.")
+                            st.success(f"✅ Account {s_user} registered! You can now log in.")
                         else:
                             st.error("❌ Username already exists.")
-                            
-    st.stop()
-
-# ⬇️ PASTE THIS EXACT BLOCK RIGHT BELOW YOUR LOGIN ST.STOP() ⬇️
-
-UID = st.session_state.user_id
-raw = get_trades(UID)
-df = enrich(raw) if not raw.empty else pd.DataFrame()
-
-if "last_refresh" not in st.session_state:
-    st.session_state.last_refresh = None
-
-if st.session_state.last_refresh is None or (datetime.now() - st.session_state.last_refresh).seconds >= _TTL:
-    st.session_state.last_refresh = datetime.now()
-
-# Quantitative Market Engine Trigger
-if "last_auto_scan" not in st.session_state:
-    st.session_state.last_auto_scan = 0.0
-
-if st.session_state.last_auto_scan == 0.0 or (time.time() - st.session_state.last_auto_scan) >= 900:
-    try:
-        with st.spinner("🤖 Running Deep Quantitative Market Scan..."):
-            st.session_state.signals_cache = generate_signals(raw) if not raw.empty else []
-            
-            st.session_state.sector_cache = sector_rotation()
-            if st.session_state.sector_cache is not None and not st.session_state.sector_cache.empty:
-                st.session_state.outlook_cache = predict_sector_outlook(st.session_state.sector_cache)
-                top_sectors = st.session_state.sector_cache.head(5)["sector"].tolist()
-                st.session_state.picks_cache = find_sector_picks(top_sectors, 3)
-            else:
-                st.session_state.outlook_cache = pd.DataFrame()
-                st.session_state.picks_cache = []
-                
-            st.session_state.scanner_cache = generate_market_scanner()
-            st.session_state.last_auto_scan = time.time()
-            
-    except Exception as scan_error:
-        st.error(f"⚠️ Background market scan encountered an error: {str(scan_error)}")
-
-# --- Your tabs (tab1, tab2, tab3, etc.) render below this point ---
+    st.stop() # Halts all code execution below this line if not authenticated
 
 # ==============================================================================
 # MAIN APPLICATION (Only runs if Authenticated)
@@ -435,42 +319,16 @@ _CACHE = {}
 _TTL = 300
 
 def fetch_price(symbol):
-    # 1. Sanitize the symbol (remove whitespace, force uppercase)
-    clean_symbol = symbol.strip().upper()
-    cache_key = clean_symbol
-    
-    # 2. Check the cache to avoid hitting the yfinance API too frequently
-    if cache_key in _CACHE and time.time() - _CACHE[cache_key][1] < _TTL:
-        return _CACHE[cache_key][0]
-        
-    # 3. Determine ticker candidates (prevent double-appending suffixes)
-    if "." in clean_symbol:
-        tickers_to_try = [clean_symbol]
-    else:
-        tickers_to_try = [f"{clean_symbol}.NS", f"{clean_symbol}.BO"]
-        
-    # 4. Try fetching from yfinance using fast_info or history fallback
-    for ticker_str in tickers_to_try:
+    key = symbol.upper()
+    if key in _CACHE and time.time() - _CACHE[key][1] < _TTL: return _CACHE[key][0]
+    for sfx in [".NS", ".BO"]:
         try:
-            t = yf.Ticker(ticker_str)
-            
-            # Attempt fast info (instant fetch)
+            t = yf.Ticker(key + sfx)
             val = t.fast_info.get("last_price")
-            if val is not None and not pd.isna(val):
-                p = round(float(val), 2)
-                _CACHE[cache_key] = (p, time.time())
-                return p
-                
-            # Fallback to history with a 5-day window to guarantee the last close is found
-            h = t.history(period="5d", interval="1d", auto_adjust=True)
-            if h is not None and not h.empty and "Close" in h.columns:
-                p = round(float(h["Close"].iloc[-1]), 2)
-                _CACHE[cache_key] = (p, time.time())
-                return p
-                
-        except Exception:
-            continue
-            
+            if val is not None and not pd.isna(val): p = round(float(val), 2); _CACHE[key] = (p, time.time()); return p
+            h = t.history(period="1d", interval="1d", auto_adjust=True)
+            if h is not None and not h.empty and "Close" in h.columns: p = round(float(h["Close"].iloc[-1]), 2); _CACHE[key] = (p, time.time()); return p
+        except Exception: continue
     return None
 
 def enrich(df):
@@ -531,46 +389,13 @@ def chart_growth(hist, cur_val, cur_inv, theme_t=None):
     fig.update_layout(hovermode="x unified"); fig.update_yaxes(tickprefix="₹"); return fig
 
 def render_signals(signals, theme_t):
-    if not signals: 
-        st.info("No signals available.")
-        return
-        
+    if not signals: st.info("No signals available."); return
     html = '<div class="sig-grid">'
     for s in signals:
-        try:
-            # Determine card class and colors safely using .get()
-            action_str = s.get("action", "")
-            if "SELL" in action_str:
-                c = "sell"
-                clr = theme_t.get("red", "#ff4b4b")
-            elif "AVERAGE" in action_str:
-                c = "avg"
-                clr = theme_t.get("yellow", "#ffaa00")
-            elif "HOLD" in action_str:
-                c = "hold"
-                clr = theme_t.get("green", "#00cc44")
-            else:
-                c = "watch"
-                clr = theme_t.get("muted", "#888888")
-            
-            stock_name = s.get('stock', 'N/A')
-            action = s.get('action', 'SIGNAL')
-            
-            # Safe float formatting for percentage
-            pct_val = s.get('pct_from_buy', 0.0)
-            try:
-                pct_str = f"{float(pct_val):+.1f}%"
-            except (ValueError, TypeError):
-                pct_str = "—%"
-            
-            ph = (f"🎯 Exit: ₹{s.get('target','—')} | 🛑 Re-entry: ₹{s.get('stop_loss','—')}<br>📉 {s.get('trend','—')} | MACD: {s.get('macd_signal','—')}" if c=="sell" else f"💰 Avg: ₹{s.get('avg_price','—')} | New Avg: ₹{s.get('new_avg','—')}<br>🛑 SL: ₹{s.get('new_sl','—')} | 🎯 Target: ₹{s.get('target','—')}" if c=="avg" else f"🎯 Target: ₹{s.get('target','—')} | 🛑 SL: ₹{s.get('stop_loss','—')}<br>📊 R:R {s.get('risk_reward','—')} | {s.get('trend','—')}")
-            
-            html += f"""<div class="sig-card {c}"><div class="sig-action" style="color:{clr}">{action}</div><div style="font-size:.9rem;font-weight:800;margin-bottom:.3rem">{stock_name} <span class="nse-lbl">{s.get('sector','')}</span></div><div class="sig-meta">CMP ₹{s.get('cmp','—')} · RSI {s.get('rsi','—')} · {pct_str}</div><div class="sig-reason">{s.get('reason','')}</div><div class="sig-price">{ph}</div><div class="str-bar"><div class="str-fill" style="width:{s.get('strength',30)}%;background:{clr}"></div></div></div>"""
-        
-        except Exception as e:
-            # Catch errors on a per-card basis so the dashboard stays up
-            st.warning(f"Skipping corrupt signal display: {str(e)[:50]}")
-            
+        c = ("sell" if "SELL" in s.get("action","") else "avg" if "AVERAGE" in s.get("action","") else "hold" if "HOLD" in s.get("action","") else "watch")
+        clr = theme_t["red"] if c=="sell" else theme_t["yellow"] if c=="avg" else theme_t["green"] if c=="hold" else theme_t["muted"]
+        ph = (f"🎯 Exit: ₹{s.get('target','—')} | 🛑 Re-entry: ₹{s.get('stop_loss','—')}<br>📉 {s.get('trend','—')} | MACD: {s.get('macd_signal','—')}" if c=="sell" else f"💰 Avg: ₹{s.get('avg_price','—')} | New Avg: ₹{s.get('new_avg','—')}<br>🛑 SL: ₹{s.get('new_sl','—')} | 🎯 Target: ₹{s.get('target','—')}" if c=="avg" else f"🎯 Target: ₹{s.get('target','—')} | 🛑 SL: ₹{s.get('stop_loss','—')}<br>📊 R:R {s.get('risk_reward','—')} | {s.get('trend','—')}")
+        html += f"""<div class="sig-card {c}"><div class="sig-action" style="color:{clr}">{s.get('action','')}</div><div style="font-size:.9rem;font-weight:800;margin-bottom:.3rem">{s['stock']} <span class="nse-lbl">{s.get('sector','')}</span></div><div class="sig-meta">CMP ₹{s.get('cmp','—')} · RSI {s.get('rsi','—')} · {s.get('pct_from_buy',0):+.1f}%</div><div class="sig-reason">{s.get('reason','')}</div><div class="sig-price">{ph}</div><div class="str-bar"><div class="str-fill" style="width:{s.get('strength',30)}%;background:{clr}"></div></div></div>"""
     st.markdown(html + "</div>", unsafe_allow_html=True)
 
 def render_sector(sdf, t):
@@ -587,47 +412,25 @@ def render_picks(picks, t):
     st.markdown('<div class="pick-grid">' + "".join([f"<div class='pick-card' style='border-top-color:{t['green'] if p['score']>=70 else t['yellow'] if p['score']>=55 else t['muted']}'><div class='pick-stock'>{p['stock']} <span class='pick-sector'>{p['sector']}</span></div><div style='font-size:.8rem;color:{t['muted']};font-weight:600;margin-top:3px'>CMP ₹{p['cmp']} · RSI {p['rsi']} · {p['trend']}</div><div class='pick-prices'>🎯 Entry: ₹{p['entry']}<br>🚀 Target: ₹{p['target']}<br>🛑 SL: ₹{p['stop_loss']}<br>📊 R:R: {p['risk_reward']} · Score: {p['score']}</div><div class='pick-reason'>{p['reason']}</div></div>" for p in picks]) + "</div>", unsafe_allow_html=True)
 
 # ── Load Data (User Scoped) ───────────────────────────────────────────────────
-if "last_auto_scan" not in st.session_state:
-    st.session_state.last_auto_scan = 0.0
+raw = get_trades(UID)
+df = enrich(raw) if not raw.empty else raw.copy()
 
-if st.session_state.last_auto_scan == 0.0 or (time.time() - st.session_state.last_auto_scan) >= 900:
-    try:
-        with st.spinner("🤖 Running Deep Quantitative Market Scan..."):
-            # Safely passes the newly loaded 'raw' trade database
-            st.session_state.signals_cache = generate_signals(raw) if not raw.empty else []
-            # ... sector rotation & scanner cache logic ...
-            st.session_state.last_auto_scan = time.time()
-    except Exception as scan_error:
-        st.error(f"⚠️ Background scan error: {str(scan_error)}")
+if st.session_state.last_refresh is None or (datetime.now() - st.session_state.last_refresh).seconds >= _TTL:
+    st.session_state.last_refresh = datetime.now()
 
 # ── 🤖 Deep Background Scan ───────────────────────────────────────────────────
-# ── Auto quantitative Market Engine Trigger ───────────────────────────────────
-
-if "last_auto_scan" not in st.session_state:
-    st.session_state.last_auto_scan = 0.0
-
 if st.session_state.last_auto_scan == 0.0 or (time.time() - st.session_state.last_auto_scan) >= 900:
-    try:
-        with st.spinner("🤖 Running Deep Quantitative Market Scan..."):
-            # Pass the full 'raw' dataset instead of filtering for 'Open' status
-            all_trades_df = raw if "raw" in locals() and not raw.empty else pd.DataFrame()
-            st.session_state.signals_cache = generate_signals(all_trades_df) if not all_trades_df.empty else []
-            
-            st.session_state.sector_cache = sector_rotation()
-            if st.session_state.sector_cache is not None and not st.session_state.sector_cache.empty:
-                st.session_state.outlook_cache = predict_sector_outlook(st.session_state.sector_cache)
-                top_sectors = st.session_state.sector_cache.head(5)["sector"].tolist()
-                st.session_state.picks_cache = find_sector_picks(top_sectors, 3)
-            else:
-                st.session_state.outlook_cache = pd.DataFrame()
-                st.session_state.picks_cache = []
-                
-            st.session_state.scanner_cache = generate_market_scanner()
-            st.session_state.last_auto_scan = time.time()
-            
-    except Exception as scan_error:
-        st.error(f"⚠️ Background market scan encountered an error: {str(scan_error)}")
-        
+    with st.spinner("🤖 Running Deep Quantitative Market Scan..."):
+        st.session_state.signals_cache = generate_signals(raw[raw["status"] == "Open"]) if not df[df["status"] == "Open"].empty else []
+        st.session_state.sector_cache = sector_rotation()
+        if st.session_state.sector_cache is not None and not st.session_state.sector_cache.empty:
+            st.session_state.outlook_cache = predict_sector_outlook(st.session_state.sector_cache)
+            st.session_state.picks_cache = find_sector_picks(st.session_state.sector_cache.head(5)["sector"].tolist(), 3)
+        else:
+            st.session_state.outlook_cache = pd.DataFrame(); st.session_state.picks_cache = []
+        st.session_state.scanner_cache = generate_market_scanner()
+        st.session_state.last_auto_scan = time.time()
+
 # ── Metrics Calc ─────────────────────────────────────────────────────────────
 if not df.empty:
     odf, cdf = df[df["status"]=="Open"], df[df["status"]=="Closed"]
@@ -644,9 +447,9 @@ st.markdown(theme_css(theme_t), unsafe_allow_html=True)
 # ── Sidebar ────────────────────────────────────────────────────────────────────
 with st.sidebar:
     st.markdown(f'<div style="font-size:0.85rem;font-weight:800;color:var(--accent);margin-bottom:1rem;">👤 User: {st.session_state.username.upper()}</div>', unsafe_allow_html=True)
-    
-    if st.button("🚪 Logout", use_container_width=True):
-        logout_user()
+    if st.button("🚪 Logout", width="stretch"):
+        st.session_state.clear()
+        st.rerun()
         
     st.markdown("<hr style='margin:1rem 0; border-color:var(--border)'>", unsafe_allow_html=True)
     
@@ -660,6 +463,7 @@ with st.sidebar:
     em = st.session_state.edit_id is not None
     erow = raw[raw["id"]==st.session_state.edit_id].iloc[0] if em and not raw.empty else None
     if em: st.markdown('<div style="background:rgba(99,102,241,0.15);border:1px solid rgba(99,102,241,0.4); border-radius:8px;padding:0.5rem;font-size:0.8rem;color:var(--accent);margin-bottom:1rem;font-weight:700">✏️ Editing trade</div>', unsafe_allow_html=True)
+
     with st.form("trade_form", clear_on_submit=True):
         s_in = st.text_input("Stock Symbol", value=erow["stock"] if erow is not None else "", placeholder="CDSL, IRFC…")
         q_in = st.number_input("Quantity", min_value=1, step=1, value=int(erow["quantity"]) if erow is not None else 1)
@@ -770,54 +574,20 @@ with tab2:
 
 with tab3:
     st.markdown('<div class="sec">Active Portfolio Signals & Risk Management</div>', unsafe_allow_html=True)
-    
-    # 🚨 MANUAL FORCE REFRESH BUTTON 🚨
-    if st.button("🔄 Force Scan / Refresh Signals Now", use_container_width=True):
-        with st.spinner("🤖 Running Deep Quantitative Market Scan..."):
-            if "raw" in locals() and not raw.empty:
-                st.session_state.signals_cache = generate_signals(raw)
-                st.rerun()
-            else:
-                st.error("⚠️ No local trade data ('raw') found to generate signals.")
-
     s1, s2 = st.columns([2, 1])
-    with s1: 
-        st.caption("🤖 Neural background scan refreshes signal intelligence every 15 minutes.")
-    
+    with s1: st.caption("🤖 Neural background scan refreshes signal intelligence every 15 minutes.")
     with s2:
-        # Fallback references to safely resolve scopes
-        tok = saved_tok if "saved_tok" in locals() else ""
-        cid = saved_cid if "saved_cid" in locals() else ""
-        
-        if st.button("📲 Push to Telegram", use_container_width=True, disabled=not bool(tok and cid)):
-            if "signals_cache" in st.session_state and st.session_state.signals_cache:
-                sector_df = st.session_state.sector_cache if st.session_state.sector_cache is not None else pd.DataFrame()
-                picks_list = st.session_state.picks_cache if st.session_state.picks_cache is not None else []
-                
-                msg_payload = build_telegram_message(st.session_state.signals_cache, sector_df, picks_list)
-                ok = send_telegram(tok, cid, msg_payload)
-                
-                if ok:
-                    st.success("✅ Broadcast successful!") 
-                else: 
-                    st.error("❌ Broadcast failed.")
-
-    # Safely retrieve signals cache from session state
-    signals = st.session_state.get("signals_cache")
-
-    if signals:
+        if st.button("📲 Push to Telegram", width="stretch", disabled=not bool(saved_tok and saved_cid)):
+            if st.session_state.signals_cache is not None:
+                ok = send_telegram(saved_tok, saved_cid, build_telegram_message(st.session_state.signals_cache, st.session_state.sector_cache if st.session_state.sector_cache is not None else pd.DataFrame(), st.session_state.picks_cache if st.session_state.picks_cache is not None else []))
+                st.success("✅ Broadcast successful!") if ok else st.error("❌ Broadcast failed.")
+    if st.session_state.signals_cache is not None:
         nc = {"SELL": 0, "AVERAGE": 0, "HOLD": 0, "WATCH": 0}
-        for s in signals:
+        for s in st.session_state.signals_cache:
             for k in nc:
-                if k in s.get("action", ""): 
-                    nc[k] += 1
-                    
+                if k in s.get("action", ""): nc[k] += 1
         st.markdown(f'<div style="display:flex;gap:.8rem;margin:.5rem 0 1rem"><span style="background:rgba(239,68,68,0.15);color:#ef4444;padding:.3rem .8rem;border-radius:6px;font-size:.8rem;font-weight:800;border:1px solid rgba(239,68,68,0.3)">🔴 SELL: {nc["SELL"]}</span><span style="background:rgba(245,158,11,0.15);color:#f59e0b;padding:.3rem .8rem;border-radius:6px;font-size:.8rem;font-weight:800;border:1px solid rgba(245,158,11,0.3)">🟡 AVERAGE: {nc["AVERAGE"]}</span><span style="background:rgba(16,185,129,0.15);color:#10b981;padding:.3rem .8rem;border-radius:6px;font-size:.8rem;font-weight:800;border:1px solid rgba(16,185,129,0.3)">🟢 HOLD: {nc["HOLD"]}</span></div>', unsafe_allow_html=True)
-        
-        theme = theme_t if "theme_t" in locals() else "dark"
-        render_signals(signals, theme)
-    else:
-        st.info("⏳ Signals cache is currently empty or rebuilding Quantitative Scan data. Please wait a moment or click the Force Scan button above.")
+        render_signals(st.session_state.signals_cache, theme_t)
 
 with tab4:
     st.markdown('<div class="sec">Macro Sector Rotation & Capital Flow</div>', unsafe_allow_html=True)
