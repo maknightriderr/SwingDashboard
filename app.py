@@ -345,8 +345,14 @@ _CACHE = {}
 _TTL = 300
 
 def fetch_price(symbol):
-    key = symbol.upper()
+    clean_symbol = str(symbol).upper().strip()
+    for sfx in [".NS", ".BO", ".NSE", ".BSE"]:
+        if clean_symbol.endswith(sfx):
+            clean_symbol = clean_symbol[:-len(sfx)]
+            
+    key = clean_symbol
     if key in _CACHE and time.time() - _CACHE[key][1] < _TTL: return _CACHE[key][0]
+    
     for sfx in [".NS", ".BO"]:
         try:
             t = yf.Ticker(key + sfx)
