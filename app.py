@@ -1,6 +1,6 @@
 """
-Swing Trading Portfolio Dashboard v12
-Features: Multi-Tenant Secure Login, Password Hashing, User Data Isolation
+Swing Trading Portfolio Dashboard v13
+Fixes: Persistent Login via DB Sessions, TypeError in render_signals
 """
 
 import streamlit as st
@@ -13,6 +13,7 @@ import plotly.graph_objects as go
 from datetime import datetime
 import time
 import hashlib
+import secrets
 
 from signals import (
     generate_signals, sector_rotation, predict_sector_outlook,
@@ -33,11 +34,9 @@ st.set_page_config(page_title="Swing Dashboard", page_icon="📈", layout="wide"
 
 # ── Security & Authentication Core ──────────────────────────────────────────────
 def make_hash(password):
-    """Hashes passwords securely for database storage."""
     return hashlib.sha256(str.encode(password + "swing_salt_99")).hexdigest()
 
 def verify_hash(password, hashed_pw):
-    """Verifies an entered password against the database hash."""
     return make_hash(password) == hashed_pw
 
 # ── Multi-Tenant Database Architecture ─────────────────────────────────────────
@@ -45,25 +44,24 @@ DB = "trades_v2.db"
 
 def init_db():
     c = sqlite3.connect(DB)
-    # Users Table
     c.execute("""CREATE TABLE IF NOT EXISTS users(
         id INTEGER PRIMARY KEY AUTOINCREMENT, 
         username TEXT UNIQUE NOT NULL, 
         password_hash TEXT NOT NULL)""")
-    # Trades Table (Linked to user_id)
+    c.execute("""CREATE TABLE IF NOT EXISTS sessions(
+        token TEXT PRIMARY KEY, 
+        user_id INTEGER, 
+        created_at TEXT DEFAULT(datetime('now')))""")
     c.execute("""CREATE TABLE IF NOT EXISTS trades(
         id INTEGER PRIMARY KEY AUTOINCREMENT, user_id INTEGER, stock TEXT NOT NULL,
         quantity REAL NOT NULL, buy_at REAL NOT NULL, sell_at REAL,
         status TEXT DEFAULT 'Open', added_date TEXT DEFAULT(date('now')),
         closed_date TEXT)""")
-    # Portfolio History (Linked to user_id)
     c.execute("""CREATE TABLE IF NOT EXISTS portfolio_history(
         id INTEGER PRIMARY KEY AUTOINCREMENT, user_id INTEGER, snapshot_date TEXT,
         total_invested REAL, current_value REAL)""")
-    # Telegram Config (Linked to user_id)
     c.execute("""CREATE TABLE IF NOT EXISTS tg_config(
         user_id INTEGER PRIMARY KEY, bot_token TEXT, chat_id TEXT)""")
-    # Watchlist (Linked to user_id)
     c.execute("""CREATE TABLE IF NOT EXISTS watchlist(
         id INTEGER PRIMARY KEY AUTOINCREMENT, user_id INTEGER, stock TEXT NOT NULL,
         target_price REAL, notes TEXT, added_date TEXT DEFAULT(date('now')))""")
@@ -77,18 +75,38 @@ def db(sql, params=(), fetch=False):
     conn.close()
     return result
 
+# --- Session Management (Persistent Login) ---
+def create_session(user_id):
+    token = secrets.token_hex(32)
+    db("INSERT INTO sessions(token, user_id) VALUES(?,?)", (token, user_id))
+    return token
+
+def validate_session(token):
+    rows = db("SELECT user_id FROM sessions WHERE token=?", (token,), fetch=True)
+    if rows:
+        uid = rows[0][0]
+        user = db("SELECT username FROM users WHERE id=?", (uid,), fetch=True)
+        return uid, user[0][0] if user else None
+    return None, None
+
+def delete_session(token):
+    db("DELETE FROM sessions WHERE token=?", (token,))
+
+def cleanup_old_sessions():
+    db("DELETE FROM sessions WHERE created_at < datetime('now', '-30 days')")
+
 # --- Database User Isolation Functions ---
 def register_user(username, password):
     try:
         db("INSERT INTO users(username, password_hash) VALUES(?,?)", (username.lower(), make_hash(password)))
         return True
     except sqlite3.IntegrityError:
-        return False # Username taken
+        return False
 
 def login_user(username, password):
     user = db("SELECT id, password_hash FROM users WHERE username=?", (username.lower(),), fetch=True)
     if user and verify_hash(password, user[0][1]):
-        return user[0][0] # Returns user_id
+        return user[0][0]
     return None
 
 def get_trades(user_id):
@@ -149,8 +167,8 @@ def delete_watchlist_item(wid, user_id):
 
 # ── Init & Session State Setup ──────────────────────────────────────────────────
 init_db()
+cleanup_old_sessions()
 
-# Ensure session state variables exist
 for k, v in [("user_id", None), ("username", None), ("edit_id", None), ("close_id", None), ("del_id", None),
              ("last_refresh", None), ("last_auto_scan", 0.0), ("sort_col", "stock"), ("sort_asc", False),
              ("signals_cache", None), ("sector_cache", None), ("picks_cache", None),
@@ -159,7 +177,14 @@ for k, v in [("user_id", None), ("username", None), ("edit_id", None), ("close_i
     if k not in st.session_state:
         st.session_state[k] = v
 
-# ── Auth Gatekeeper (Stops execution if not logged in) ──────────────────────────
+# ── Auth Gatekeeper (Persists across hard refreshes via query params) ───────────
+if st.session_state.user_id is None and "session" in st.query_params:
+    token = st.query_params["session"]
+    uid, uname = validate_session(token)
+    if uid:
+        st.session_state.user_id = uid
+        st.session_state.username = uname
+
 if st.session_state.user_id is None:
     st.markdown("<h1 style='text-align: center; margin-top: 5rem;'>🔐 Quantitative Swing Dashboard</h1>", unsafe_allow_html=True)
     st.markdown("<p style='text-align: center; color: gray;'>Secure Multi-Tenant Gateway</p>", unsafe_allow_html=True)
@@ -177,8 +202,10 @@ if st.session_state.user_id is None:
                 if l_submit:
                     uid = login_user(l_user, l_pass)
                     if uid:
+                        token = create_session(uid)
                         st.session_state.user_id = uid
                         st.session_state.username = l_user
+                        st.query_params["session"] = token
                         st.success("Authenticated. Booting Engine...")
                         time.sleep(1)
                         st.rerun()
@@ -200,13 +227,11 @@ if st.session_state.user_id is None:
                             st.success(f"✅ Account {s_user} registered! You can now log in.")
                         else:
                             st.error("❌ Username already exists.")
-    st.stop() # Halts all code execution below this line if not authenticated
+    st.stop()
 
 # ==============================================================================
 # MAIN APPLICATION (Only runs if Authenticated)
 # ==============================================================================
-
-# User ID strictly injected into all DB calls below
 UID = st.session_state.user_id
 
 THEMES = {
@@ -388,14 +413,37 @@ def chart_growth(hist, cur_val, cur_inv, theme_t=None):
     fig = base_layout(go.Figure([go.Scatter(x=pd.to_datetime(d["snapshot_date"]), y=d["current_value"], name="Value", line=dict(color="#10b981", width=3), fill="tozeroy", fillcolor="rgba(16, 185, 129, 0.1)"), go.Scatter(x=pd.to_datetime(d["snapshot_date"]), y=d["total_invested"], name="Invested", line=dict(color="#3b82f6", width=2, dash="dash"))]), "Portfolio Growth", theme_t)
     fig.update_layout(hovermode="x unified"); fig.update_yaxes(tickprefix="₹"); return fig
 
+# ── FIXED: Render Signals (Handles None values safely) ───────────────────────
 def render_signals(signals, theme_t):
     if not signals: st.info("No signals available."); return
     html = '<div class="sig-grid">'
     for s in signals:
         c = ("sell" if "SELL" in s.get("action","") else "avg" if "AVERAGE" in s.get("action","") else "hold" if "HOLD" in s.get("action","") else "watch")
         clr = theme_t["red"] if c=="sell" else theme_t["yellow"] if c=="avg" else theme_t["green"] if c=="hold" else theme_t["muted"]
-        ph = (f"🎯 Exit: ₹{s.get('target','—')} | 🛑 Re-entry: ₹{s.get('stop_loss','—')}<br>📉 {s.get('trend','—')} | MACD: {s.get('macd_signal','—')}" if c=="sell" else f"💰 Avg: ₹{s.get('avg_price','—')} | New Avg: ₹{s.get('new_avg','—')}<br>🛑 SL: ₹{s.get('new_sl','—')} | 🎯 Target: ₹{s.get('target','—')}" if c=="avg" else f"🎯 Target: ₹{s.get('target','—')} | 🛑 SL: ₹{s.get('stop_loss','—')}<br>📊 R:R {s.get('risk_reward','—')} | {s.get('trend','—')}")
-        html += f"""<div class="sig-card {c}"><div class="sig-action" style="color:{clr}">{s.get('action','')}</div><div style="font-size:.9rem;font-weight:800;margin-bottom:.3rem">{s['stock']} <span class="nse-lbl">{s.get('sector','')}</span></div><div class="sig-meta">CMP ₹{s.get('cmp','—')} · RSI {s.get('rsi','—')} · {s.get('pct_from_buy',0):+.1f}%</div><div class="sig-reason">{s.get('reason','')}</div><div class="sig-price">{ph}</div><div class="str-bar"><div class="str-fill" style="width:{s.get('strength',30)}%;background:{clr}"></div></div></div>"""
+        
+        # Safe formatting - handles None values without crashing
+        cmp_val = s.get('cmp'); cmp_str = f"₹{cmp_val:,.2f}" if cmp_val is not None else "—"
+        rsi_val = s.get('rsi'); rsi_str = f"{rsi_val:.1f}" if rsi_val is not None else "—"
+        pct_val = s.get('pct_from_buy'); pct_str = f"{pct_val:+.1f}%" if pct_val is not None else "—"
+        strength_val = s.get('strength') or 30
+        
+        tgt_str = f"₹{s['target']:,.2f}" if s.get('target') is not None else "—"
+        sl_str = f"₹{s['stop_loss']:,.2f}" if s.get('stop_loss') is not None else "—"
+        trend_str = s.get('trend', '—')
+        macd_str = s.get('macd_signal', '—')
+        rr_str = str(s.get('risk_reward', '—'))
+        
+        if c == "sell":
+            ph = f"🎯 Exit: {tgt_str} | 🛑 Re-entry: {sl_str}<br>📉 {trend_str} | MACD: {macd_str}"
+        elif c == "avg":
+            avg_p_str = f"₹{s['avg_price']:,.2f}" if s.get('avg_price') is not None else "—"
+            new_a_str = f"₹{s['new_avg']:,.2f}" if s.get('new_avg') is not None else "—"
+            new_s_str = f"₹{s['new_sl']:,.2f}" if s.get('new_sl') is not None else "—"
+            ph = f"💰 Avg: {avg_p_str} | New Avg: {new_a_str}<br>🛑 SL: {new_s_str} | 🎯 Target: {tgt_str}"
+        else:
+            ph = f"🎯 Target: {tgt_str} | 🛑 SL: {sl_str}<br>📊 R:R {rr_str} | {trend_str}"
+            
+        html += f"""<div class="sig-card {c}"><div class="sig-action" style="color:{clr}">{s.get('action','')}</div><div style="font-size:.9rem;font-weight:800;margin-bottom:.3rem">{s['stock']} <span class="nse-lbl">{s.get('sector','')}</span></div><div class="sig-meta">CMP {cmp_str} · RSI {rsi_str} · From Buy {pct_str}</div><div class="sig-reason">{s.get('reason','')}</div><div class="sig-price">{ph}</div><div class="str-bar"><div class="str-fill" style="width:{strength_val}%;background:{clr}"></div></div></div>"""
     st.markdown(html + "</div>", unsafe_allow_html=True)
 
 def render_sector(sdf, t):
@@ -447,7 +495,12 @@ st.markdown(theme_css(theme_t), unsafe_allow_html=True)
 # ── Sidebar ────────────────────────────────────────────────────────────────────
 with st.sidebar:
     st.markdown(f'<div style="font-size:0.85rem;font-weight:800;color:var(--accent);margin-bottom:1rem;">👤 User: {st.session_state.username.upper()}</div>', unsafe_allow_html=True)
+    
+    # FIXED: Logout clears persistent session
     if st.button("🚪 Logout", width="stretch"):
+        if "session" in st.query_params:
+            delete_session(st.query_params["session"])
+            del st.query_params["session"]
         st.session_state.clear()
         st.rerun()
         
@@ -505,7 +558,7 @@ st.markdown(f'<div class="dash-title"><div class="dash-title-text">📈 Quantita
 market = get_market_regime()
 rc_bg, rc_clr, rc_border = {"Strong Bull": ("rgba(16,185,129,0.15)", "#10b981", "border: 1px solid rgba(16,185,129,0.4)"), "Bull": ("rgba(16,185,129,0.1)", "#10b981", "border: 1px solid rgba(16,185,129,0.2)"), "Bull Pullback": ("rgba(245,158,11,0.15)", "#f59e0b", "border: 1px solid rgba(245,158,11,0.4)"), "Strong Bear": ("rgba(239,68,68,0.15)", "#ef4444", "border: 1px solid rgba(239,68,68,0.4)"), "Bear": ("rgba(239,68,68,0.1)", "#ef4444", "border: 1px solid rgba(239,68,68,0.2)"), "Bear Rally": ("rgba(245,158,11,0.15)", "#f59e0b", "border: 1px solid rgba(245,158,11,0.4)")}.get(market["regime"], ("rgba(148,163,184,0.1)", "#94a3b8", "border: 1px solid rgba(148,163,184,0.3)"))
 indices_html = "".join([f'<span style="color:var(--text);font-size:0.8rem;padding:0 0.8rem;border-right:1px solid rgba(255,255,255,0.1)">{name} <b>{f"₹{d['price']:,.0f}" if d.get("price") else "—"}</b> <span style="color:{"var(--red)" if (name=="India VIX" and d.get("chg_pct",0)>0) else "var(--green)" if (name=="India VIX" and d.get("chg_pct",0)<0) else "var(--green)" if d.get("chg_pct",0)>0 else "var(--red)"};font-weight:700">{d.get("chg_pct",0):+.2f}%</span></span>' for name, d in market.get("indices", {}).items()])
-st.markdown(f'<div class="regime-banner" style="background:{rc_bg};{rc_border};backdrop-filter:blur(10px);"><span style="color:{rc_clr};font-weight:800;font-size:0.9rem;white-space:nowrap;letter-spacing:0.05em">🌐 {market["regime"].upper()} (CONF: {market.get("confidence", "—")}%)</span>{indices_html}<span style="color:var(--muted);font-size:0.75rem;white-space:nowrap;padding-left:0.5rem;font-weight:600">SUP: {f"₹{market.get("support"):,.0f}" if market.get("support") else "—"} | RES: {f"₹{market.get("resistance"):,.0f}" if market.get("resistance") else "—"} | RSI {market.get("nifty_rsi", "—")} | RISK: {market.get("risk_level","—")}</span></div>', unsafe_allow_html=True)
+st.markdown(f'<div class="regime-banner" style="background:{rc_bg};{rc_border};backdrop-filter:blur(10px);"><span style="color:{rc_clr};font-weight:800;font-size:0.9rem;white-space:nowrap;letter-spacing:0.05em">🌐 {market["regime"].upper()} (CONF: {market.get("confidence", "—")}%)</span>{indices_html}<span style="color:var(--muted);font-size:0.75rem;white-space:nowrap;padding-left:0.5rem;font-weight:600">SUP: {f"₹{market.get('support'):,.0f}" if market.get("support") else "—"} | RES: {f"₹{market.get('resistance'):,.0f}" if market.get("resistance") else "—"} | RSI {market.get("nifty_rsi", "—")} | RISK: {market.get("risk_level","—")}</span></div>', unsafe_allow_html=True)
 
 pnl_c = "green" if t_pnl >= 0 else "red"
 r_c = "green" if t_real >= 0 else "red"
@@ -658,7 +711,7 @@ with tab7:
                     ind = compute_indicators(stock, period="3mo", prefetched_df=df_hist)
                     if ind:
                         cmp_v, rsi_v, trend, sup, res = ind.get('cmp', '—'), ind.get('rsi', '—'), ind.get('trend', '—'), ind.get('support', '—'), ind.get('resistance', '—')
-                        brd_color = theme_t['green'] if "Uptrend" in trend else (theme_t['red'] if "Downtrend" in trend else theme_t['yellow'])
+                        brd_color = theme_t['green'] if "Uptrend" in str(trend) else (theme_t['red'] if "Downtrend" in str(trend) else theme_t['yellow'])
                         st.markdown(f"""<div style="background:var(--card); border-top:4px solid {brd_color}; border-radius:8px; padding:1rem; box-shadow:0 4px 6px rgba(0,0,0,0.05); margin-bottom: 0.5rem;"><div style="font-size:1.1rem; font-weight:800; color:var(--text);">{stock}</div><div style="font-size:0.75rem; color:var(--muted); margin-bottom:0.5rem; text-transform:uppercase;">{get_sector(stock)}</div><div style="font-size:0.8rem; line-height:1.6; color:var(--text);"><b>CMP:</b> ₹{cmp_v}<br><b>RSI:</b> {rsi_v} | <b>Trend:</b> {trend}<br><b>Sup:</b> ₹{sup} | <b>Res:</b> ₹{res}</div></div>""", unsafe_allow_html=True)
                     else:
                         st.markdown(f"""<div style="background:var(--card); border-top:4px solid var(--muted); border-radius:8px; padding:1rem; box-shadow:0 4px 6px rgba(0,0,0,0.05); margin-bottom: 0.5rem;"><div style="font-size:1.1rem; font-weight:800; color:var(--text);">{stock}</div><div style="font-size:0.85rem; color:var(--red); margin-bottom:0.5rem;">Market Data Unavailable</div></div>""", unsafe_allow_html=True)
