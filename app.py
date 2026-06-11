@@ -214,8 +214,45 @@ table.t tr.row-loss:hover td{{background:rgba(248,81,73,.12)!important}}
 /* 4. Action Buttons */
 .stButton>button{{
     background:var(--card2)!important;
-    border:1px solid var(--border
+    border:1px solid var(--border)!important;
+    color:var(--text)!important;
+    border-radius:6px;
+    font-size:.78rem;
+    font-weight:500;
+    padding:.35rem .7rem;
+    transition:all .15s;
+}}
+.stButton>button:hover{{
+    border-color:var(--accent)!important;
+    color:var(--accent)!important;
+    background:rgba(88,166,255,.08)!important;
+}}
 
+.stTabs [data-baseweb="tab-list"]{{background:var(--card);border-bottom:1px solid var(--border);gap:0;padding:0 .5rem}}
+.stTabs [data-baseweb="tab"]{{background:transparent;color:var(--muted);font-size:.78rem;
+  font-weight:500;padding:.5rem 1rem;border:none;border-bottom:2px solid transparent}}
+.stTabs [aria-selected="true"]{{background:transparent!important;color:var(--accent)!important;
+  border-bottom-color:var(--accent)!important}}
+.js-plotly-plot .plotly{{border-radius:8px}}
+.refresh-badge{{display:inline-block;background:rgba(63,185,80,.12);
+  color:var(--green);padding:.15rem .5rem;border-radius:4px;
+  font-size:.65rem;font-weight:600;margin-left:.5rem}}
+.regime-banner{{border-radius:6px;padding:.5rem .85rem;display:flex;
+  align-items:center;gap:.5rem;margin-bottom:.75rem;flex-wrap:wrap}}
+  
+[data-testid="stExpander"] {{
+    background-color: var(--card) !important;
+    border: 1px solid var(--border) !important;
+    border-radius: 8px;
+    margin-bottom: 0.5rem;
+}}
+[data-testid="stExpander"] summary p {{
+    font-weight: 700 !important;
+    font-size: 0.9rem !important;
+    color: var(--text) !important;
+}}
+</style>
+"""
 # ── Database ───────────────────────────────────────────────────────────────────
 DB = "trades.db"
 
