@@ -69,12 +69,19 @@ def theme_css(t):
   --gradient:{t['gradient']};
 }}
 
-/* Global Background & Typography */
-html, body, [class*="css"] {{
-    background: var(--bg); 
-    color: var(--text);
+/* ─── 🚀 AGGRESSIVE STREAMLIT BACKGROUND OVERRIDE ─── */
+html, body, .stApp, [data-testid="stAppViewContainer"], [data-testid="stApp"] {{
+    background: var(--bg) !important;
+    background-color: var(--bg) !important;
+    color: var(--text) !important;
     font-family: 'Inter', -apple-system, BlinkMacSystemFont, sans-serif;
 }}
+
+/* Hide the default white Streamlit header */
+[data-testid="stHeader"] {{
+    background: transparent !important;
+}}
+
 #MainMenu, footer, header {{ visibility: hidden; }}
 .block-container {{ padding-top: 1rem; padding-bottom: 2rem; max-width: 100%; }}
 
@@ -184,10 +191,8 @@ table.t tr.row-loss:hover td {{ background: rgba(239, 68, 68, 0.08) !important; 
 .str-bar {{ height: 4px; border-radius: 2px; margin-top: 0.8rem; background: var(--input); overflow: hidden; }}
 .str-fill {{ height: 100%; border-radius: 2px; transition: width 0.5s ease-out; }}
 
-/* ─── 🚀 THE ULTIMATE STREAMLIT WIDGET OVERRIDE 🚀 ─── */
-/* This specifically destroys the white bleed on forms, buttons, and inputs */
-
-[data-testid="stSidebar"] {{ background: var(--card); border-right: 1px solid var(--border); padding-top: 2rem; }}
+/* ─── CRITICAL UI FORM FIXES FOR LIGHT THEME BLEED ─── */
+[data-testid="stSidebar"] {{ background: var(--card) !important; border-right: 1px solid var(--border); padding-top: 2rem; }}
 
 /* Text & Number Input Wrappers */
 div[data-baseweb="input"] {{
