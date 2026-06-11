@@ -868,3 +868,31 @@ def generate_market_scanner():
         })
         
     return pd.DataFrame(results).sort_values(by=["Sector", "Score"], ascending=[True, False])
+
+def fetch_portfolio_news(open_trades_df):
+    """
+    Acts as a mini-agent to scrape the latest headlines for active holdings.
+    """
+    if open_trades_df.empty:
+        return []
+        
+    news_alerts = []
+    unique_symbols = open_trades_df["stock"].unique().tolist()
+    
+    for sym in unique_symbols:
+        try:
+            # Fetch using the base symbol mapped to NSE
+            t = yf.Ticker(f"{sym}.NS")
+            news = t.news
+            if news and len(news) > 0:
+                top_story = news[0]
+                title = top_story.get("title", "")
+                link = top_story.get("link", "")
+                
+                # Only add if it successfully retrieves a headline
+                if title:
+                    news_alerts.append(f"📰 <b>{sym}</b>: <a href='{link}'>{title}</a>")
+        except Exception:
+            continue
+            
+    return news_alerts
