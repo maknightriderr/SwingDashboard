@@ -13,6 +13,12 @@ import plotly.graph_objects as go
 from datetime import datetime
 import time
 import hashlib
+import streamlit as st
+from streamlit_cookies_controller import CookieController, RemoveEmptyElementContainer
+
+# Hide the invisible iframe element that the controller injects
+RemoveEmptyElementContainer()
+controller = CookieController(key='app_cookies')
 
 from signals import (
     generate_signals, sector_rotation, predict_sector_outlook,
@@ -159,6 +165,27 @@ for k, v in [("user_id", None), ("username", None), ("edit_id", None), ("close_i
     if k not in st.session_state:
         st.session_state[k] = v
 
+# ── Persistent Cookie Restore ──────────────────────────────────────────────────
+if ("user_id" not in st.session_state or st.session_state.user_id is None) and "cookie_checked" not in st.session_state:
+    st.session_state.cookie_checked = True
+    cookies = controller.getAll()
+    cookie_user_id = cookies.get("swing_user_id")
+    
+    if cookie_user_id:
+        try:
+            st.session_state.user_id = int(cookie_user_id)
+            # Fetch the associated username from users DB to keep state consistent
+            conn = sqlite3.connect(DB)
+            cursor = conn.cursor()
+            cursor.execute("SELECT username FROM users WHERE id = ?", (cookie_user_id,))
+            user_row = cursor.fetchone()
+            if user_row:
+                st.session_state.username = user_row[0]
+            conn.close()
+            st.rerun()
+        except Exception:
+            pass # Malformed cookie, proceed to standard login
+
 # ── Auth Gatekeeper (Stops execution if not logged in) ──────────────────────────
 if st.session_state.user_id is None:
     st.markdown("<h1 style='text-align: center; margin-top: 5rem;'>🔐 Quantitative Swing Dashboard</h1>", unsafe_allow_html=True)
@@ -186,6 +213,19 @@ if st.session_state.user_id is None:
                             st.rerun()
                         else:
                             st.error("❌ Invalid Username or Password")
+
+        if l_submit:
+    uid = login_user(l_user, l_pass)
+    if uid:
+        st.session_state.user_id = uid
+        st.session_state.username = l_user.strip().lower()
+        
+        # 🍪 Store an encrypted/persistent cookie for 7 days (604800 seconds)
+        controller.set("swing_user_id", str(uid), max_age=604800)
+        
+        st.success("Authenticated. Booting Engine...")
+        time.sleep(0.5)
+        st.rerun()
                             
         with tab_signup:
             with st.form("signup_form"):
@@ -482,9 +522,9 @@ st.markdown(theme_css(theme_t), unsafe_allow_html=True)
 # ── Sidebar ────────────────────────────────────────────────────────────────────
 with st.sidebar:
     st.markdown(f'<div style="font-size:0.85rem;font-weight:800;color:var(--accent);margin-bottom:1rem;">👤 User: {st.session_state.username.upper()}</div>', unsafe_allow_html=True)
-    if st.button("🚪 Logout", width="stretch"):
-        st.session_state.clear()
-        st.rerun()
+    
+    if st.button("🚪 Logout", use_container_width=True):
+        logout_user()
         
     st.markdown("<hr style='margin:1rem 0; border-color:var(--border)'>", unsafe_allow_html=True)
     
@@ -498,7 +538,6 @@ with st.sidebar:
     em = st.session_state.edit_id is not None
     erow = raw[raw["id"]==st.session_state.edit_id].iloc[0] if em and not raw.empty else None
     if em: st.markdown('<div style="background:rgba(99,102,241,0.15);border:1px solid rgba(99,102,241,0.4); border-radius:8px;padding:0.5rem;font-size:0.8rem;color:var(--accent);margin-bottom:1rem;font-weight:700">✏️ Editing trade</div>', unsafe_allow_html=True)
-
     with st.form("trade_form", clear_on_submit=True):
         s_in = st.text_input("Stock Symbol", value=erow["stock"] if erow is not None else "", placeholder="CDSL, IRFC…")
         q_in = st.number_input("Quantity", min_value=1, step=1, value=int(erow["quantity"]) if erow is not None else 1)
