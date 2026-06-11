@@ -164,7 +164,8 @@ if st.session_state.user_id is None:
     st.markdown("<h1 style='text-align: center; margin-top: 5rem;'>🔐 Quantitative Swing Dashboard</h1>", unsafe_allow_html=True)
     st.markdown("<p style='text-align: center; color: gray;'>Secure Multi-Tenant Gateway</p>", unsafe_allow_html=True)
     
-    auth_col1, auth_col2, auth_col3 = st.columns([1, 1.5, 1])
+    _, auth_col2, _ = st.columns([1, 1.5, 1])
+    
     with auth_col2:
         tab_login, tab_signup = st.tabs(["Login", "Create Account"])
         
@@ -172,18 +173,37 @@ if st.session_state.user_id is None:
             with st.form("login_form"):
                 l_user = st.text_input("Username")
                 l_pass = st.text_input("Password", type="password")
-                l_submit = st.form_submit_button("Access Terminal", width="stretch")
                 
-                if l_submit:
-                    uid = login_user(l_user, l_pass)
-                    if uid:
-                        st.session_state.user_id = uid
-                        st.session_state.username = l_user
-                        st.success("Authenticated. Booting Engine...")
-                        time.sleep(1)
-                        st.rerun()
+                if st.form_submit_button("Access Terminal", use_container_width=True):
+                    if not l_user.strip() or not l_pass.strip():
+                        st.error("⚠️ Please fill in all fields.")
                     else:
-                        st.error("❌ Invalid Username or Password")
+                        uid = login_user(l_user, l_pass)
+                        if uid:
+                            st.session_state.user_id = uid
+                            st.session_state.username = l_user.strip().lower()
+                            st.success("Authenticated. Booting Engine...")
+                            time.sleep(0.5)
+                            st.rerun()
+                        else:
+                            st.error("❌ Invalid Username or Password")
+                            
+        with tab_signup:
+            with st.form("signup_form"):
+                s_user = st.text_input("New Username")
+                s_pass = st.text_input("New Password", type="password")
+                
+                if st.form_submit_button("Register Account", use_container_width=True):
+                    if len(s_user) < 3 or len(s_pass) < 4:
+                        st.error("⚠️ Username > 3 chars and Password > 4 chars required.")
+                    else:
+                        success = register_user(s_user, s_pass)
+                        if success:
+                            st.success(f"✅ Account {s_user} registered! Switch to Login tab to enter.")
+                        else:
+                            st.error("❌ Username already exists.")
+                            
+    st.stop()  # Halts the rest of the app from rendering while logged out
                         
         with tab_signup:
             with st.form("signup_form"):
