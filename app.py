@@ -548,11 +548,18 @@ def render_picks(picks, t):
     st.markdown('<div class="pick-grid">' + "".join([f"<div class='pick-card' style='border-top-color:{t['green'] if p['score']>=70 else t['yellow'] if p['score']>=55 else t['muted']}'><div class='pick-stock'>{p['stock']} <span class='pick-sector'>{p['sector']}</span></div><div style='font-size:.8rem;color:{t['muted']};font-weight:600;margin-top:3px'>CMP ₹{p['cmp']} · RSI {p['rsi']} · {p['trend']}</div><div class='pick-prices'>🎯 Entry: ₹{p['entry']}<br>🚀 Target: ₹{p['target']}<br>🛑 SL: ₹{p['stop_loss']}<br>📊 R:R: {p['risk_reward']} · Score: {p['score']}</div><div class='pick-reason'>{p['reason']}</div></div>" for p in picks]) + "</div>", unsafe_allow_html=True)
 
 # ── Load Data (User Scoped) ───────────────────────────────────────────────────
-raw = get_trades(UID)
-df = enrich(raw) if not raw.empty else raw.copy()
+if "last_auto_scan" not in st.session_state:
+    st.session_state.last_auto_scan = 0.0
 
-if st.session_state.last_refresh is None or (datetime.now() - st.session_state.last_refresh).seconds >= _TTL:
-    st.session_state.last_refresh = datetime.now()
+if st.session_state.last_auto_scan == 0.0 or (time.time() - st.session_state.last_auto_scan) >= 900:
+    try:
+        with st.spinner("🤖 Running Deep Quantitative Market Scan..."):
+            # Safely passes the newly loaded 'raw' trade database
+            st.session_state.signals_cache = generate_signals(raw) if not raw.empty else []
+            # ... sector rotation & scanner cache logic ...
+            st.session_state.last_auto_scan = time.time()
+    except Exception as scan_error:
+        st.error(f"⚠️ Background scan error: {str(scan_error)}")
 
 # ── 🤖 Deep Background Scan ───────────────────────────────────────────────────
 # ── Auto quantitative Market Engine Trigger ───────────────────────────────────
