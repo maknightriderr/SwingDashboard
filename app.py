@@ -191,11 +191,12 @@ if st.session_state.user_id is None:
     st.markdown("<h1 style='text-align: center; margin-top: 5rem;'>🔐 Quantitative Swing Dashboard</h1>", unsafe_allow_html=True)
     st.markdown("<p style='text-align: center; color: gray;'>Secure Multi-Tenant Gateway</p>", unsafe_allow_html=True)
     
-    auth_col1, auth_col2, auth_col3 = st.columns([1, 1.5, 1])
+    _, auth_col2, _ = st.columns([1, 1.5, 1])
+    
     with auth_col2:
         tab_login, tab_signup = st.tabs(["Login", "Create Account"])
         
-       with tab_login:
+        with tab_login:
             with st.form("login_form"):
                 l_user = st.text_input("Username")
                 l_pass = st.text_input("Password", type="password")
@@ -209,24 +210,15 @@ if st.session_state.user_id is None:
                         if uid:
                             st.session_state.user_id = uid
                             st.session_state.username = l_user.strip().lower()
+                            
+                            # Store persistent cookie
+                            controller.set("swing_user_id", str(uid), max_age=604800)
+                            
                             st.success("Authenticated. Booting Engine...")
                             time.sleep(0.5)
                             st.rerun()
                         else:
                             st.error("❌ Invalid Username or Password")
-
-        if l_submit:
-    uid = login_user(l_user, l_pass)
-    if uid:
-        st.session_state.user_id = uid
-        st.session_state.username = l_user.strip().lower()
-        
-        # 🍪 Store an encrypted/persistent cookie for 7 days (604800 seconds)
-        controller.set("swing_user_id", str(uid), max_age=604800)
-        
-        st.success("Authenticated. Booting Engine...")
-        time.sleep(0.5)
-        st.rerun()
                             
         with tab_signup:
             with st.form("signup_form"):
@@ -244,7 +236,6 @@ if st.session_state.user_id is None:
                             st.error("❌ Username already exists.")
                             
     st.stop()
-
 # ==============================================================================
 # MAIN APPLICATION (Only runs if Authenticated)
 # ==============================================================================
