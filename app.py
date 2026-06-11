@@ -17,7 +17,7 @@ from signals import (
     generate_signals, sector_rotation, predict_sector_outlook,
     find_sector_picks, send_telegram, build_telegram_message,
     get_sector, get_market_regime, generate_market_scanner,
-    SECTOR_MAP  
+    SECTOR_MAP, _bulk_fetch_history, compute_indicators
 )
 
 # ── Auto-refresh every 5 minutes for UI, background scan runs every 15 mins ───
