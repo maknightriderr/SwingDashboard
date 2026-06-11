@@ -385,6 +385,9 @@ def get_watchlist():
     conn.close()
     return df
 
+def delete_watchlist_item(wid):
+    db("DELETE FROM watchlist WHERE id=?", (wid,))
+
 # ── Fast Price cache ──────────────────────────────────────────────────────────
 _CACHE = {}
 _TTL = 300
