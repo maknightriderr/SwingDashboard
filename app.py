@@ -15,11 +15,11 @@ import time
 import hashlib
 
 from signals import (
-    generate_signals, fetch_price, sanitize_ticker, 
-    sector_rotation, get_market_regime, _bulk_fetch_history, 
-    compute_indicators, get_sector, predict_sector_outlook, 
-    find_sector_picks, generate_market_scanner,
-    fetch_portfolio_news  # 👈 Added here
+    generate_signals, sector_rotation, predict_sector_outlook,
+    find_sector_picks, send_telegram, build_telegram_message,
+    get_sector, get_market_regime, generate_market_scanner,
+    SECTOR_MAP, _bulk_fetch_history, compute_indicators,
+    fetch_portfolio_news
 )
 
 # ── Auto-refresh config ────────────────────────────────────────────────────────
