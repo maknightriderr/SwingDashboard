@@ -397,17 +397,40 @@ def render_signals(signals, theme_t):
         
     html = '<div class="sig-grid">'
     for s in signals:
-        # Determine card class and colors safely
-        c = ("sell" if "SELL" in s.get("action","") else "avg" if "AVERAGE" in s.get("action","") else "hold" if "HOLD" in s.get("action","") else "watch")
-        clr = theme_t["red"] if c=="sell" else theme_t["yellow"] if c=="avg" else theme_t["green"] if c=="hold" else theme_t["muted"]
+        try:
+            # Determine card class and colors safely using .get()
+            action_str = s.get("action", "")
+            if "SELL" in action_str:
+                c = "sell"
+                clr = theme_t.get("red", "#ff4b4b")
+            elif "AVERAGE" in action_str:
+                c = "avg"
+                clr = theme_t.get("yellow", "#ffaa00")
+            elif "HOLD" in action_str:
+                c = "hold"
+                clr = theme_t.get("green", "#00cc44")
+            else:
+                c = "watch"
+                clr = theme_t.get("muted", "#888888")
+            
+            stock_name = s.get('stock', 'N/A')
+            action = s.get('action', 'SIGNAL')
+            
+            # Safe float formatting for percentage
+            pct_val = s.get('pct_from_buy', 0.0)
+            try:
+                pct_str = f"{float(pct_val):+.1f}%"
+            except (ValueError, TypeError):
+                pct_str = "—%"
+            
+            ph = (f"🎯 Exit: ₹{s.get('target','—')} | 🛑 Re-entry: ₹{s.get('stop_loss','—')}<br>📉 {s.get('trend','—')} | MACD: {s.get('macd_signal','—')}" if c=="sell" else f"💰 Avg: ₹{s.get('avg_price','—')} | New Avg: ₹{s.get('new_avg','—')}<br>🛑 SL: ₹{s.get('new_sl','—')} | 🎯 Target: ₹{s.get('target','—')}" if c=="avg" else f"🎯 Target: ₹{s.get('target','—')} | 🛑 SL: ₹{s.get('stop_loss','—')}<br>📊 R:R {s.get('risk_reward','—')} | {s.get('trend','—')}")
+            
+            html += f"""<div class="sig-card {c}"><div class="sig-action" style="color:{clr}">{action}</div><div style="font-size:.9rem;font-weight:800;margin-bottom:.3rem">{stock_name} <span class="nse-lbl">{s.get('sector','')}</span></div><div class="sig-meta">CMP ₹{s.get('cmp','—')} · RSI {s.get('rsi','—')} · {pct_str}</div><div class="sig-reason">{s.get('reason','')}</div><div class="sig-price">{ph}</div><div class="str-bar"><div class="str-fill" style="width:{s.get('strength',30)}%;background:{clr}"></div></div></div>"""
         
-        stock_name = s.get('stock', 'N/A')
-        action = s.get('action', 'SIGNAL')
-        
-        ph = (f"🎯 Exit: ₹{s.get('target','—')} | 🛑 Re-entry: ₹{s.get('stop_loss','—')}<br>📉 {s.get('trend','—')} | MACD: {s.get('macd_signal','—')}" if c=="sell" else f"💰 Avg: ₹{s.get('avg_price','—')} | New Avg: ₹{s.get('new_avg','—')}<br>🛑 SL: ₹{s.get('new_sl','—')} | 🎯 Target: ₹{s.get('target','—')}" if c=="avg" else f"🎯 Target: ₹{s.get('target','—')} | 🛑 SL: ₹{s.get('stop_loss','—')}<br>📊 R:R {s.get('risk_reward','—')} | {s.get('trend','—')}")
-        
-        html += f"""<div class="sig-card {c}"><div class="sig-action" style="color:{clr}">{action}</div><div style="font-size:.9rem;font-weight:800;margin-bottom:.3rem">{stock_name} <span class="nse-lbl">{s.get('sector','')}</span></div><div class="sig-meta">CMP ₹{s.get('cmp','—')} · RSI {s.get('rsi','—')} · {s.get('pct_from_buy',0):+.1f}%</div><div class="sig-reason">{s.get('reason','')}</div><div class="sig-price">{ph}</div><div class="str-bar"><div class="str-fill" style="width:{s.get('strength',30)}%;background:{clr}"></div></div></div>"""
-        
+        except Exception as e:
+            # Catch errors on a per-card basis so the dashboard stays up
+            st.warning(f"Skipping corrupt signal display: {str(e)[:50]}")
+            
     st.markdown(html + "</div>", unsafe_allow_html=True)
 
 def render_sector(sdf, t):
