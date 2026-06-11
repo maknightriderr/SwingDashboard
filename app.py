@@ -316,7 +316,7 @@ if st.session_state.last_auto_scan == 0.0 or (time.time() - st.session_state.las
     except Exception as scan_error:
         st.error(f"⚠️ Background market scan encountered an error: {str(scan_error)}")
 
-# --- Your tabs (tab1, tab2, tab3, etc.) render below this ---
+# --- Your tabs (tab1, tab2, tab3, etc.) render below this point ---
 
 # ==============================================================================
 # MAIN APPLICATION (Only runs if Authenticated)
