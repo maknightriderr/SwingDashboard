@@ -1,6 +1,6 @@
 """
-Swing Trading Portfolio Dashboard v8
-Features: Universe Risk Metrics, Sensex Integration, Safe Signals Processing
+Swing Trading Portfolio Dashboard v10
+Features: Universe Risk Metrics, Sensex Integration, Safe Signals Processing, Strict Modern UI Widths
 """
 
 import streamlit as st
@@ -760,7 +760,7 @@ with st.sidebar:
         sel_in = st.number_input("Sell At ₹ (optional)", min_value=0.0, step=0.05,
                                  value=float(erow["sell_at"]) if (erow is not None and erow["sell_at"]) else 0.0,
                                  format="%.2f")
-        ok = st.form_submit_button("💾 Update" if edit_mode else "➕ Add Trade", use_container_width=True)
+        ok = st.form_submit_button("💾 Update" if edit_mode else "➕ Add Trade", width="stretch")
 
     if ok:
         if not s_in.strip():
@@ -783,7 +783,7 @@ with st.sidebar:
             st.session_state.last_auto_scan = 0.0
             st.rerun()
 
-    if edit_mode and st.button("✖ Cancel Edit", use_container_width=True):
+    if edit_mode and st.button("✖ Cancel Edit", width="stretch"):
         st.session_state.edit_id = None
         st.rerun()
 
@@ -805,7 +805,7 @@ with st.sidebar:
     st.markdown("---")
     c1, c2 = st.columns(2)
     with c1:
-        if st.button("🔄 Force Scan", use_container_width=True):
+        if st.button("🔄 Force Scan", width="stretch"):
             _CACHE.clear()
             st.session_state.last_refresh = datetime.now()
             st.session_state.last_auto_scan = 0.0  
@@ -824,7 +824,7 @@ with st.sidebar:
     saved_tok, saved_cid = get_tg_config()
     tg_tok = st.text_input("Bot Token", value=saved_tok, type="password", placeholder="123456:ABC…")
     tg_cid = st.text_input("Chat ID", value=saved_cid, placeholder="-100xxxxxxx")
-    if st.button("💾 Save Telegram", use_container_width=True):
+    if st.button("💾 Save Telegram", width="stretch"):
         save_tg_config(tg_tok, tg_cid)
         st.success("Saved!")
 
@@ -994,13 +994,13 @@ with tab1:
                 sel = st.selectbox("Trade", opts, label_visibility="collapsed")
                 sel_id = int(sel.split(" — ")[0])
             with cb:
-                if st.button("✏️ Edit", use_container_width=True):
+                if st.button("✏️ Edit", width="stretch"):
                     st.session_state.edit_id = sel_id; st.rerun()
             with cc:
-                if st.button("🔒 Close", use_container_width=True):
+                if st.button("🔒 Close", width="stretch"):
                     st.session_state.close_id = sel_id; st.rerun()
             with cd:
-                if st.button("🗑 Delete", use_container_width=True):
+                if st.button("🗑 Delete", width="stretch"):
                     st.session_state.del_id = sel_id; st.rerun()
 
         if st.session_state.close_id:
@@ -1009,11 +1009,11 @@ with tab1:
             sp = st.number_input("Sell Price ₹", min_value=0.01, step=0.05, format="%.2f")
             x1, x2 = st.columns(2)
             with x1:
-                if st.button("✅ Confirm Close", use_container_width=True):
+                if st.button("✅ Confirm Close", width="stretch"):
                     close_trade(st.session_state.close_id, sp)
                     st.session_state.close_id = None; st.rerun()
             with x2:
-                if st.button("✖ Cancel Close", use_container_width=True):
+                if st.button("✖ Cancel Close", width="stretch"):
                     st.session_state.close_id = None; st.rerun()
 
         if st.session_state.del_id:
@@ -1021,11 +1021,11 @@ with tab1:
             st.warning(f"Delete trade #{st.session_state.del_id}? Cannot be undone.")
             y1, y2 = st.columns(2)
             with y1:
-                if st.button("🗑 Confirm Delete", use_container_width=True):
+                if st.button("🗑 Confirm Delete", width="stretch"):
                     delete_trade(st.session_state.del_id)
                     st.session_state.del_id = None; st.rerun()
             with y2:
-                if st.button("✖ Keep Trade", use_container_width=True):
+                if st.button("✖ Keep Trade", width="stretch"):
                     st.session_state.del_id = None; st.rerun()
 
 with tab2:
@@ -1034,11 +1034,11 @@ with tab2:
     else:
         c1, c2 = st.columns(2)
         with c1:
-            st.plotly_chart(chart_alloc(df, theme_t), use_container_width=True)
+            st.plotly_chart(chart_alloc(df, theme_t))
         with c2:
-            st.plotly_chart(chart_donut(df, theme_t), use_container_width=True)
-        st.plotly_chart(chart_pnl(df, theme_t), use_container_width=True)
-        st.plotly_chart(chart_growth(get_history(), t_cur, t_inv, theme_t), use_container_width=True)
+            st.plotly_chart(chart_donut(df, theme_t))
+        st.plotly_chart(chart_pnl(df, theme_t))
+        st.plotly_chart(chart_growth(get_history(), t_cur, t_inv, theme_t))
 
 # ═══════════════════════════════════════════════════════════════════════════════
 # Tab 3 — SIGNALS (Automated Representation)
@@ -1051,7 +1051,7 @@ with tab3:
         st.caption("🔄 Scans continuously in the background every 15 minutes.")
     with s2:
         tg_enabled = bool(saved_tok and saved_cid)
-        if st.button("📲 Send to Telegram", use_container_width=True, disabled=not tg_enabled):
+        if st.button("📲 Send to Telegram", width="stretch", disabled=not tg_enabled):
             if st.session_state.signals_cache is not None:
                 sec_df = st.session_state.sector_cache if st.session_state.sector_cache is not None else pd.DataFrame()
                 picks = st.session_state.picks_cache if st.session_state.picks_cache is not None else []
@@ -1119,7 +1119,7 @@ with tab5:
     </div>
     """, unsafe_allow_html=True)
 
-    if st.button("⚡ Force Full Universe Scan Now", use_container_width=True):
+    if st.button("⚡ Force Full Universe Scan Now", width="stretch"):
         with st.spinner(f"Running deep background & indicator calculations across {total_loaded_stocks} tickers..."):
             try:
                 scanned_data = generate_market_scanner()
@@ -1152,7 +1152,6 @@ with tab5:
             with st.expander(f"📁 {sec} ({len(sec_df)} stocks) {badge_text}"):
                 st.dataframe(
                     sec_df,
-                    use_container_width=True,
                     hide_index=True,
                     column_config={
                         "Generated": st.column_config.TextColumn("Setup Time"),
@@ -1175,8 +1174,7 @@ with tab6:
     if not a or a.get("closed_trades", 0) == 0:
         st.info("Close some trades to see analytics. Here's portfolio overview:")
         if not df.empty:
-            st.dataframe(df[["stock", "quantity", "buy_at", "cmp", "profit", "profit_pct", "status"]],
-                         use_container_width=True)
+            st.dataframe(df[["stock", "quantity", "buy_at", "cmp", "profit", "profit_pct", "status"]])
     else:
         st.markdown('<div class="sec">Performance Metrics</div>', unsafe_allow_html=True)
         st.markdown('<div class="cards">' + card("Win Rate", f'{a["win_rate"]}%', f'{a["wins"]}W / {a["losses"]}L', "green" if a["win_rate"] >= 50 else "red") + card("Profit Factor", str(a["profit_factor"]), "Gross P / Gross L") + card("Expectancy", f'₹{a["expectancy"]}') + card("Avg Win", f'₹{a["avg_win"]:,.0f}') + card("Avg Loss", f'₹{a["avg_loss"]:,.0f}', "", "red") + card("Max Drawdown", f'₹{a["max_drawdown"]:,.0f}', "", "red") + card("Avg Hold", f'{a["avg_hold_days"]}d') + card("Sharpe", str(a["sharpe"])) + '</div>', unsafe_allow_html=True)
@@ -1185,7 +1183,7 @@ with tab7:
     st.markdown('<div class="sec">👁 Watchlist</div>', unsafe_allow_html=True)
     wdf = get_watchlist()
     if not wdf.empty:
-        st.dataframe(wdf, use_container_width=True, hide_index=True)
+        st.dataframe(wdf, hide_index=True)
     else:
         st.caption("No stocks in watchlist yet.")
 
@@ -1194,4 +1192,4 @@ with tab8:
         st.info("No data to export.")
     else:
         st.markdown('<div class="sec">Export Controls</div>', unsafe_allow_html=True)
-        st.dataframe(df, use_container_width=True)
+        st.dataframe(df)
