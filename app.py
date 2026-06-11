@@ -1067,9 +1067,58 @@ with tab6:
 
 with tab7:
     st.markdown('<div class="sec">👁 Target Watchlist</div>', unsafe_allow_html=True)
+
+    # 1. Form input to add new stock tickers to the DATABASE
+    with st.form(key="add_stock_form", clear_on_submit=True):
+        col_input, col_btn = st.columns([4, 1])
+        
+        with col_input:
+            new_stock = st.text_input(
+                label="Stock Ticker", 
+                placeholder="e.g., SBIN, TATAMOTORS, AAPL", 
+                label_visibility="collapsed"
+            ).upper().strip()
+            
+        with col_btn:
+            submit_btn = st.form_submit_button(label="➕ Add Stock", width="stretch")
+
+        if submit_btn and new_stock:
+            add_watchlist(new_stock)  # Calls your SQLite DB function!
+            st.toast(f"🚀 {new_stock} saved to database!")
+            st.rerun()
+
+    # 2. Fetch and render the current watchlist from the database
     wdf = get_watchlist()
-    if not wdf.empty: st.dataframe(wdf, hide_index=True)
-    else: st.caption("Watchlist empty.")
+    
+    if not wdf.empty:
+        st.markdown('<div class="sec" style="margin-top:1rem;">Your Monitored Stocks</div>', unsafe_allow_html=True)
+        
+        # Display tickers inside clean layout rows
+        for _, row in wdf.iterrows():
+            stock = row['stock']
+            wid = row['id']
+            
+            card_col, action_col = st.columns([5, 1])
+            
+            with card_col:
+                st.markdown(
+                    f"""
+                    <div class="card" style="margin-bottom: 0.5rem; padding: 0.8rem;">
+                        <div class="lbl">Equity Ticker</div>
+                        <div class="val">{stock} <span class="nse-lbl" style="font-size:0.65rem;">| Database Synced</span></div>
+                    </div>
+                    """, 
+                    unsafe_allow_html=True
+                )
+                
+            with action_col:
+                st.markdown("<div style='height: 12px;'></div>", unsafe_allow_html=True)
+                if st.button("🗑️ Drop", key=f"del_{wid}", width="stretch"):
+                    delete_watchlist_item(wid)  # Deletes from SQLite DB!
+                    st.toast(f"Removed {stock} from database.")
+                    st.rerun()
+    else:
+        st.info("Your watchlist is currently empty. Enter a ticker symbol above to start tracking.")
 
 with tab8:
     if df.empty: st.info("No data available for export.")
