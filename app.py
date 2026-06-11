@@ -1068,55 +1068,82 @@ with tab6:
 with tab7:
     st.markdown('<div class="sec">👁 Target Watchlist</div>', unsafe_allow_html=True)
 
-    # 1. Form input to add new stock tickers to the DATABASE
+    # Callback function to guarantee safe database deletion
+    def drop_watchlist_cb(w_id, s_name):
+        delete_watchlist_item(w_id)
+        st.toast(f"🗑️ Dropped {s_name} from database!")
+
+    # Add Stock Form
     with st.form(key="add_stock_form", clear_on_submit=True):
         col_input, col_btn = st.columns([4, 1])
-        
         with col_input:
             new_stock = st.text_input(
                 label="Stock Ticker", 
-                placeholder="e.g., SBIN, TATAMOTORS, AAPL", 
+                placeholder="e.g., SBIN, TATAMOTORS", 
                 label_visibility="collapsed"
             ).upper().strip()
-            
         with col_btn:
             submit_btn = st.form_submit_button(label="➕ Add Stock", width="stretch")
 
         if submit_btn and new_stock:
-            add_watchlist(new_stock)  # Calls your SQLite DB function!
+            add_watchlist(new_stock)
             st.toast(f"🚀 {new_stock} saved to database!")
             st.rerun()
 
-    # 2. Fetch and render the current watchlist from the database
     wdf = get_watchlist()
     
     if not wdf.empty:
-        st.markdown('<div class="sec" style="margin-top:1rem;">Your Monitored Stocks</div>', unsafe_allow_html=True)
+        st.markdown('<div class="sec" style="margin-top:1rem;">Live Monitored Assets</div>', unsafe_allow_html=True)
         
-        # Display tickers inside clean layout rows
-        for _, row in wdf.iterrows():
+        # Fast bulk fetch for all watchlist stocks
+        wl_symbols = wdf['stock'].tolist()
+        with st.spinner("Fetching live metrics for watchlist..."):
+            wl_data = _bulk_fetch_history(wl_symbols, period="3mo")
+        
+        # Create a clean 3-column grid layout
+        cols = st.columns(3)
+        
+        for i, row in wdf.iterrows():
             stock = row['stock']
-            wid = row['id']
+            wid = int(row['id'])  # CRITICAL FIX: Casts numpy int to Python int for SQLite!
+            col = cols[i % 3]
             
-            card_col, action_col = st.columns([5, 1])
-            
-            with card_col:
-                st.markdown(
-                    f"""
-                    <div class="card" style="margin-bottom: 0.5rem; padding: 0.8rem;">
-                        <div class="lbl">Equity Ticker</div>
-                        <div class="val">{stock} <span class="nse-lbl" style="font-size:0.65rem;">| Database Synced</span></div>
-                    </div>
-                    """, 
-                    unsafe_allow_html=True
-                )
-                
-            with action_col:
-                st.markdown("<div style='height: 12px;'></div>", unsafe_allow_html=True)
-                if st.button("🗑️ Drop", key=f"del_{wid}", width="stretch"):
-                    delete_watchlist_item(wid)  # Deletes from SQLite DB!
-                    st.toast(f"Removed {stock} from database.")
-                    st.rerun()
+            with col:
+                with st.container():
+                    df_hist = wl_data.get(stock)
+                    ind = compute_indicators(stock, period="3mo", prefetched_df=df_hist)
+                    
+                    if ind:
+                        cmp_v = ind.get('cmp', '—')
+                        rsi_v = ind.get('rsi', '—')
+                        trend = ind.get('trend', '—')
+                        sup = ind.get('support', '—')
+                        res = ind.get('resistance', '—')
+                        
+                        # Dynamic color edge based on Trend
+                        brd_color = theme_t['green'] if "Uptrend" in trend else (theme_t['red'] if "Downtrend" in trend else theme_t['yellow'])
+                        
+                        st.markdown(f"""
+                        <div style="background:var(--card); border-top:4px solid {brd_color}; border-radius:8px; padding:1rem; box-shadow:0 4px 6px rgba(0,0,0,0.05); margin-bottom: 0.5rem;">
+                            <div style="font-size:1.1rem; font-weight:800; color:var(--text);">{stock}</div>
+                            <div style="font-size:0.75rem; color:var(--muted); margin-bottom:0.5rem; text-transform:uppercase;">{get_sector(stock)}</div>
+                            <div style="font-size:0.8rem; line-height:1.6; color:var(--text);">
+                                <b>CMP:</b> ₹{cmp_v}<br>
+                                <b>RSI:</b> {rsi_v} | <b>Trend:</b> {trend}<br>
+                                <b>Sup:</b> ₹{sup} | <b>Res:</b> ₹{res}
+                            </div>
+                        </div>
+                        """, unsafe_allow_html=True)
+                    else:
+                        st.markdown(f"""
+                        <div style="background:var(--card); border-top:4px solid var(--muted); border-radius:8px; padding:1rem; box-shadow:0 4px 6px rgba(0,0,0,0.05); margin-bottom: 0.5rem;">
+                            <div style="font-size:1.1rem; font-weight:800; color:var(--text);">{stock}</div>
+                            <div style="font-size:0.85rem; color:var(--red); margin-bottom:0.5rem;">Market Data Unavailable</div>
+                        </div>
+                        """, unsafe_allow_html=True)
+                        
+                    # Drop button uses a safe callback instead of st.rerun() directly
+                    st.button("🗑️ Drop Stock", key=f"wl_del_{wid}", on_click=drop_watchlist_cb, args=(wid, stock), width="stretch")
     else:
         st.info("Your watchlist is currently empty. Enter a ticker symbol above to start tracking.")
 
