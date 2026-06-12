@@ -244,35 +244,38 @@ if st.session_state.user_id is None:
     st.stop()
 
 # ==============================================================================
-# MAIN APPLICATION
+# MAIN APPLICATION (Only runs if Authenticated)
 # ==============================================================================
+
+# User ID strictly injected into all DB calls below
 UID = st.session_state.user_id
 
 THEMES = {
-    "Midnight Pro": {
-        "bg": "#0b0f19", "card": "#111827", "input": "#1c212b", "border": "#2d3748",
-        "text": "#f8fafc", "muted": "#94a3b8", "green": "#10b981", "red": "#ef4444",
-        "yellow": "#f59e0b", "blue": "#3b82f6", "accent": "#6366f1", "card2": "#1e293b",
-        "gradient": "linear-gradient(135deg, #111827 0%, #1e293b 100%)"
+    "Quantum Dark (Premium)": {
+        "bg":"#0b0d10","card":"#14161a","input":"#1c1f24","border":"#2b3038",
+        "text":"#e2e8f0","muted":"#8b949e","green":"#22c55e","red":"#f43f5e",
+        "yellow":"#eab308","blue":"#3b82f6","accent":"#3b82f6","card2":"#1a1d24",
+        "gradient":"linear-gradient(145deg, #14161a 0%, #1a1d24 100%)"
     },
-    "Ocean Depth": {
-        "bg": "#081229", "card": "#0f172a", "input": "#1e293b", "border": "#334155",
-        "text": "#e2e8f0", "muted": "#cbd5e1", "green": "#059669", "red": "#e11d48",
-        "yellow": "#d97706", "blue": "#0ea5e9", "accent": "#0ea5e9", "card2": "#0f2242",
-        "gradient": "linear-gradient(135deg, #0f172a 0%, #0f2242 100%)"
+    "Hedge Fund Terminal": {
+        "bg":"#000000","card":"#0a0a0a","input":"#111111","border":"#222222",
+        "text":"#ffffff","muted":"#777777","green":"#00ff00","red":"#ff0033",
+        "yellow":"#ffcc00","blue":"#00aaff","accent":"#00aaff","card2":"#141414",
+        "gradient":"linear-gradient(180deg, #0a0a0a 0%, #111111 100%)"
     },
-    "Cyber Neon": {
-        "bg": "#050505", "card": "#0a0a0a", "input": "#141414", "border": "#333333",
-        "text": "#ffffff", "muted": "#a1a1aa", "green": "#00ff41", "red": "#ff0055",
-        "yellow": "#ffe600", "blue": "#00e5ff", "accent": "#b026ff", "card2": "#171717",
-        "gradient": "linear-gradient(135deg, #0a0a0a 0%, #171717 100%)"
+    "Midnight Silk (Glass)": {
+        "bg":"#0a0a10","card":"rgba(20, 22, 33, 0.65)","input":"rgba(30, 34, 45, 0.7)","border":"rgba(255, 255, 255, 0.08)",
+        "text":"#f8fafc","muted":"#94a3b8","green":"#10b981","red":"#fb7185",
+        "yellow":"#fbbf24","blue":"#0ea5e9","accent":"#8b5cf6","card2":"rgba(30, 34, 45, 0.4)",
+        "gradient":"linear-gradient(135deg, rgba(255,255,255,0.03) 0%, rgba(255,255,255,0.0) 100%)"
     }
 }
-
 
 def theme_css(t):
     return f"""
 <style>
+@import url('https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700;800&display=swap');
+
 :root {{
   --bg:{t['bg']}; --card:{t['card']}; --input:{t['input']};
   --border:{t['border']}; --text:{t['text']}; --muted:{t['muted']};
@@ -280,119 +283,97 @@ def theme_css(t):
   --blue:{t['blue']}; --accent:{t['accent']}; --card2:{t['card2']};
   --gradient:{t['gradient']};
 }}
-html,body,.stApp,[data-testid="stAppViewContainer"],[data-testid="stApp"]{{
-  background:var(--bg)!important;background-color:var(--bg)!important;
-  color:var(--text)!important;
-  font-family:'Inter',-apple-system,BlinkMacSystemFont,sans-serif;
+
+html, body, .stApp, [data-testid="stAppViewContainer"], [data-testid="stApp"] {{
+    background: var(--bg) !important; background-color: var(--bg) !important; color: var(--text) !important;
+    font-family: 'Inter', sans-serif !important;
+    -webkit-font-smoothing: antialiased;
 }}
-[data-testid="stHeader"]{{background:transparent!important;}}
-#MainMenu,footer,header{{visibility:hidden;}}
-.block-container{{padding-top:1rem;padding-bottom:2rem;max-width:100%;}}
-.dash-title{{font-size:1.6rem;font-weight:800;padding-bottom:.8rem;margin-bottom:1.2rem;
-  border-bottom:1px solid var(--border);display:flex;align-items:center;justify-content:space-between;}}
-.dash-title-text{{background:-webkit-linear-gradient(45deg,var(--text),var(--muted));
-  -webkit-background-clip:text;-webkit-text-fill-color:transparent;}}
-.dash-title span.hl{{color:var(--accent);-webkit-text-fill-color:var(--accent);}}
-.cards{{display:flex;gap:.8rem;flex-wrap:wrap;margin-bottom:1.5rem;}}
-.card{{background:var(--gradient);border:1px solid rgba(255,255,255,.05);border-radius:12px;
-  padding:1rem;flex:1;min-width:140px;box-shadow:0 4px 6px -1px rgba(0,0,0,.1);
-  transition:transform .2s ease,box-shadow .2s ease;}}
-.card:hover{{transform:translateY(-2px);box-shadow:0 10px 15px -3px rgba(0,0,0,.1);
-  border-color:rgba(255,255,255,.1);}}
-.card .lbl{{font-size:.65rem;text-transform:uppercase;letter-spacing:.08em;
-  color:var(--muted);margin-bottom:.3rem;}}
-.card .val{{font-size:1.1rem;font-weight:800;color:var(--text);}}
-.card .sub{{font-size:.75rem;color:var(--muted);margin-top:.2rem;font-weight:500;}}
-.green{{color:var(--green)!important;}} .red{{color:var(--red)!important;}}
-.yellow{{color:var(--yellow)!important;}} .blue{{color:var(--blue)!important;}}
-.sec{{font-size:.8rem;font-weight:700;text-transform:uppercase;letter-spacing:.08em;
-  color:var(--text);margin:1.5rem 0 .8rem;padding-left:.6rem;border-left:4px solid var(--accent);}}
-.tbl-wrap{{overflow-x:auto;background:var(--card);border:1px solid var(--border);
-  border-radius:12px;box-shadow:0 4px 6px rgba(0,0,0,.05);}}
-table.t,.sector-tbl{{width:100%;border-collapse:collapse;font-size:.8rem;}}
-table.t th,.sector-tbl th{{background:var(--card2);color:var(--muted);text-transform:uppercase;
-  letter-spacing:.05em;font-weight:700;padding:.7rem;text-align:right;
-  border-bottom:2px solid var(--border);}}
-table.t th.l,table.t td.l{{text-align:left;}}
-table.t td,.sector-tbl td{{padding:.6rem .7rem;border-bottom:1px solid var(--border);
-  text-align:right;color:var(--text);}}
-table.t tr:last-child td,.sector-tbl tr:last-child td{{border-bottom:none;}}
-table.t tr:hover td,.sector-tbl tr:hover td{{background:rgba(255,255,255,.02);}}
-table.t tr.row-profit td{{background:rgba(16,185,129,.04)!important;}}
-table.t tr.row-loss td{{background:rgba(239,68,68,.04)!important;}}
-.pos{{color:var(--green);font-weight:700;}} .neg{{color:var(--red);font-weight:700;}}
-.zero-cell{{color:var(--muted)!important;}}
-.badge{{display:inline-block;padding:.15rem .5rem;border-radius:4px;
-  font-size:.65rem;font-weight:800;text-transform:uppercase;}}
-.b-open{{background:rgba(245,158,11,.15);color:var(--yellow);border:1px solid rgba(245,158,11,.3);}}
-.b-cl{{background:rgba(16,185,129,.15);color:var(--green);border:1px solid rgba(16,185,129,.3);}}
-.b-cll{{background:rgba(239,68,68,.15);color:var(--red);border:1px solid rgba(239,68,68,.3);}}
-.sig-grid,.pick-grid,.outlook-grid{{display:grid;
-  grid-template-columns:repeat(auto-fill,minmax(300px,1fr));gap:1rem;margin-top:.5rem;}}
-.sig-card,.pick-card,.outlook-card{{background:var(--card);border:1px solid var(--border);
-  border-radius:12px;padding:1rem;transition:transform .2s;}}
-.sig-card:hover,.pick-card:hover{{transform:translateY(-2px);border-color:rgba(255,255,255,.1);}}
-.sig-card.sell{{border-top:4px solid var(--red);}}
-.sig-card.avg{{border-top:4px solid var(--yellow);}}
-.sig-card.hold{{border-top:4px solid var(--green);}}
-.sig-card.watch{{border-top:4px solid var(--muted);}}
-.pick-card{{border-top:4px solid var(--accent);}}
-.sig-action{{font-size:.9rem;font-weight:800;margin-bottom:.4rem;text-transform:uppercase;}}
-.sig-meta,.pick-sector{{font-size:.75rem;color:var(--muted);}}
-.sig-reason,.pick-prices{{font-size:.8rem;margin-top:.5rem;color:var(--text);}}
-.sig-price,.pick-reason{{font-size:.75rem;margin-top:.6rem;padding-top:.6rem;
-  border-top:1px dashed var(--border);}}
-.str-bar{{height:4px;border-radius:2px;margin-top:.8rem;background:var(--input);}}
-.str-fill{{height:100%;border-radius:2px;transition:width .5s;}}
-.rr-warn{{font-size:.7rem;color:var(--yellow);font-weight:700;}}
-[data-testid="stSidebar"]{{background:var(--card)!important;
-  border-right:1px solid var(--border);padding-top:2rem;}}
-div[data-baseweb="input"],div[data-baseweb="select"],
-[data-testid="stNumberInputContainer"]{{background-color:var(--input)!important;
-  border:1px solid var(--border)!important;border-radius:8px!important;}}
-div[data-baseweb="input"] input,[data-testid="stNumberInputContainer"] input{{
-  color:var(--text)!important;-webkit-text-fill-color:var(--text)!important;
-  background-color:transparent!important;}}
-button[data-testid="stNumberInputStepDown"],
-button[data-testid="stNumberInputStepUp"]{{background-color:var(--card2)!important;
-  color:var(--text)!important;border:none!important;}}
-button[data-testid="stNumberInputStepDown"] svg,
-button[data-testid="stNumberInputStepUp"] svg,
-div[data-baseweb="select"] svg{{fill:var(--text)!important;}}
-div[role="listbox"]{{background-color:var(--card2)!important;
-  border:1px solid var(--border)!important;border-radius:8px!important;}}
-ul[role="listbox"] li{{color:var(--text)!important;}}
-ul[role="listbox"] li[aria-selected="true"]{{background-color:var(--accent)!important;
-  color:white!important;}}
-.stButton>button{{background:var(--card2)!important;border:1px solid var(--border)!important;
-  color:var(--text)!important;border-radius:8px!important;font-weight:600!important;
-  padding:.4rem 1rem!important;transition:all .2s ease!important;}}
-.stButton>button:hover{{border-color:var(--accent)!important;
-  background:var(--accent)!important;box-shadow:0 0 10px rgba(99,102,241,.4)!important;}}
-.stTabs [data-baseweb="tab-list"]{{background:var(--card);
-  border-bottom:2px solid var(--border);gap:1rem;padding:0 1rem;
-  border-radius:8px 8px 0 0;}}
-.stTabs [data-baseweb="tab"]{{background:transparent;color:var(--muted);font-weight:600;
-  padding:.8rem 1rem;border:none;border-bottom:2px solid transparent;}}
-.stTabs [aria-selected="true"]{{background:transparent!important;
-  color:var(--accent)!important;border-bottom-color:var(--accent)!important;}}
-[data-testid="stExpander"]{{background-color:var(--card)!important;
-  border:1px solid var(--border)!important;border-radius:12px!important;
-  margin-bottom:.8rem!important;}}
-[data-testid="stExpander"] summary p{{font-weight:700!important;color:var(--text)!important;}}
-.refresh-badge{{display:inline-block;background:rgba(16,185,129,.15);color:var(--green);
-  padding:.2rem .6rem;border-radius:6px;font-size:.7rem;font-weight:800;
-  border:1px solid rgba(16,185,129,.3);}}
-.regime-banner{{border-radius:12px;padding:.8rem 1.2rem;display:flex;align-items:center;
-  gap:.8rem;margin-bottom:1.5rem;flex-wrap:wrap;box-shadow:0 4px 6px rgba(0,0,0,.05);}}
-.news-item{{padding:.5rem .8rem;border-left:3px solid var(--accent);
-  margin-bottom:.5rem;font-size:.85rem;background:rgba(99,102,241,.05);
-  border-radius:0 6px 6px 0;}}
+
+/* Clean up Streamlit default clutter */
+[data-testid="stHeader"] {{ background: transparent !important; }}
+#MainMenu, footer, header {{ display: none !important; }}
+.block-container {{ padding-top: 2rem; padding-bottom: 2rem; max-width: 95%; }}
+
+/* Premium Dashboard Title */
+.dash-title {{ font-size: 1.8rem; font-weight: 800; padding-bottom: 1rem; margin-bottom: 1.5rem; border-bottom: 1px solid var(--border); display: flex; align-items: center; justify-content: space-between; letter-spacing: -0.5px; }}
+.dash-title-text {{ color: var(--text); }}
+.dash-title span.hl {{ color: var(--accent); }}
+
+/* Sleek Metric Cards */
+.cards {{ display: flex; gap: 1rem; flex-wrap: wrap; margin-bottom: 2rem; }}
+.card {{ background: var(--gradient); background-color: var(--card); border: 1px solid var(--border); border-radius: 16px; padding: 1.2rem; flex: 1; min-width: 150px; box-shadow: 0 4px 20px rgba(0,0,0,0.2); transition: all 0.3s ease; backdrop-filter: blur(12px); -webkit-backdrop-filter: blur(12px); }}
+.card:hover {{ transform: translateY(-3px); box-shadow: 0 8px 30px rgba(0,0,0,0.3); border-color: rgba(255,255,255,0.15); }}
+.card .lbl {{ font-size: 0.7rem; text-transform: uppercase; letter-spacing: 0.1em; color: var(--muted); margin-bottom: 0.4rem; font-weight: 600; }}
+.card .val {{ font-size: 1.4rem; font-weight: 800; color: var(--text); letter-spacing: -0.5px; }}
+.card .sub {{ font-size: 0.8rem; color: var(--muted); margin-top: 0.3rem; font-weight: 500; }}
+
+/* Typography & Colors */
+.green {{ color: var(--green) !important; }} .red {{ color: var(--red) !important; }} .yellow {{ color: var(--yellow) !important; }} .blue {{ color: var(--blue) !important; }}
+.sec {{ font-size: 0.9rem; font-weight: 700; text-transform: uppercase; letter-spacing: 0.1em; color: var(--text); margin: 2rem 0 1rem; padding-left: 0.8rem; border-left: 3px solid var(--accent); }}
+
+/* Institutional Data Tables */
+.tbl-wrap {{ overflow-x: auto; background: var(--card); border: 1px solid var(--border); border-radius: 16px; box-shadow: 0 4px 20px rgba(0,0,0,0.15); backdrop-filter: blur(12px); margin-bottom: 1rem; }}
+table.t, .sector-tbl {{ width: 100%; border-collapse: collapse; font-size: 0.85rem; }}
+table.t th, .sector-tbl th {{ background: var(--card2); color: var(--muted); text-transform: uppercase; letter-spacing: 0.05em; font-weight: 600; padding: 1rem; text-align: right; border-bottom: 1px solid var(--border); }}
+table.t th.l, table.t td.l {{ text-align: left; }}
+table.t td, .sector-tbl td {{ padding: 0.8rem 1rem; border-bottom: 1px solid var(--border); text-align: right; color: var(--text); font-weight: 500; }}
+table.t tr:last-child td, .sector-tbl tr:last-child td {{ border-bottom: none; }}
+table.t tr:hover td, .sector-tbl tr:hover td {{ background: rgba(255,255,255,0.03); }}
+table.t tr.row-profit td {{ background: rgba(34, 197, 94, 0.03) !important; }}
+table.t tr.row-loss td {{ background: rgba(244, 63, 94, 0.03) !important; }}
+
+/* Badges & Tags */
+.pos {{ color: var(--green); font-weight: 700; }} .neg {{ color: var(--red); font-weight: 700; }} .zero-cell {{ color: var(--muted) !important; }}
+.badge {{ display: inline-block; padding: 0.2rem 0.6rem; border-radius: 6px; font-size: 0.7rem; font-weight: 700; text-transform: uppercase; letter-spacing: 0.05em; }}
+.b-open {{ background: rgba(234, 179, 8, 0.15); color: var(--yellow); border: 1px solid rgba(234, 179, 8, 0.3); }}
+.b-cl {{ background: rgba(34, 197, 94, 0.15); color: var(--green); border: 1px solid rgba(34, 197, 94, 0.3); }}
+.b-cll {{ background: rgba(244, 63, 94, 0.15); color: var(--red); border: 1px solid rgba(244, 63, 94, 0.3); }}
+
+/* Grid Cards (Signals, Picks) */
+.sig-grid, .pick-grid, .outlook-grid {{ display: grid; grid-template-columns: repeat(auto-fill, minmax(320px, 1fr)); gap: 1.2rem; margin-top: 1rem; }}
+.sig-card, .pick-card, .outlook-card {{ background: var(--card); border: 1px solid var(--border); border-radius: 16px; padding: 1.2rem; transition: all 0.3s ease; backdrop-filter: blur(12px); box-shadow: 0 4px 15px rgba(0,0,0,0.1); }}
+.sig-card:hover, .pick-card:hover {{ transform: translateY(-3px); border-color: var(--accent); box-shadow: 0 8px 25px rgba(0,0,0,0.2); }}
+.sig-card.sell {{ border-top: 3px solid var(--red); }} .sig-card.avg {{ border-top: 3px solid var(--yellow); }}
+.sig-card.hold {{ border-top: 3px solid var(--green); }} .sig-card.watch {{ border-top: 3px solid var(--muted); }}
+.pick-card {{ border-top: 3px solid var(--accent); }}
+
+.sig-action {{ font-size: 0.85rem; font-weight: 800; margin-bottom: 0.6rem; text-transform: uppercase; letter-spacing: 0.05em; }}
+.sig-meta, .pick-sector {{ font-size: 0.75rem; color: var(--muted); font-weight: 500; }}
+.sig-reason, .pick-prices {{ font-size: 0.85rem; margin-top: 0.8rem; color: var(--text); line-height: 1.5; }}
+.sig-price, .pick-reason {{ font-size: 0.8rem; margin-top: 1rem; padding-top: 0.8rem; border-top: 1px solid var(--border); font-weight: 500; color: var(--muted); }}
+.str-bar {{ height: 4px; border-radius: 2px; margin-top: 1rem; background: var(--input); overflow: hidden; }}
+.str-fill {{ height: 100%; border-radius: 2px; transition: width 0.5s ease; }}
+
+/* Streamlit Native Element Overrides */
+[data-testid="stSidebar"] {{ background: var(--card) !important; border-right: 1px solid var(--border); padding-top: 2rem; }}
+div[data-baseweb="input"], div[data-baseweb="select"], [data-testid="stNumberInputContainer"] {{ background-color: var(--input) !important; border: 1px solid var(--border) !important; border-radius: 8px !important; }}
+div[data-baseweb="input"] input, [data-testid="stNumberInputContainer"] input {{ color: var(--text) !important; -webkit-text-fill-color: var(--text) !important; background-color: transparent !important; font-family: 'Inter', sans-serif !important; }}
+button[data-testid="stNumberInputStepDown"], button[data-testid="stNumberInputStepUp"] {{ background-color: var(--card2) !important; color: var(--text) !important; border: none !important; }}
+button[data-testid="stNumberInputStepDown"] svg, button[data-testid="stNumberInputStepUp"] svg, div[data-baseweb="select"] svg {{ fill: var(--text) !important; }}
+div[role="listbox"] {{ background-color: var(--card2) !important; border: 1px solid var(--border) !important; border-radius: 8px !important; }}
+ul[role="listbox"] li {{ color: var(--text) !important; }} ul[role="listbox"] li[aria-selected="true"] {{ background-color: var(--accent) !important; color: white !important; }}
+
+/* Modern Buttons */
+.stButton>button {{ background: var(--card2) !important; border: 1px solid var(--border) !important; color: var(--text) !important; border-radius: 8px !important; font-weight: 600 !important; padding: 0.5rem 1rem !important; transition: all 0.2s ease !important; }}
+.stButton>button:hover {{ border-color: var(--accent) !important; background: var(--accent) !important; color: white !important; box-shadow: 0 4px 15px rgba(0,0,0,0.2) !important; }}
+
+/* Sleek Tabs */
+.stTabs [data-baseweb="tab-list"] {{ background: transparent; gap: 2rem; padding: 0 0.5rem; border-bottom: 1px solid var(--border); }}
+.stTabs [data-baseweb="tab"] {{ background: transparent; color: var(--muted); font-weight: 600; padding: 1rem 0; border: none; border-bottom: 2px solid transparent; text-transform: uppercase; letter-spacing: 0.05em; font-size: 0.8rem; }}
+.stTabs [aria-selected="true"] {{ background: transparent !important; color: var(--accent) !important; border-bottom-color: var(--accent) !important; }}
+
+/* Expanders */
+[data-testid="stExpander"] {{ background-color: var(--card) !important; border: 1px solid var(--border) !important; border-radius: 12px !important; margin-bottom: 1rem !important; box-shadow: 0 4px 10px rgba(0,0,0,0.1); }}
+[data-testid="stExpander"] summary p {{ font-weight: 700 !important; color: var(--text) !important; font-size: 0.95rem; }}
+
+/* Beautiful Market Regime Banner */
+.refresh-badge {{ display: inline-block; background: rgba(34, 197, 94, 0.15); color: var(--green); padding: 0.3rem 0.8rem; border-radius: 20px; font-size: 0.7rem; font-weight: 800; border: 1px solid rgba(34, 197, 94, 0.3); letter-spacing: 0.05em; }}
+.regime-banner {{ border-radius: 16px; padding: 1rem 1.5rem; display: flex; align-items: center; gap: 1rem; margin-bottom: 2rem; flex-wrap: wrap; box-shadow: 0 4px 20px rgba(0,0,0,0.15); border: 1px solid var(--border); }}
 </style>
 """
 
-
-# ── Price helpers ──────────────────────────────────────────────────────────────
+# ── Price Fetcher & Logic ───────────────────────────────────────────────────────
 _CACHE = {}
 _TTL = 300
 
