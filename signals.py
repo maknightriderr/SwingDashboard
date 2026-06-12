@@ -499,7 +499,7 @@ def _compute_indicators_raw(symbol, period="1y", prefetched_df=None):
     rsi_series = compute_rsi_wilder(close, 14)
     rsi = round(float(rsi_series.iloc[-1]), 1) if not pd.isna(rsi_series.iloc[-1]) else None
 
-    # --- SWAPPED TO FAST MOMENTUM EMAs FOR 1-WEEK SWINGS ---
+    # --- FAST MOMENTUM EMAs FOR 1-WEEK SWINGS ---
     ema9 = float(close.ewm(span=9).mean().iloc[-1])
     ema21 = float(close.ewm(span=21).mean().iloc[-1])
     ema50 = float(close.ewm(span=50).mean().iloc[-1])
@@ -525,19 +525,9 @@ def _compute_indicators_raw(symbol, period="1y", prefetched_df=None):
     tr = pd.concat([high-low, (high-close.shift()).abs(), (low-close.shift()).abs()], axis=1).max(axis=1)
     atr = float(tr.rolling(14).mean().iloc[-1]) if len(tr) >= 14 else float(high.iloc[-1] - low.iloc[-1])
 
-    # --- INSTITUTIONAL GATES ---
     vol_avg = float(vol.rolling(20).mean().iloc[-1]) if len(vol) >= 20 else float(vol.mean())
     vol_ratio = float(vol.iloc[-1]) / vol_avg if vol_avg > 0 else 1.0
-
     avg_turnover = vol_avg * float(close.iloc[-1])
-    
-    # 1. LIQUIDITY GATE: ₹10 Crore Minimum Turnover
-    if avg_turnover < 100_000_000:  
-        return None
-        
-    # 2. VOLATILITY GATE: Reject if daily ATR is less than 3.5% of price
-    if (atr / cmp) < 0.035:
-        return None
 
     # --- FAST MOMENTUM SUPPORT & RESISTANCE (7-DAY) ---
     support = float(low.rolling(7).min().iloc[-1])
@@ -562,7 +552,6 @@ def _compute_indicators_raw(symbol, period="1y", prefetched_df=None):
     supertrend, supertrend_bullish = None, None
     try:
         hl2 = (high + low) / 2
-        # --- TIGHTENED SUPERTREND FOR 1-WEEK SWING (7, 2) ---
         atr_st = tr.rolling(7).mean()
         upper = hl2 + 2 * atr_st  
         lower = hl2 - 2 * atr_st
@@ -622,6 +611,8 @@ def _compute_indicators_raw(symbol, period="1y", prefetched_df=None):
         "supertrend": supertrend, "supertrend_bullish": supertrend_bullish, "vwap": vwap,
         "patterns": chart_patterns,
         "candlesticks": candlesticks,
+        "avg_turnover": avg_turnover,
+        "atr_pct": (atr / cmp) if cmp > 0 else 0
     }
 
 def compute_indicators(symbol, period="1y", prefetched_df=None):
@@ -1115,17 +1106,28 @@ def fetch_portfolio_news(open_trades_df):
     
     for sym in unique_symbols:
         try:
-            # Fetch using the base symbol mapped to NSE
-            t = yf.Ticker(f"{sym}.NS")
+            # 1. Strip any existing suffixes to prevent SNOWMAN.NS.NS
+            clean_sym = str(sym).upper().strip()
+            for sfx in [".NS", ".BO", ".NSE", ".BSE"]:
+                if clean_sym.endswith(sfx):
+                    clean_sym = clean_sym[:-len(sfx)]
+            
+            # 2. Fetch using the safe base symbol
+            t = yf.Ticker(f"{clean_sym}.NS")
             news = t.news
+            
             if news and len(news) > 0:
                 top_story = news[0]
                 title = top_story.get("title", "")
                 link = top_story.get("link", "")
                 
-                # Only add if it successfully retrieves a headline
+                # 3. Only add if it successfully retrieves a headline
                 if title:
-                    news_alerts.append(f"📰 <b>{sym}</b>: <a href='{link}'>{title}</a>")
+                    # Format safely as HTML if link exists
+                    if link:
+                        news_alerts.append(f"📰 <b>{clean_sym}</b>: <a href='{link}' style='color:var(--accent); text-decoration:none;'>{title}</a>")
+                    else:
+                        news_alerts.append(f"📰 <b>{clean_sym}</b>: {title}")
         except Exception:
             continue
             
