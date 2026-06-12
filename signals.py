@@ -57,14 +57,22 @@ SECTOR_INDICES = {
     "Healthcare": "^CNXPHARMA", "Automobile and Auto Components": "^CNXAUTO", 
     "Oil Gas & Consumable Fuels": "^CNXENERGY", "Metals & Mining": "^CNXMETAL", 
     "Fast Moving Consumer Goods": "^CNXFMCG", "Construction": "^CNXINFRA", 
-    "Realty": "^CNXREALTY"
+    "Realty": "^CNXREALTY", "Media": "^CNXMEDIA",
+    "Consumer Durables": "^CNXCONSUM",
+    "Consumer Services": "^CNXSERVICE",
+    "PSU Bank": "^CNXPSUBANK",
+    "Private Bank": "^CNXPVTBANK",
+    "Bank": "^NSEBANK"
 }
 
 TRACKED_INDICES = {
-    "Sensex": "^BSESN", # Added Sensex
-    "Nifty 50": "^NSEI", "Bank Nifty": "^NSEBANK",
-    "Nifty IT": "^CNXIT", "Nifty Fin": "^CNXFIN",
-    "India VIX": "^INDIAVIX",
+    "Sensex": "^BSESN", 
+    "Nifty 50": "^NSEI", 
+    "Nifty Midcap": "^NSEMDCP50",  # Tracks the broader mid-tier momentum
+    "Nifty Smallcap": "^CNXSC",   # Tracks aggressive high-beta retail momentum
+    "Bank Nifty": "^NSEBANK",
+    "Nifty IT": "^CNXIT", 
+    "India VIX": "^INDIAVIX"      # Core volatility tracker
 }
 
 # ─── Robust Data Fetcher (Concurrent) ─────────────────────────────────────────
