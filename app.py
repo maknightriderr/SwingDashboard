@@ -13,7 +13,6 @@ import plotly.graph_objects as go
 from datetime import datetime
 import time
 import hashlib
-
 from signals import (
     generate_signals,
     sector_rotation,
