@@ -172,84 +172,214 @@ def detect_macd_divergence(close, macd_line, window=40):
             bearish = True
     return {"bullish_div": bullish, "bearish_div": bearish}
 
-# ─── Chart Pattern Detection ──────────────────────────────────────────────────
+# ─── UPGRADED CHART PATTERN DETECTION ────────────────────────────────────────
+# Fixes: double bottom tolerance, H&S neckline break, adds Cup & Handle
+
 def detect_price_patterns(high, low, close, vol, vol_avg):
     patterns = []
-    if len(close) < 30: return patterns
-    cmp = float(close.iloc[-1])
+    if len(close) < 30:
+        return patterns
 
-    recent_highs = high.iloc[-16:-1]
-    recent_lows = low.iloc[-16:-1]
-    range_pct = (recent_highs.max() - recent_lows.min()) / recent_lows.min()
-    if range_pct < 0.08:
-        if cmp > recent_highs.max() and float(vol.iloc[-1]) > vol_avg * 2:
-            patterns.append("🚀 Vol Breakout")
-
-    pole = close.iloc[-25:-8]
-    flag = close.iloc[-8:-1]
-    pole_gain = (pole.max() - pole.min()) / pole.min()
-    flag_drop = (flag.max() - flag.min()) / flag.max()
-    if pole_gain > 0.12 and flag_drop < 0.07 and flag.iloc[-1] < pole.max():
-        if cmp > flag.max() and float(vol.iloc[-1]) > vol_avg * 1.5:
-            patterns.append("🚩 Bull Flag Breakout")
-
+    cmp    = float(close.iloc[-1])
     c_vals = close.values
-    troughs, _ = find_peaks(-c_vals, distance=10)
-    peaks, _ = find_peaks(c_vals, distance=10)
+    h_vals = high.values
+    l_vals = low.values
 
+    troughs, _ = find_peaks(-c_vals, distance=8, prominence=c_vals.std() * 0.3)
+    peaks,   _ = find_peaks( c_vals, distance=8, prominence=c_vals.std() * 0.3)
+
+    # ── Volume Breakout from consolidation ───────────────────────────────────
+    if len(close) >= 20:
+        recent_h = high.iloc[-20:-1].max()
+        recent_l = low.iloc[-20:-1].min()
+        rng_pct  = (recent_h - recent_l) / recent_l
+        if rng_pct < 0.10:
+            if cmp > recent_h and float(vol.iloc[-1]) > vol_avg * 1.8:
+                patterns.append("🚀 Vol Breakout")
+
+    # ── Bull Flag ─────────────────────────────────────────────────────────────
+    if len(close) >= 30:
+        pole   = close.iloc[-30:-10]
+        flag   = close.iloc[-10:-1]
+        p_gain = (pole.max() - pole.min()) / (pole.min() + 1e-8)
+        f_drop = (flag.max() - flag.min()) / (flag.max() + 1e-8)
+        if p_gain > 0.08 and f_drop < 0.06 and flag.iloc[-1] < pole.max():
+            if cmp > flag.max() and float(vol.iloc[-1]) > vol_avg * 1.4:
+                patterns.append("🚩 Bull Flag Breakout")
+
+    # ── Double Bottom — relaxed to 8% tolerance + volume expansion ───────────
     if len(troughs) >= 2:
         t1, t2 = troughs[-2], troughs[-1]
         p1, p2 = c_vals[t1], c_vals[t2]
-        if abs(p1 - p2) / p1 < 0.03 and p2 * 1.01 < cmp < p2 * 1.08:
+        depth_ok    = abs(p1 - p2) / (p1 + 1e-8) < 0.08   # was 0.03 — now 8%
+        price_ok    = p2 * 1.00 < cmp < p2 * 1.12           # breaking up from 2nd trough
+        vol_confirm = float(vol.iloc[-1]) > vol_avg * 1.2   # volume expansion
+        if depth_ok and price_ok and vol_confirm:
             patterns.append("📉 Double Bottom")
 
+    # ── Double Top — same relaxation ─────────────────────────────────────────
     if len(peaks) >= 2:
         p1_idx, p2_idx = peaks[-2], peaks[-1]
-        p1, p2 = c_vals[p1_idx], c_vals[p2_idx]
-        if abs(p1 - p2) / p1 < 0.03 and p2 * 0.92 < cmp < p2 * 0.99:
+        v1, v2 = c_vals[p1_idx], c_vals[p2_idx]
+        if abs(v1 - v2) / (v1 + 1e-8) < 0.08 and v2 * 0.88 < cmp < v2 * 0.99:
             patterns.append("📈 Double Top")
 
-    if len(peaks) >= 3:
+    # ── Head & Shoulders with neckline break confirmation ────────────────────
+    if len(peaks) >= 3 and len(troughs) >= 2:
         p1, p2, p3 = c_vals[peaks[-3]], c_vals[peaks[-2]], c_vals[peaks[-1]]
-        if p2 > p1 and p2 > p3 and abs(p1 - p3) / p1 < 0.05:
-            if cmp < p3 * 0.98:
+        head_valid = p2 > p1 and p2 > p3 and abs(p1 - p3) / (p1 + 1e-8) < 0.06
+        if head_valid:
+            # Neckline = average of the two troughs between shoulders
+            neckline = (c_vals[troughs[-2]] + c_vals[troughs[-1]]) / 2
+            # Signal only fires when price breaks below neckline on volume
+            if cmp < neckline * 0.99 and float(vol.iloc[-1]) > vol_avg * 1.3:
                 patterns.append("🏔️ Head & Shoulders (Top)")
 
-    if len(troughs) >= 3:
+    # ── Inverse H&S ───────────────────────────────────────────────────────────
+    if len(troughs) >= 3 and len(peaks) >= 2:
         t1, t2, t3 = c_vals[troughs[-3]], c_vals[troughs[-2]], c_vals[troughs[-1]]
-        if t2 < t1 and t2 < t3 and abs(t1 - t3) / t1 < 0.05:
-            if cmp > t3 * 1.02:
+        head_valid = t2 < t1 and t2 < t3 and abs(t1 - t3) / (t1 + 1e-8) < 0.06
+        if head_valid:
+            neckline = (c_vals[peaks[-2]] + c_vals[peaks[-1]]) / 2
+            if cmp > neckline * 1.01 and float(vol.iloc[-1]) > vol_avg * 1.3:
                 patterns.append("🛤️ Inverse H&S (Bottom)")
+
+    # ── Cup & Handle ─────────────────────────────────────────────────────────
+    # Needs at least 60 bars: cup forms over 30-50 bars, handle over 5-15
+    if len(close) >= 60:
+        cup_window = close.iloc[-60:-10]
+        handle     = close.iloc[-10:]
+        cup_left   = float(cup_window.iloc[0])
+        cup_right  = float(cup_window.iloc[-1])
+        cup_base   = float(cup_window.min())
+
+        cup_depth  = (cup_left - cup_base) / (cup_left + 1e-8)
+        rim_match  = abs(cup_left - cup_right) / (cup_left + 1e-8)
+        handle_ret = (float(handle.max()) - float(handle.min())) / (float(handle.max()) + 1e-8)
+        breakout   = cmp > float(handle.max()) * 0.995
+
+        if (0.10 < cup_depth < 0.40 and     # cup is 10-40% deep
+                rim_match < 0.06 and         # both rims near equal height
+                handle_ret < 0.08 and        # handle retracement < 8%
+                breakout and                 # breaking above handle high
+                float(vol.iloc[-1]) > vol_avg * 1.5):
+            patterns.append("☕ Cup & Handle Breakout")
 
     return patterns
 
 # ─── Candlestick Confirmation ─────────────────────────────────────────────────
 def detect_candlesticks(open_p, high, low, close):
     candles = []
-    if len(close) < 5: return candles
-    
-    o, h, l, c = float(open_p.iloc[-1]), float(high.iloc[-1]), float(low.iloc[-1]), float(close.iloc[-1])
-    po, ph, pl, pc = float(open_p.iloc[-2]), float(high.iloc[-2]), float(low.iloc[-2]), float(close.iloc[-2])
-    
-    body = abs(c - o)
-    total_range = h - l
-    if total_range == 0: return candles
+    if len(close) < 5:
+        return candles
 
-    lower_wick = o - l if c > o else c - l
-    upper_wick = h - c if c > o else h - o
-    
-    if lower_wick > (body * 2) and upper_wick < (body * 0.5) and body > (total_range * 0.1):
+    def _candle(i):
+        o, h, l, c = float(open_p.iloc[i]), float(high.iloc[i]), float(low.iloc[i]), float(close.iloc[i])
+        body      = abs(c - o)
+        rng       = h - l
+        if rng < 1e-8:
+            return None
+        upper_wick = h - max(o, c)
+        lower_wick = min(o, c) - l
+        bullish    = c > o
+        return dict(o=o, h=h, l=l, c=c, body=body, rng=rng,
+                    upper_wick=upper_wick, lower_wick=lower_wick, bullish=bullish)
+
+    c0 = _candle(-1)   # today
+    c1 = _candle(-2)   # yesterday
+    c2 = _candle(-3) if len(close) >= 3 else None  # day before
+
+    if not c0 or not c1:
+        return candles
+
+    # ── Single-candle patterns ────────────────────────────────────────────────
+
+    # Hammer / Inverted Hammer — body in upper third, long lower wick
+    if (c0["lower_wick"] >= c0["rng"] * 0.55 and       # lower wick ≥ 55% of range
+            c0["upper_wick"] <= c0["rng"] * 0.15 and   # small upper wick
+            c0["body"]       >= c0["rng"] * 0.05):      # real body (not doji)
         candles.append("🔨 Bullish Hammer")
 
-    if pc < po and c > o:
-        if o <= pc and c >= po and body > abs(pc - po):
-            candles.append("🟩 Bullish Engulfing")
+    # Shooting Star — body in lower third, long upper wick (bearish)
+    if (c0["upper_wick"] >= c0["rng"] * 0.55 and
+            c0["lower_wick"] <= c0["rng"] * 0.15 and
+            c0["body"]       >= c0["rng"] * 0.05 and
+            not c0["bullish"]):
+        candles.append("💫 Shooting Star")
 
-    if pc > po and c < o:
-        if o >= pc and c <= po and body > abs(pc - po):
-            candles.append("🟥 Bearish Engulfing")
+    # Doji — almost no body, uncertainty
+    if c0["body"] <= c0["rng"] * 0.07:
+        candles.append("〰️ Doji (Indecision)")
+
+    # ── Two-candle patterns ───────────────────────────────────────────────────
+
+    # Bullish Engulfing — strict: prev bearish, curr bullish, curr body wraps prev body
+    if (not c1["bullish"] and c0["bullish"] and         # color flip required
+            c0["o"] <= c1["c"] and                      # open below prev close
+            c0["c"] >= c1["o"] and                      # close above prev open
+            c0["body"] > c1["body"] * 1.0):             # body must be larger
+        candles.append("🟩 Bullish Engulfing")
+
+    # Bearish Engulfing — strict: prev bullish, curr bearish
+    if (c1["bullish"] and not c0["bullish"] and
+            c0["o"] >= c1["c"] and
+            c0["c"] <= c1["o"] and
+            c0["body"] > c1["body"] * 1.0):
+        candles.append("🟥 Bearish Engulfing")
+
+    # Bullish Harami — small bullish inside large bearish
+    if (not c1["bullish"] and c0["bullish"] and
+            c0["o"] > c1["c"] and c0["c"] < c1["o"] and
+            c0["body"] < c1["body"] * 0.5):
+        candles.append("🟢 Bullish Harami")
+
+    # Piercing Line — bullish reversal after gap-down open, closes above midpoint
+    if (not c1["bullish"] and c0["bullish"] and
+            c0["o"] < c1["l"] and                       # gaps below prev low
+            c0["c"] > (c1["o"] + c1["c"]) / 2 and      # closes above midpoint
+            c0["c"] < c1["o"]):                         # doesn't fully engulf
+        candles.append("🔆 Piercing Line")
+
+    # ── Three-candle patterns ─────────────────────────────────────────────────
+
+    if c2:
+        # Morning Star — strong bullish reversal
+        #   Day1: large bearish, Day2: small body gap down, Day3: large bullish > 50% of Day1
+        if (not c2["bullish"] and
+                c2["body"] >= c2["rng"] * 0.5 and
+                c1["body"] <= c1["rng"] * 0.3 and       # small indecision
+                c0["bullish"] and
+                c0["body"] >= c0["rng"] * 0.5 and
+                c0["c"] > (c2["o"] + c2["c"]) / 2):     # recovers into Day1 body
+            candles.append("🌅 Morning Star")
+
+        # Evening Star — strong bearish reversal
+        if (c2["bullish"] and
+                c2["body"] >= c2["rng"] * 0.5 and
+                c1["body"] <= c1["rng"] * 0.3 and
+                not c0["bullish"] and
+                c0["body"] >= c0["rng"] * 0.5 and
+                c0["c"] < (c2["o"] + c2["c"]) / 2):
+            candles.append("🌆 Evening Star")
+
+        # Three White Soldiers — sustained buying pressure
+        if (c2["bullish"] and c1["bullish"] and c0["bullish"] and
+                c1["o"] > c2["o"] and c0["o"] > c1["o"] and   # each opens higher
+                c1["c"] > c2["c"] and c0["c"] > c1["c"] and   # each closes higher
+                c0["body"] >= c0["rng"] * 0.5 and
+                c1["body"] >= c1["rng"] * 0.5):
+            candles.append("🪖 Three White Soldiers")
+
+        # Three Black Crows — sustained selling
+        if (not c2["bullish"] and not c1["bullish"] and not c0["bullish"] and
+                c1["o"] < c2["o"] and c0["o"] < c1["o"] and
+                c1["c"] < c2["c"] and c0["c"] < c1["c"] and
+                c0["body"] >= c0["rng"] * 0.5 and
+                c1["body"] >= c1["rng"] * 0.5):
+            candles.append("🦅 Three Black Crows")
 
     return candles
+
 
 # ─── Market Regime Detection ──────────────────────────────────────────────────
 _market_regime_cache = {"ts": 0, "data": None}
@@ -645,50 +775,119 @@ def generate_signals(trades_df):
                            "50%": ind.get("fib_500"), "61.8%": ind.get("fib_618")},
         })
     return signals
-
-# ─── Sector Rotation ──────────────────────────────────────────────────────────
-def sector_rotation(trades_df=None): 
+    
+# ─── UPGRADED SECTOR ROTATION ────────────────────────────────────────────────
+# Adds: relative strength vs Nifty, 4-quadrant RRG, trend duration score
+def sector_rotation(trades_df=None):
     rows = []
-    idx_symbols = list(SECTOR_INDICES.values())
-    bulk_data = _bulk_fetch_history(idx_symbols, period="3mo")
+    idx_symbols = list(SECTOR_INDICES.values()) + ["^NSEI"]
+    bulk_data   = _bulk_fetch_history(idx_symbols, period="6mo")
+
+    # Benchmark: Nifty 50 returns
+    nifty_df    = bulk_data.get("^NSEI")
+    nifty_ret1m = 0.0
+    nifty_ret3m = 0.0
+    if nifty_df is not None and len(nifty_df) >= 20:
+        nifty_ret1m = (float(nifty_df["Close"].iloc[-1]) / float(nifty_df["Close"].iloc[-21]) - 1) * 100
+    if nifty_df is not None and len(nifty_df) >= 60:
+        nifty_ret3m = (float(nifty_df["Close"].iloc[-1]) / float(nifty_df["Close"].iloc[-61]) - 1) * 100
 
     for sector, idx_sym in SECTOR_INDICES.items():
         try:
             df_idx = bulk_data.get(idx_sym)
-            if df_idx is not None and len(df_idx) >= 20:
-                close = df_idx["Close"]
-                cmp = float(close.iloc[-1])
-                rsi = compute_rsi(close)
-                ema20 = float(close.ewm(span=20).mean().iloc[-1])
-                pct_chg = round((cmp / float(close.iloc[0]) - 1) * 100, 2)
-                macd_bullish = cmp > ema20
-                
-                rows.append({
-                    "sector": sector, 
-                    "stocks": ", ".join(SECTOR_STOCKS.get(sector, [])[:4]) + "...",
-                    "rsi": rsi, "pct_chg": pct_chg, "cmp": cmp, 
-                    "macd_bullish": macd_bullish, 
-                    "count": len(SECTOR_STOCKS.get(sector, []))
-                })
-        except Exception:
-            pass
-    
-    df = pd.DataFrame(rows)
-    if df.empty: return df
+            if df_idx is None or len(df_idx) < 21:
+                continue
 
-    df["rsi_score"] = df["rsi"].fillna(50) / 100
-    max_pct = df["pct_chg"].abs().max() or 1
-    df["pct_score"] = df["pct_chg"].fillna(0) / max_pct
-    
-    df["momentum_score"] = round((df["rsi_score"] * 0.4) + (df["pct_score"] * 0.6), 3)
+            close   = df_idx["Close"]
+            cmp_now = float(close.iloc[-1])
+            rsi     = compute_rsi(close)
+            ema20   = float(close.ewm(span=20).mean().iloc[-1])
+            ema50   = float(close.ewm(span=50).mean().iloc[-1]) if len(close) >= 50 else ema20
+
+            # Returns at multiple timeframes
+            ret_1w  = (cmp_now / float(close.iloc[-6])  - 1) * 100 if len(close) >= 6  else 0.0
+            ret_1m  = (cmp_now / float(close.iloc[-21]) - 1) * 100 if len(close) >= 21 else 0.0
+            ret_3m  = (cmp_now / float(close.iloc[-61]) - 1) * 100 if len(close) >= 61 else 0.0
+
+            # ── Relative Strength vs Nifty (key rotation signal) ─────────────
+            rs_1m   = round(ret_1m - nifty_ret1m, 2)
+            rs_3m   = round(ret_3m - nifty_ret3m, 2)
+
+            # ── RRG Quadrant (Relative Rotation Graph) ────────────────────────
+            # RS-Ratio  > 100 = outperforming; RS-Momentum > 100 = RS accelerating
+            rs_ratio    = 100 + rs_3m / 10        # simplified RRG x-axis
+            rs_momentum = 100 + rs_1m / 5         # simplified RRG y-axis
+
+            if   rs_ratio > 100 and rs_momentum > 100:
+                rrg_quadrant = "🔥 Leading"        # outperforming and accelerating
+            elif rs_ratio > 100 and rs_momentum <= 100:
+                rrg_quadrant = "📉 Weakening"      # outperforming but losing steam
+            elif rs_ratio <= 100 and rs_momentum > 100:
+                rrg_quadrant = "🔄 Improving"      # underperforming but turning up
+            else:
+                rrg_quadrant = "❄️ Lagging"        # underperforming and decelerating
+
+            # ── Trend duration (how long above EMA50) ────────────────────────
+            above_ema50   = (close > close.ewm(span=50).mean()).astype(int)
+            streak        = 0
+            for val in reversed(above_ema50.values):
+                if val == 1:
+                    streak += 1
+                else:
+                    break
+            trend_duration_days = streak
+
+            # ── Composite momentum score ──────────────────────────────────────
+            rsi_score      = (rsi / 100) if rsi else 0.5
+            rs_score       = max(-1.0, min(1.0, rs_1m / 10))  # clip to [-1, 1]
+            trend_score    = min(1.0, trend_duration_days / 60)
+            macd_score     = 1.0 if cmp_now > ema20 > ema50 else (0.5 if cmp_now > ema20 else 0.0)
+
+            momentum_score = round(
+                rsi_score  * 0.20 +
+                rs_score   * 0.40 +   # relative strength is the dominant factor
+                trend_score * 0.20 +
+                macd_score  * 0.20,
+                3
+            )
+
+            rows.append({
+                "sector":            sector,
+                "stocks":            ", ".join(SECTOR_STOCKS.get(sector, [])[:4]) + "...",
+                "cmp":               round(cmp_now, 2),
+                "rsi":               rsi,
+                "ret_1w":            round(ret_1w, 2),
+                "ret_1m":            round(ret_1m, 2),
+                "ret_3m":            round(ret_3m, 2),
+                "rs_vs_nifty_1m":    rs_1m,
+                "rs_vs_nifty_3m":    rs_3m,
+                "rrg_quadrant":      rrg_quadrant,
+                "trend_days":        trend_duration_days,
+                "momentum_score":    momentum_score,
+                "macd_bullish":      cmp_now > ema20,
+                "count":             len(SECTOR_STOCKS.get(sector, [])),
+            })
+
+        except Exception:
+            continue
+
+    df = pd.DataFrame(rows)
+    if df.empty:
+        return df
+
     df = df.sort_values("momentum_score", ascending=False)
-    df["rank"] = range(1, len(df)+1)
-    df["avg_rsi"] = df["rsi"]
-    df["avg_pct"] = df["pct_chg"]
-    df["bullish_count"] = np.where(df["macd_bullish"], 1, 0)
-    df["index_chg"] = df["pct_chg"]
-    
-    return df[["rank", "sector", "stocks", "count", "avg_rsi", "avg_pct", "momentum_score", "bullish_count", "index_chg"]]
+    df["rank"]          = range(1, len(df) + 1)
+    df["avg_rsi"]       = df["rsi"]
+    df["avg_pct"]       = df["ret_1m"]
+    df["bullish_count"] = df["macd_bullish"].astype(int)
+    df["index_chg"]     = df["ret_1m"]
+
+    return df[[
+        "rank", "sector", "stocks", "count",
+        "avg_rsi", "avg_pct", "rs_vs_nifty_1m", "rs_vs_nifty_3m",
+        "rrg_quadrant", "trend_days", "momentum_score",
+        "bullish_count", "index_chg"
+    ]]
 
 # ─── Sector Outlook ───────────────────────────────────────────────────────────
 def predict_sector_outlook(sector_df):
