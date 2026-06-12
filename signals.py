@@ -515,7 +515,8 @@ def _compute_indicators_raw(symbol, period="1y", prefetched_df=None):
 
     # ──> THE LIQUIDITY GATE (Set to ₹1 Crore to prevent empty results) ────────
     avg_turnover = vol_avg * float(close.iloc[-1])
-    if avg_turnover < 10000000:  
+    LIQUIDITY_FLOOR = 1_000_000   # ₹10L — was ₹1Cr, too aggressive for small caps
+    if avg_turnover < LIQUIDITY_FLOOR:  
         return None
     # ──────────────────────────────────────────────────────────────────────────
 
