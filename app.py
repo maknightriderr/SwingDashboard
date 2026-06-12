@@ -569,8 +569,28 @@ st.markdown(f'<div class="dash-title"><div class="dash-title-text">📈 Quantita
 
 market = get_market_regime()
 rc_bg, rc_clr, rc_border = {"Strong Bull": ("rgba(16,185,129,0.15)", "#10b981", "border: 1px solid rgba(16,185,129,0.4)"), "Bull": ("rgba(16,185,129,0.1)", "#10b981", "border: 1px solid rgba(16,185,129,0.2)"), "Bull Pullback": ("rgba(245,158,11,0.15)", "#f59e0b", "border: 1px solid rgba(245,158,11,0.4)"), "Strong Bear": ("rgba(239,68,68,0.15)", "#ef4444", "border: 1px solid rgba(239,68,68,0.4)"), "Bear": ("rgba(239,68,68,0.1)", "#ef4444", "border: 1px solid rgba(239,68,68,0.2)"), "Bear Rally": ("rgba(245,158,11,0.15)", "#f59e0b", "border: 1px solid rgba(245,158,11,0.4)")}.get(market["regime"], ("rgba(148,163,184,0.1)", "#94a3b8", "border: 1px solid rgba(148,163,184,0.3)"))
-indices_html = "".join([f'<span style="color:var(--text);font-size:0.8rem;padding:0 0.8rem;border-right:1px solid rgba(255,255,255,0.1)">{name} <b>{f"₹{d['price']:,.0f}" if d.get("price") else "—"}</b> <span style="color:{"var(--red)" if (name=="India VIX" and d.get("chg_pct",0)>0) else "var(--green)" if (name=="India VIX" and d.get("chg_pct",0)<0) else "var(--green)" if d.get("chg_pct",0)>0 else "var(--red)"};font-weight:700">{d.get("chg_pct",0):+.2f}%</span></span>' for name, d in market.get("indices", {}).items()])
-st.markdown(f'<div class="regime-banner" style="background:{rc_bg};{rc_border};backdrop-filter:blur(10px);"><span style="color:{rc_clr};font-weight:800;font-size:0.9rem;white-space:nowrap;letter-spacing:0.05em">🌐 {market["regime"].upper()} (CONF: {market.get("confidence", "—")}%)</span>{indices_html}<span style="color:var(--muted);font-size:0.75rem;white-space:nowrap;padding-left:0.5rem;font-weight:600">SUP: {f"₹{market.get("support"):,.0f}" if market.get("support") else "—"} | RES: {f"₹{market.get("resistance"):,.0f}" if market.get("resistance") else "—"} | RSI {market.get("nifty_rsi", "—")} | RISK: {market.get("risk_level","—")}</span></div>', unsafe_allow_html=True)
+# Safe HTML generation to prevent Python f-string quote collisions
+indices_html_list = []
+for name, d in market.get("indices", {}).items():
+    price_str = f"₹{d['price']:,.0f}" if d.get("price") else "—"
+    
+    if name == "India VIX":
+        color = "var(--red)" if d.get("chg_pct", 0) > 0 else "var(--green)"
+    else:
+        color = "var(--green)" if d.get("chg_pct", 0) > 0 else "var(--red)"
+        
+    chg_str = f"{d.get('chg_pct', 0):+.2f}%"
+    span = f'<span style="color:var(--text);font-size:0.8rem;padding:0 0.8rem;border-right:1px solid rgba(255,255,255,0.1)">{name} <b>{price_str}</b> <span style="color:{color};font-weight:700">{chg_str}</span></span>'
+    indices_html_list.append(span)
+
+indices_html = "".join(indices_html_list)
+
+sup_val = market.get("support")
+res_val = market.get("resistance")
+sup_str = f"₹{sup_val:,.0f}" if sup_val else "—"
+res_str = f"₹{res_val:,.0f}" if res_val else "—"
+
+st.markdown(f'<div class="regime-banner" style="background:{rc_bg};{rc_border};backdrop-filter:blur(10px);"><span style="color:{rc_clr};font-weight:800;font-size:0.9rem;white-space:nowrap;letter-spacing:0.05em">🌐 {market["regime"].upper()} (CONF: {market.get("confidence", "—")}%)</span>{indices_html}<span style="color:var(--muted);font-size:0.75rem;white-space:nowrap;padding-left:0.5rem;font-weight:600">SUP: {sup_str} | RES: {res_str} | RSI {market.get("nifty_rsi", "—")} | RISK: {market.get("risk_level","—")}</span></div>', unsafe_allow_html=True)
 
 pnl_c = "green" if t_pnl >= 0 else "red"
 r_c = "green" if t_real >= 0 else "red"
