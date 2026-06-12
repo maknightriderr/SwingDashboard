@@ -438,8 +438,34 @@ def render_signals(signals, theme_t):
 
 def render_sector(sdf, t):
     if sdf is None or sdf.empty: return
-    rows = "".join([f"<tr><td style='font-weight:700'>{'🥇' if r['rank']==1 else '🥈' if r['rank']==2 else '🥉' if r['rank']==3 else '📊'} #{int(r['rank'])}</td><td><b style='font-size:0.9rem'>{r['sector']}</b></td><td style='color:var(--muted);font-size:.75rem'>{r['stocks']}</td><td style='text-align:center;font-weight:600'>{r['avg_rsi']:.0f}</td><td style='text-align:right'><span class='{'pos' if r['avg_pct']>0 else 'neg'}'>{r['avg_pct']:+.1f}%</span></td><td><div style='background:{t['input']};height:6px;width:100%;border-radius:4px'><div style='background:{t['accent']};width:{min(r['momentum_score']*100,100):.0f}%;height:6px;border-radius:4px'></div></div><span style='font-size:.75rem;font-weight:600'>{r['momentum_score']:.2f}</span></td></tr>" for _, r in sdf.iterrows()])
-    st.markdown(f'<div class="tbl-wrap"><table class="sector-tbl"><thead><tr><th>Rank</th><th>Sector</th><th>Top Movers</th><th style="text-align:center">Avg RSI</th><th style="text-align:right">Chg</th><th>Momentum</th></tr></thead><tbody>{rows}</tbody></table></div>', unsafe_allow_html=True)
+    rows = "".join([
+        f"<tr>"
+        f"<td style='font-weight:700'>{'🥇' if r['rank']==1 else '🥈' if r['rank']==2 else '🥉' if r['rank']==3 else '📊'} #{int(r['rank'])}</td>"
+        f"<td><b style='font-size:0.9rem'>{r['sector']}</b></td>"
+        f"<td style='color:var(--muted);font-size:.75rem'>{r['stocks']}</td>"
+        f"<td style='text-align:center;font-weight:600'>{r['avg_rsi']:.0f}</td>"
+        f"<td style='text-align:right'><span class='{'pos' if r['avg_pct']>0 else 'neg'}'>{r['avg_pct']:+.1f}%</span></td>"
+        f"<td style='text-align:right;font-size:.8rem'>"
+        f"<span style='color:{'#10b981' if r.get('rs_vs_nifty_1m',0)>0 else '#ef4444'};font-weight:700'>{r.get('rs_vs_nifty_1m', 0):+.1f}%</span></td>"
+        f"<td style='font-size:.8rem;font-weight:600'>{r.get('rrg_quadrant','—')}</td>"
+        f"<td><div style='background:{t['input']};height:6px;width:100%;border-radius:4px'>"
+        f"<div style='background:{t['accent']};width:{min(r['momentum_score']*100,100):.0f}%;height:6px;border-radius:4px'></div></div>"
+        f"<span style='font-size:.75rem;font-weight:600'>{r['momentum_score']:.2f}</span></td>"
+        f"</tr>"
+        for _, r in sdf.iterrows()
+    ])
+    st.markdown(
+        f'<div class="tbl-wrap"><table class="sector-tbl">'
+        f'<thead><tr>'
+        f'<th>Rank</th><th>Sector</th><th>Top Movers</th>'
+        f'<th style="text-align:center">Avg RSI</th>'
+        f'<th style="text-align:right">Chg</th>'
+        f'<th style="text-align:right">vs Nifty</th>'  # new column
+        f'<th>RRG</th>'                                 # new column
+        f'<th>Momentum</th>'
+        f'</tr></thead><tbody>{rows}</tbody></table></div>',
+        unsafe_allow_html=True
+    )
 
 def render_outlook(odf, t):
     if odf is None or odf.empty: return
@@ -680,7 +706,7 @@ with tab4:
         render_sector(st.session_state.sector_cache, theme_t)
         if not st.session_state.sector_cache.empty:
             top = st.session_state.sector_cache.iloc[0]
-            st.markdown(f'<div style="margin-top:1rem;background:rgba(16,185,129,0.08);border:1px solid rgba(16,185,129,0.3);border-radius:8px;padding:0.8rem 1rem;font-size:0.85rem">🥇 <b style="color:var(--text)">Leading Sector: {top["sector"]}</b> — Momentum {top["momentum_score"]:.2f} | Avg RSI {top["avg_rsi"]:.0f} | Flow {top["avg_pct"]:+.1f}%<br><span style="color:var(--muted);font-size:0.75rem;margin-top:5px;display:block">Constituents tracking positive: {top["stocks"]}</span></div>', unsafe_allow_html=True)
+            st.markdown(f'<div style="margin-top:1rem;background:rgba(16,185,129,0.08);border:1px solid rgba(16,185,129,0.3);border-radius:8px;padding:0.8rem 1rem;font-size:0.85rem">🥇 <b style="color:var(--text)">Leading Sector: {top["sector"]}</b> — Momentum {top["momentum_score"]:.2f} | Avg RSI {top["avg_rsi"]:.0f} | Flow {top["avg_pct"]:+.1f}% | RS vs Nifty <b style="color:{"#10b981" if top.get("rs_vs_nifty_1m",0)>0 else "#ef4444"}">{top.get("rs_vs_nifty_1m",0):+.1f}%</b> | {top.get("rrg_quadrant","—")}<br><span style="color:var(--muted);font-size:0.75rem;margin-top:5px;display:block">Constituents tracking positive: {top["stocks"]}</span></div>', unsafe_allow_html=True)
     if st.session_state.outlook_cache is not None and not st.session_state.outlook_cache.empty:
         st.markdown('<div class="sec" style="margin-top:2rem">📈 Institutional Outlook Prediction</div>', unsafe_allow_html=True)
         render_outlook(st.session_state.outlook_cache, theme_t)
