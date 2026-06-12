@@ -194,7 +194,8 @@ def detect_price_patterns(high, low, close, vol, vol_avg):
         recent_l = low.iloc[-20:-1].min()
         rng_pct  = (recent_h - recent_l) / recent_l
         if rng_pct < 0.10:
-            if cmp > recent_h and float(vol.iloc[-1]) > vol_avg * 1.8:
+            # INCREASED to 2.5x volume for institutional confirmation
+            if cmp > recent_h and float(vol.iloc[-1]) > vol_avg * 2.5:
                 patterns.append("🚀 Vol Breakout")
 
     # ── Bull Flag ─────────────────────────────────────────────────────────────
@@ -204,7 +205,8 @@ def detect_price_patterns(high, low, close, vol, vol_avg):
         p_gain = (pole.max() - pole.min()) / (pole.min() + 1e-8)
         f_drop = (flag.max() - flag.min()) / (flag.max() + 1e-8)
         if p_gain > 0.08 and f_drop < 0.06 and flag.iloc[-1] < pole.max():
-            if cmp > flag.max() and float(vol.iloc[-1]) > vol_avg * 1.4:
+            # INCREASED to 2.0x volume for Flag Breakouts
+            if cmp > flag.max() and float(vol.iloc[-1]) > vol_avg * 2.0:
                 patterns.append("🚩 Bull Flag Breakout")
 
     # ── Double Bottom — relaxed to 8% tolerance + volume expansion ───────────
@@ -484,9 +486,10 @@ def _compute_indicators_raw(symbol, period="1y", prefetched_df=None):
     rsi_series = compute_rsi_wilder(close, 14)
     rsi = round(float(rsi_series.iloc[-1]), 1) if not pd.isna(rsi_series.iloc[-1]) else None
 
-    ema20 = float(close.ewm(span=20).mean().iloc[-1])
+    # Swapped to Fast Momentum EMAs for 1-Week Swings
+    ema9 = float(close.ewm(span=9).mean().iloc[-1])
+    ema21 = float(close.ewm(span=21).mean().iloc[-1])
     ema50 = float(close.ewm(span=50).mean().iloc[-1])
-    ema200 = float(close.ewm(span=200).mean().iloc[-1]) if len(close) >= 200 else None
 
     macd_line = close.ewm(span=12).mean() - close.ewm(span=26).mean()
     signal_line = macd_line.ewm(span=9).mean()
@@ -509,28 +512,29 @@ def _compute_indicators_raw(symbol, period="1y", prefetched_df=None):
     tr = pd.concat([high-low, (high-close.shift()).abs(), (low-close.shift()).abs()], axis=1).max(axis=1)
     atr = float(tr.rolling(14).mean().iloc[-1]) if len(tr) >= 14 else float(high.iloc[-1] - low.iloc[-1])
 
-    # Volume Profiles & Institutional Liquidity Gate
+    # ──> INSTITUTIONAL GATES <──
     vol_avg = float(vol.rolling(20).mean().iloc[-1]) if len(vol) >= 20 else float(vol.mean())
     vol_ratio = float(vol.iloc[-1]) / vol_avg if vol_avg > 0 else 1.0
 
-    # ──> THE LIQUIDITY GATE (Set to ₹1 Crore to prevent empty results) ────────
     avg_turnover = vol_avg * float(close.iloc[-1])
-    LIQUIDITY_FLOOR = 1_000_000   # ₹10L — was ₹1Cr, too aggressive for small caps
-    if avg_turnover < LIQUIDITY_FLOOR:  
+    
+    # 1. LIQUIDITY GATE: Raised to ₹10 Crore Minimum Turnover
+    if avg_turnover < 100_000_000:  
         return None
-    # ──────────────────────────────────────────────────────────────────────────
+        
+    # 2. VOLATILITY GATE: Reject if daily ATR is less than 3.5% of price
+    # (If a stock doesn't move 3.5% a day, it won't hit 20% in a week)
+    if (atr / cmp) < 0.035:
+        return None
 
     support = float(low.rolling(20).min().iloc[-1])
     resistance = float(high.rolling(20).max().iloc[-1])
     high52, low52 = float(high.max()), float(low.min())
 
     trend = "Sideways"
-    if cmp > ema20 > ema50: trend = "Uptrend"
-    elif cmp < ema20 < ema50: trend = "Downtrend"
-    elif cmp > ema20 and ema20 < ema50: trend = "Recovery"
-    elif cmp < ema20 and ema20 > ema50: trend = "Weakening"
-    if ema200 and cmp > ema200 and trend == "Uptrend": trend = "Strong Uptrend"
-    elif ema200 and cmp < ema200 and trend == "Downtrend": trend = "Strong Downtrend"
+    if cmp > ema9 > ema21: trend = "Strong Uptrend"
+    elif cmp < ema9 < ema21: trend = "Strong Downtrend"
+    elif cmp > ema21 and ema9 < ema21: trend = "Recovery"
 
     fib_h, fib_l = float(high.tail(60).max()), float(low.tail(60).min())
     fib_d = fib_h - fib_l
@@ -545,15 +549,16 @@ def _compute_indicators_raw(symbol, period="1y", prefetched_df=None):
     supertrend, supertrend_bullish = None, None
     try:
         hl2 = (high + low) / 2
-        atr_st = tr.rolling(10).mean()
-        upper = hl2 + 3 * atr_st  
-        lower = hl2 - 3 * atr_st
+        # TIGHTENED SUPERTREND FOR 1-WEEK SWING (7, 2)
+        atr_st = tr.rolling(7).mean()
+        upper = hl2 + 2 * atr_st  
+        lower = hl2 - 2 * atr_st
         
         st = pd.Series(index=close.index, dtype=float)
         dir_ = pd.Series(index=close.index, dtype=int)
         
         for i in range(len(close)):
-            if i < 10 or pd.isna(upper.iloc[i]):
+            if i < 7 or pd.isna(upper.iloc[i]):
                 st.iloc[i] = float(close.iloc[i])
                 dir_.iloc[i] = 1
                 continue
@@ -590,8 +595,8 @@ def _compute_indicators_raw(symbol, period="1y", prefetched_df=None):
 
     return {
         "symbol": symbol, "cmp": round(cmp, 2), "rsi": rsi,
-        "ema20": round(ema20, 2), "ema50": round(ema50, 2),
-        "ema200": round(ema200, 2) if ema200 else None,
+        "ema20": round(ema9, 2), "ema50": round(ema21, 2), # Rewired mapping for frontend
+        "ema200": round(ema50, 2), 
         "macd_bullish": macd_bullish, "macd_bearish": macd_bearish,
         "rsi_divergence": rsi_div, "macd_divergence": macd_div,
         "bb_upper": round(bb_upper, 2), "bb_lower": round(bb_lower, 2),
@@ -1014,29 +1019,29 @@ def generate_market_scanner():
         patterns = ind.get("patterns", [])
         candles = ind.get("candlesticks", [])
         
-        # Confluence Scoring Engine for New Entries
+        # Confluence Scoring Engine for 1-Week Explosive Entries
         score = 0
         
-        if trend in ("Uptrend", "Strong Uptrend"): score += 2
-        if ind.get("supertrend_bullish"): score += 1
-        if ind.get("macd_bullish"): score += 1
-        if rsi and 40 <= rsi <= 60: score += 1
+        if trend in ("Uptrend", "Strong Uptrend"): score += 3
+        if ind.get("supertrend_bullish"): score += 2
+        if ind.get("macd_bullish"): score += 2
         
-        if "🚀 Vol Breakout" in patterns: score += 4
-        if "🚩 Bull Flag Breakout" in patterns: score += 3
-        if "📉 Double Bottom" in patterns: score += 3
-        if "🛤️ Inverse H&S (Bottom)" in patterns: score += 3
-        if "🔨 Bullish Hammer" in candles: score += 2
+        # BUY HIGH, SELL HIGHER: Reward breakouts entering overbought
+        if rsi and 60 <= rsi <= 75: score += 3 
+        
+        if "🚀 Vol Breakout" in patterns: score += 5
+        if "🚩 Bull Flag Breakout" in patterns: score += 4
+        if "☕ Cup & Handle Breakout" in patterns: score += 4
         if "🟩 Bullish Engulfing" in candles: score += 2
         
         if "📈 Double Top" in patterns or "🏔️ Head & Shoulders (Top)" in patterns or "🟥 Bearish Engulfing" in candles:
-            score -= 4
+            score -= 5
         if trend in ("Downtrend", "Strong Downtrend"):
-            score -= 2
+            score -= 4
             
         # Signal Generation
-        if score >= 6: signal = "🔥 STRONG BUY"
-        elif score >= 4: signal = "🟢 BUY SETUP"
+        if score >= 8: signal = "🔥 STRONG BUY"
+        elif score >= 5: signal = "🟢 BUY SETUP"
         elif score >= 2: signal = "🟡 ACCUMULATE"
         elif score <= 0: signal = "🔴 AVOID"
         else: signal = "⚪ NEUTRAL"
@@ -1044,11 +1049,13 @@ def generate_market_scanner():
         all_pats = patterns + candles
         pat_str = " | ".join(all_pats) if all_pats else "—"
         
-        # Calculate strict risk metrics for Universe Scan Output
+        # Calculate strict 1-Week risk metrics for Universe Scan Output
         atr = ind["atr"]
         sup, res = ind["support"], ind["resistance"]
-        sl = round(max(sup, cmp - 2*atr), 2)
-        tgt = round(max(res, cmp + 3*atr), 2)
+        
+        # TIGHTENED SL: 1.5 ATR for 1-week holds. TARGET: 15% minimum baseline.
+        sl = round(cmp - 1.5*atr, 2)
+        tgt = round(max(res, cmp * 1.15), 2)
         
         results.append({
             "Generated": datetime.now().strftime("%d %b %H:%M"),
