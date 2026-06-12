@@ -983,7 +983,7 @@ def find_sector_picks(selected_sectors=None, max_per_sector=3):
             spicks.append({"stock": symbol, "sector": sector, "cmp": cmp, "entry": round(cmp,2),
                            "target": tgt, "stop_loss": sl, "risk_reward": rr, "score": score,
                            "rsi": rsi, "trend": ind["trend"], "reason": final_reason,
-                           "atr": ind["atr"], "support": ind["support"], "resistance": ind["resistance"]})
+                           "atr": ind["atr"], "support": ind["support"], "resistance": ind["resistance"], "expected_hold": "5-8 Days" # <--- ADD THIS LINE})
                            
         spicks.sort(key=lambda x: x["score"], reverse=True)
         picks.extend(spicks[:max_per_sector])
@@ -1094,7 +1094,8 @@ def generate_market_scanner():
             "Score": score,
             "RSI": round(float(rsi), 2) if rsi else 0.0, 
             "Trend": trend,
-            "Patterns": pat_str
+            "Patterns": pat_str,
+            "expected_hold": "5-8 Days" # <--- ADD THIS LINE
         })
         
     return pd.DataFrame(results).sort_values(by=["Sector", "Score"], ascending=[True, False])
