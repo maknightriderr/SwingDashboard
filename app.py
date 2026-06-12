@@ -166,16 +166,12 @@ from streamlit_cookies_controller import CookieController
 controller = CookieController(key='app_cookies')
 init_db()
 
-for k, v in [
-    ("user_id", None), ("username", None), ("edit_id", None),
-    ("close_id", None), ("del_id", None), ("last_refresh", None),
-    ("last_auto_scan", 0.0), ("sort_col", "stock"), ("sort_asc", False),
-    ("signals_cache", None), ("sector_cache", None), ("picks_cache", None),
-    ("outlook_cache", None), ("scanner_cache", None),
-    ("filter_status", "All"), ("filter_pnl", "All"),
-    ("search", ""), ("theme", "Midnight Pro"),
-    ("news_cache", None),           # FIX: persist news between renders
-]:
+# Ensure session state variables exist
+for k, v in [("user_id", None), ("username", None), ("edit_id", None), ("close_id", None), ("del_id", None),
+             ("last_refresh", None), ("last_auto_scan", 0.0), ("sort_col", "stock"), ("sort_asc", False),
+             ("signals_cache", None), ("sector_cache", None), ("picks_cache", None),
+             ("outlook_cache", None), ("scanner_cache", None), ("filter_status", "All"),
+             ("filter_pnl", "All"), ("search", ""), ("theme", "Quantum Dark (Premium)")]: # <--- UPDATED THIS LINE
     if k not in st.session_state:
         st.session_state[k] = v
 
