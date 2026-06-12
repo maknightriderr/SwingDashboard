@@ -21,7 +21,6 @@ from signals import (
     SECTOR_MAP, _bulk_fetch_history, compute_indicators,
     fetch_portfolio_news
 )
-
 # ── Auto-refresh config ────────────────────────────────────────────────────────
 REFRESH_SEC = 300
 try:
