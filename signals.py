@@ -647,14 +647,19 @@ def generate_signals(trades_df):
         if ind is None:
             signals.append({
                 "id": tid, "stock": symbol, "sector": get_sector(symbol),
-                "action": "⚪ WATCH", "reason": "Could not fetch data",
-                "strength": 0, "cmp": None, "rsi": None, "pct_from_buy": None,
-                "target": None, "stop_loss": None, "avg_price": None,
-                "new_avg": None, "new_sl": None, "macd_signal": "—",
-                "bb_position": "—", "trend": "—", "support": None,
-                "resistance": None, "risk_reward": None, "buy_at": buy_at,
-                "quantity": qty, "market_regime": market["regime"],
-                "divergence": "—", "supertrend": "—", "vwap": None, "fib_levels": {},
+            "action": action, "reason": final_reason, "strength": strength,
+            "cmp": cmp, "rsi": rsi, "ema20": ema20, "ema50": ema50, "atr": atr,
+            "pct_from_buy": pct, "buy_at": buy_at, "quantity": qty,
+            "target": target, "stop_loss": stop_loss,
+            "avg_price": avg_price, "new_avg": new_avg, "new_sl": new_sl,
+            "macd_signal": macd_lbl, "bb_position": bb_lbl,
+            "trend": trend, "support": support, "resistance": resistance,
+            "risk_reward": rr, "vol_ratio": ind["vol_ratio"],
+            "market_regime": market["regime"], "divergence": div_lbl,
+            "supertrend": st_lbl, "vwap": vwap,
+            "fib_levels": {"23.6%": ind.get("fib_236"), "38.2%": ind.get("fib_382"),
+                           "50%": ind.get("fib_500"), "61.8%": ind.get("fib_618")},
+            "expected_hold": "5-8 Days" # <--- ADD THIS LINE
             })
             continue
 
