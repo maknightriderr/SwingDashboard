@@ -188,34 +188,28 @@ def detect_price_patterns(high, low, close, vol, vol_avg):
     if len(close) < 30:
         return patterns
 
-    cmp    = float(close.iloc[-1])
+    cmp = float(close.iloc[-1])
     c_vals = close.values
-    h_vals = high.values
-    l_vals = low.values
-
+    
     troughs, _ = find_peaks(-c_vals, distance=8, prominence=c_vals.std() * 0.3)
-    peaks,   _ = find_peaks( c_vals, distance=8, prominence=c_vals.std() * 0.3)
+    peaks, _ = find_peaks(c_vals, distance=8, prominence=c_vals.std() * 0.3)
 
-    # ── Volume Breakout from consolidation ───────────────────────────────────
+    # Volume Breakout
     if len(close) >= 20:
         recent_h = high.iloc[-20:-1].max()
-        recent_l = low.iloc[-20:-1].min()
-        rng_pct  = (recent_h - recent_l) / recent_l
-        if rng_pct < 0.10:
-            # INCREASED to 2.5x volume for institutional confirmation
-            if cmp > recent_h and float(vol.iloc[-1]) > vol_avg * 2.5:
-                patterns.append("🚀 Vol Breakout")
+        if cmp > recent_h and float(vol.iloc[-1]) > vol_avg * 2.5:
+            patterns.append("🚀 Vol Breakout")
 
-    # ── Bull Flag ─────────────────────────────────────────────────────────────
+    # Bull Flag
     if len(close) >= 30:
-        pole   = close.iloc[-30:-10]
-        flag   = close.iloc[-10:-1]
+        pole = close.iloc[-30:-10]
+        flag = close.iloc[-10:-1]
         p_gain = (pole.max() - pole.min()) / (pole.min() + 1e-8)
-        f_drop = (flag.max() - flag.min()) / (flag.max() + 1e-8)
-        if p_gain > 0.08 and f_drop < 0.06 and flag.iloc[-1] < pole.max():
-            # INCREASED to 2.0x volume for Flag Breakouts
+        if p_gain > 0.08 and flag.iloc[-1] < pole.max():
             if cmp > flag.max() and float(vol.iloc[-1]) > vol_avg * 2.0:
                 patterns.append("🚩 Bull Flag Breakout")
+    
+    return patterns
 
     # ── Double Bottom — relaxed to 8% tolerance + volume expansion ───────────
     if len(troughs) >= 2:
@@ -477,11 +471,17 @@ def get_market_regime():
 
 # ─── Technical Indicators ─────────────────────────────────────────────────────
 def _compute_indicators_raw(symbol, period="1y", prefetched_df=None):
+    # --- 1. RESOLVE TICKER SUFFIXES IMMEDIATELY ---
+    # Strip any existing suffix first to avoid .NS.NS
+    base_symbol = symbol.upper().split('.')[0].strip()
+    tickers_to_try = [f"{base_symbol}.NS", f"{base_symbol}.BO"]
+    
     df = prefetched_df
     if df is None:
-        for suffix in [".NS", ".BO"]:
-            df = _fetch_history(symbol + suffix, period=period, interval="1d")
-            if df is not None: break
+        for ticker in tickers_to_try:
+            df = _fetch_history(ticker, period=period, interval="1d")
+            if df is not None: 
+                break
 
     if df is None or len(df) < 50:
         return None
@@ -496,123 +496,54 @@ def _compute_indicators_raw(symbol, period="1y", prefetched_df=None):
     if pd.isna(cmp) or cmp <= 0:
         return None
 
+    # --- 2. INDICATORS (FAST MOMENTUM EMAs) ---
     rsi_series = compute_rsi_wilder(close, 14)
     rsi = round(float(rsi_series.iloc[-1]), 1) if not pd.isna(rsi_series.iloc[-1]) else None
 
-    # --- FAST MOMENTUM EMAs FOR 1-WEEK SWINGS ---
     ema9 = float(close.ewm(span=9).mean().iloc[-1])
     ema21 = float(close.ewm(span=21).mean().iloc[-1])
     ema50 = float(close.ewm(span=50).mean().iloc[-1])
 
     macd_line = close.ewm(span=12).mean() - close.ewm(span=26).mean()
     signal_line = macd_line.ewm(span=9).mean()
-    macd_bullish = macd_bearish = False
-    if len(macd_line) >= 4:
-        for i in [-2, -1]:
-            pd_ = float(macd_line.iloc[i-1]) - float(signal_line.iloc[i-1])
-            cd_ = float(macd_line.iloc[i]) - float(signal_line.iloc[i])
-            if pd_ <= 0 and cd_ > 0: macd_bullish = True
-            elif pd_ >= 0 and cd_ < 0: macd_bearish = True
+    macd_bullish = False
+    if len(macd_line) >= 2:
+        macd_bullish = (macd_line.iloc[-1] > signal_line.iloc[-1])
 
-    rsi_div = detect_rsi_divergence(close, rsi_series)
-    macd_div = detect_macd_divergence(close, macd_line)
-
-    bb_sma = float(close.rolling(20).mean().iloc[-1])
-    bb_std = float(close.rolling(20).std().iloc[-1])
-    bb_upper, bb_lower = bb_sma + 2*bb_std, bb_sma - 2*bb_std
-    bb_pos = (cmp - bb_lower) / (bb_upper - bb_lower) if (bb_upper - bb_lower) > 0 else 0.5
-
+    # --- 3. VOLATILITY & VOLUME ---
     tr = pd.concat([high-low, (high-close.shift()).abs(), (low-close.shift()).abs()], axis=1).max(axis=1)
     atr = float(tr.rolling(14).mean().iloc[-1]) if len(tr) >= 14 else float(high.iloc[-1] - low.iloc[-1])
-
     vol_avg = float(vol.rolling(20).mean().iloc[-1]) if len(vol) >= 20 else float(vol.mean())
     vol_ratio = float(vol.iloc[-1]) / vol_avg if vol_avg > 0 else 1.0
-    avg_turnover = vol_avg * float(close.iloc[-1])
 
-    # --- FAST MOMENTUM SUPPORT & RESISTANCE (7-DAY) ---
+    # --- 4. SUPPORT/RESISTANCE (7-DAY MOMENTUM) ---
     support = float(low.rolling(7).min().iloc[-1])
     resistance = float(high.rolling(7).max().iloc[-1])
-    high52, low52 = float(high.max()), float(low.min())
 
+    # --- 5. FIBONACCI & TREND ---
     trend = "Sideways"
     if cmp > ema9 > ema21: trend = "Strong Uptrend"
     elif cmp < ema9 < ema21: trend = "Strong Downtrend"
-    elif cmp > ema21 and ema9 < ema21: trend = "Recovery"
 
     fib_h, fib_l = float(high.tail(60).max()), float(low.tail(60).min())
     fib_d = fib_h - fib_l
-    fib_236 = round(fib_h - fib_d*0.236, 2)
-    fib_382 = round(fib_h - fib_d*0.382, 2)
-    fib_500 = round(fib_h - fib_d*0.500, 2)
-    fib_618 = round(fib_h - fib_d*0.618, 2)
-
-    chart_patterns = detect_price_patterns(high, low, close, vol, vol_avg)
-    candlesticks = detect_candlesticks(open_p, high, low, close)
-
-    supertrend, supertrend_bullish = None, None
-    try:
-        hl2 = (high + low) / 2
-        atr_st = tr.rolling(7).mean()
-        upper = hl2 + 2 * atr_st  
-        lower = hl2 - 2 * atr_st
-        
-        st = pd.Series(index=close.index, dtype=float)
-        dir_ = pd.Series(index=close.index, dtype=int)
-        
-        for i in range(len(close)):
-            if i < 7 or pd.isna(upper.iloc[i]):
-                st.iloc[i] = float(close.iloc[i])
-                dir_.iloc[i] = 1
-                continue
-            
-            prev_st = float(st.iloc[i-1])
-            prev_dir = dir_.iloc[i-1]
-            curr_close = float(close.iloc[i])
-            
-            if prev_dir == 1:
-                if curr_close < prev_st:
-                    dir_.iloc[i] = -1
-                    st.iloc[i] = float(upper.iloc[i])
-                else:
-                    dir_.iloc[i] = 1
-                    st.iloc[i] = max(float(lower.iloc[i]), prev_st)
-            else:
-                if curr_close > prev_st:
-                    dir_.iloc[i] = 1
-                    st.iloc[i] = float(lower.iloc[i])
-                else:
-                    dir_.iloc[i] = -1
-                    st.iloc[i] = min(float(upper.iloc[i]), prev_st)
-                    
-        supertrend = round(float(st.iloc[-1]), 2)
-        supertrend_bullish = dir_.iloc[-1] == 1
-    except Exception: 
-        pass
-
-    vwap = None
-    try:
-        typ = (high + low + close) / 3
-        vwap = round(float((typ * vol).tail(5).sum() / vol.tail(5).sum()), 2)
-    except Exception: pass
-
+    
+    # --- 6. RETURN STRUCTURE ---
     return {
-        "symbol": symbol, "cmp": round(cmp, 2), "rsi": rsi,
-        "ema20": round(ema9, 2), "ema50": round(ema21, 2), 
-        "ema200": round(ema50, 2), 
-        "macd_bullish": macd_bullish, "macd_bearish": macd_bearish,
-        "rsi_divergence": rsi_div, "macd_divergence": macd_div,
-        "bb_upper": round(bb_upper, 2), "bb_lower": round(bb_lower, 2),
-        "bb_sma": round(bb_sma, 2), "bb_pos": round(bb_pos, 2),
-        "atr": round(atr, 2), "vol_ratio": round(vol_ratio, 2),
-        "support": round(support, 2), "resistance": round(resistance, 2),
-        "high52": round(high52, 2), "low52": round(low52, 2),
+        "symbol": base_symbol, 
+        "cmp": round(cmp, 2), 
+        "rsi": rsi,
+        "ema20": round(ema9, 2), 
+        "ema50": round(ema21, 2), 
+        "ema200": round(ema50, 2),
+        "macd_bullish": macd_bullish,
+        "atr": round(atr, 2), 
+        "vol_ratio": round(vol_ratio, 2),
+        "support": round(support, 2), 
+        "resistance": round(resistance, 2),
         "trend": trend,
-        "fib_236": fib_236, "fib_382": fib_382, "fib_500": fib_500, "fib_618": fib_618,
-        "supertrend": supertrend, "supertrend_bullish": supertrend_bullish, "vwap": vwap,
-        "patterns": chart_patterns,
-        "candlesticks": candlesticks,
-        "avg_turnover": avg_turnover,
-        "atr_pct": (atr / cmp) if cmp > 0 else 0
+        "fib_382": round(fib_h - fib_d * 0.382, 2),
+        "patterns": detect_price_patterns(high, low, close, vol, vol_avg)
     }
 
 def compute_indicators(symbol, period="1y", prefetched_df=None):
