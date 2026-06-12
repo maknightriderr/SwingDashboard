@@ -171,7 +171,7 @@ for k, v in [("user_id", None), ("username", None), ("edit_id", None), ("close_i
              ("last_refresh", None), ("last_auto_scan", 0.0), ("sort_col", "stock"), ("sort_asc", False),
              ("signals_cache", None), ("sector_cache", None), ("picks_cache", None),
              ("outlook_cache", None), ("scanner_cache", None), ("filter_status", "All"),
-             ("filter_pnl", "All"), ("search", ""), ("theme", "Quantum Dark (Premium)")]: # <--- UPDATED THIS LINE
+             ("filter_pnl", "All"), ("search", ""), ("theme", "Obsidian & Gold (Institutional)")]: # <--- UPDATE THIS
     if k not in st.session_state:
         st.session_state[k] = v
 
@@ -247,30 +247,34 @@ if st.session_state.user_id is None:
 UID = st.session_state.user_id
 
 THEMES = {
-    "Quantum Dark (Premium)": {
-        "bg":"#0b0d10","card":"#14161a","input":"#1c1f24","border":"#2b3038",
-        "text":"#e2e8f0","muted":"#8b949e","green":"#22c55e","red":"#f43f5e",
-        "yellow":"#eab308","blue":"#3b82f6","accent":"#3b82f6","card2":"#1a1d24",
-        "gradient":"linear-gradient(145deg, #14161a 0%, #1a1d24 100%)"
+    "Obsidian & Gold (Institutional)": {
+        "bg":"#050608","card":"#0d0e12","input":"#15171c","border":"rgba(212, 175, 55, 0.15)",
+        "text":"#fdfdfd","muted":"#8e8e93","green":"#10b981","red":"#ef4444",
+        "yellow":"#d4af37","blue":"#3b82f6","accent":"#d4af37","card2":"#121419",
+        "gradient":"linear-gradient(145deg, #0d0e12 0%, #050608 100%)"
     },
-    "Hedge Fund Terminal": {
-        "bg":"#000000","card":"#0a0a0a","input":"#111111","border":"#222222",
-        "text":"#ffffff","muted":"#777777","green":"#00ff00","red":"#ff0033",
-        "yellow":"#ffcc00","blue":"#00aaff","accent":"#00aaff","card2":"#141414",
-        "gradient":"linear-gradient(180deg, #0a0a0a 0%, #111111 100%)"
+    "Deep Sapphire (Glass)": {
+        "bg":"#020617","card":"rgba(15, 23, 42, 0.5)","input":"#1e293b","border":"rgba(56, 189, 248, 0.1)",
+        "text":"#f8fafc","muted":"#94a3b8","green":"#10b981","red":"#f43f5e",
+        "yellow":"#f59e0b","blue":"#0ea5e9","accent":"#38bdf8","card2":"rgba(30, 41, 59, 0.4)",
+        "gradient":"linear-gradient(135deg, rgba(15, 23, 42, 0.8) 0%, rgba(2, 6, 23, 0.9) 100%)"
     },
-    "Midnight Silk (Glass)": {
-        "bg":"#0a0a10","card":"rgba(20, 22, 33, 0.65)","input":"rgba(30, 34, 45, 0.7)","border":"rgba(255, 255, 255, 0.08)",
-        "text":"#f8fafc","muted":"#94a3b8","green":"#10b981","red":"#fb7185",
-        "yellow":"#fbbf24","blue":"#0ea5e9","accent":"#8b5cf6","card2":"rgba(30, 34, 45, 0.4)",
-        "gradient":"linear-gradient(135deg, rgba(255,255,255,0.03) 0%, rgba(255,255,255,0.0) 100%)"
+    "Carbon Matrix (Quant)": {
+        "bg":"#09090b","card":"#121214","input":"#18181b","border":"rgba(255, 255, 255, 0.06)",
+        "text":"#fafafa","muted":"#a1a1aa","green":"#22c55e","red":"#ff3366",
+        "yellow":"#f59e0b","blue":"#06b6d4","accent":"#14b8a6","card2":"#18181b",
+        "gradient":"linear-gradient(180deg, #121214 0%, #09090b 100%)"
     }
 }
+
+# --- ADD THIS FAIL-SAFE TO PREVENT KEY ERRORS ---
+if st.session_state.theme not in THEMES:
+    st.session_state.theme = "Obsidian & Gold (Institutional)"
 
 def theme_css(t):
     return f"""
 <style>
-@import url('https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700;800&display=swap');
+@import url('https://fonts.googleapis.com/css2?family=Plus+Jakarta+Sans:wght@400;500;600;700;800&display=swap');
 
 :root {{
   --bg:{t['bg']}; --card:{t['card']}; --input:{t['input']};
@@ -282,90 +286,83 @@ def theme_css(t):
 
 html, body, .stApp, [data-testid="stAppViewContainer"], [data-testid="stApp"] {{
     background: var(--bg) !important; background-color: var(--bg) !important; color: var(--text) !important;
-    font-family: 'Inter', sans-serif !important;
+    font-family: 'Plus Jakarta Sans', sans-serif !important;
     -webkit-font-smoothing: antialiased;
 }}
 
-/* Clean up Streamlit default clutter */
+/* Hide Streamlit Clutter & Custom Scrollbar */
 [data-testid="stHeader"] {{ background: transparent !important; }}
 #MainMenu, footer, header {{ display: none !important; }}
-.block-container {{ padding-top: 2rem; padding-bottom: 2rem; max-width: 95%; }}
+.block-container {{ padding-top: 1.5rem; padding-bottom: 2rem; max-width: 96%; }}
+::-webkit-scrollbar {{ width: 6px; height: 6px; }}
+::-webkit-scrollbar-track {{ background: transparent; }}
+::-webkit-scrollbar-thumb {{ background: var(--border); border-radius: 10px; }}
 
-/* Premium Dashboard Title */
-.dash-title {{ font-size: 1.8rem; font-weight: 800; padding-bottom: 1rem; margin-bottom: 1.5rem; border-bottom: 1px solid var(--border); display: flex; align-items: center; justify-content: space-between; letter-spacing: -0.5px; }}
-.dash-title-text {{ color: var(--text); }}
-.dash-title span.hl {{ color: var(--accent); }}
+/* Elite Title Styling */
+.dash-title {{ font-size: 2rem; font-weight: 800; padding-bottom: 1rem; margin-bottom: 1.5rem; display: flex; align-items: center; justify-content: space-between; letter-spacing: -0.03em; border-bottom: 1px solid var(--border); }}
+.dash-title-text {{ background: linear-gradient(to right, var(--text), var(--muted)); -webkit-background-clip: text; -webkit-text-fill-color: transparent; }}
+.dash-title span.hl {{ color: var(--accent); -webkit-text-fill-color: var(--accent); }}
 
-/* Sleek Metric Cards */
-.cards {{ display: flex; gap: 1rem; flex-wrap: wrap; margin-bottom: 2rem; }}
-.card {{ background: var(--gradient); background-color: var(--card); border: 1px solid var(--border); border-radius: 16px; padding: 1.2rem; flex: 1; min-width: 150px; box-shadow: 0 4px 20px rgba(0,0,0,0.2); transition: all 0.3s ease; backdrop-filter: blur(12px); -webkit-backdrop-filter: blur(12px); }}
-.card:hover {{ transform: translateY(-3px); box-shadow: 0 8px 30px rgba(0,0,0,0.3); border-color: rgba(255,255,255,0.15); }}
-.card .lbl {{ font-size: 0.7rem; text-transform: uppercase; letter-spacing: 0.1em; color: var(--muted); margin-bottom: 0.4rem; font-weight: 600; }}
-.card .val {{ font-size: 1.4rem; font-weight: 800; color: var(--text); letter-spacing: -0.5px; }}
-.card .sub {{ font-size: 0.8rem; color: var(--muted); margin-top: 0.3rem; font-weight: 500; }}
+/* Luxury Metric Cards */
+.cards {{ display: flex; gap: 1.2rem; flex-wrap: wrap; margin-bottom: 2.5rem; }}
+.card {{ background: var(--gradient); border: 1px solid var(--border); border-radius: 14px; padding: 1.5rem; flex: 1; min-width: 160px; box-shadow: 0 10px 30px -10px rgba(0,0,0,0.5); transition: all 0.4s cubic-bezier(0.175, 0.885, 0.32, 1.275); backdrop-filter: blur(16px); -webkit-backdrop-filter: blur(16px); }}
+.card:hover {{ transform: translateY(-5px); box-shadow: 0 20px 40px -10px rgba(0,0,0,0.7); border-color: var(--accent); }}
+.card .lbl {{ font-size: 0.75rem; text-transform: uppercase; letter-spacing: 0.15em; color: var(--muted); margin-bottom: 0.5rem; font-weight: 700; }}
+.card .val {{ font-size: 1.6rem; font-weight: 800; color: var(--text); letter-spacing: -0.03em; }}
+.card .sub {{ font-size: 0.8rem; color: var(--muted); margin-top: 0.4rem; font-weight: 600; }}
 
-/* Typography & Colors */
+/* Typography & Accent Colors */
 .green {{ color: var(--green) !important; }} .red {{ color: var(--red) !important; }} .yellow {{ color: var(--yellow) !important; }} .blue {{ color: var(--blue) !important; }}
-.sec {{ font-size: 0.9rem; font-weight: 700; text-transform: uppercase; letter-spacing: 0.1em; color: var(--text); margin: 2rem 0 1rem; padding-left: 0.8rem; border-left: 3px solid var(--accent); }}
+.sec {{ font-size: 1rem; font-weight: 800; text-transform: uppercase; letter-spacing: 0.12em; color: var(--text); margin: 2.5rem 0 1.2rem; padding-left: 1rem; border-left: 4px solid var(--accent); }}
 
 /* Institutional Data Tables */
-.tbl-wrap {{ overflow-x: auto; background: var(--card); border: 1px solid var(--border); border-radius: 16px; box-shadow: 0 4px 20px rgba(0,0,0,0.15); backdrop-filter: blur(12px); margin-bottom: 1rem; }}
-table.t, .sector-tbl {{ width: 100%; border-collapse: collapse; font-size: 0.85rem; }}
-table.t th, .sector-tbl th {{ background: var(--card2); color: var(--muted); text-transform: uppercase; letter-spacing: 0.05em; font-weight: 600; padding: 1rem; text-align: right; border-bottom: 1px solid var(--border); }}
+.tbl-wrap {{ overflow-x: auto; background: var(--card); border: 1px solid var(--border); border-radius: 14px; box-shadow: 0 10px 30px -10px rgba(0,0,0,0.5); backdrop-filter: blur(16px); margin-bottom: 1.5rem; }}
+table.t, .sector-tbl {{ width: 100%; border-collapse: collapse; font-size: 0.85rem; font-variant-numeric: tabular-nums; }}
+table.t th, .sector-tbl th {{ background: var(--card2); color: var(--muted); text-transform: uppercase; letter-spacing: 0.08em; font-weight: 700; padding: 1.2rem 1rem; text-align: right; border-bottom: 1px solid var(--border); }}
 table.t th.l, table.t td.l {{ text-align: left; }}
-table.t td, .sector-tbl td {{ padding: 0.8rem 1rem; border-bottom: 1px solid var(--border); text-align: right; color: var(--text); font-weight: 500; }}
+table.t td, .sector-tbl td {{ padding: 1rem; border-bottom: 1px solid var(--border); text-align: right; color: var(--text); font-weight: 600; }}
 table.t tr:last-child td, .sector-tbl tr:last-child td {{ border-bottom: none; }}
-table.t tr:hover td, .sector-tbl tr:hover td {{ background: rgba(255,255,255,0.03); }}
-table.t tr.row-profit td {{ background: rgba(34, 197, 94, 0.03) !important; }}
-table.t tr.row-loss td {{ background: rgba(244, 63, 94, 0.03) !important; }}
+table.t tr:hover td, .sector-tbl tr:hover td {{ background: rgba(255,255,255,0.02); }}
 
-/* Badges & Tags */
-.pos {{ color: var(--green); font-weight: 700; }} .neg {{ color: var(--red); font-weight: 700; }} .zero-cell {{ color: var(--muted) !important; }}
-.badge {{ display: inline-block; padding: 0.2rem 0.6rem; border-radius: 6px; font-size: 0.7rem; font-weight: 700; text-transform: uppercase; letter-spacing: 0.05em; }}
-.b-open {{ background: rgba(234, 179, 8, 0.15); color: var(--yellow); border: 1px solid rgba(234, 179, 8, 0.3); }}
-.b-cl {{ background: rgba(34, 197, 94, 0.15); color: var(--green); border: 1px solid rgba(34, 197, 94, 0.3); }}
-.b-cll {{ background: rgba(244, 63, 94, 0.15); color: var(--red); border: 1px solid rgba(244, 63, 94, 0.3); }}
+/* Glowing Badges */
+.pos {{ color: var(--green); font-weight: 800; }} .neg {{ color: var(--red); font-weight: 800; }} .zero-cell {{ color: var(--muted) !important; }}
+.badge {{ display: inline-block; padding: 0.3rem 0.8rem; border-radius: 8px; font-size: 0.7rem; font-weight: 800; text-transform: uppercase; letter-spacing: 0.08em; }}
+.b-open {{ background: rgba(212, 175, 55, 0.1); color: var(--yellow); border: 1px solid rgba(212, 175, 55, 0.3); box-shadow: 0 0 10px rgba(212, 175, 55, 0.1); }}
+.b-cl {{ background: rgba(16, 185, 129, 0.1); color: var(--green); border: 1px solid rgba(16, 185, 129, 0.3); box-shadow: 0 0 10px rgba(16, 185, 129, 0.1); }}
+.b-cll {{ background: rgba(239, 68, 68, 0.1); color: var(--red); border: 1px solid rgba(239, 68, 68, 0.3); box-shadow: 0 0 10px rgba(239, 68, 68, 0.1); }}
 
-/* Grid Cards (Signals, Picks) */
-.sig-grid, .pick-grid, .outlook-grid {{ display: grid; grid-template-columns: repeat(auto-fill, minmax(320px, 1fr)); gap: 1.2rem; margin-top: 1rem; }}
-.sig-card, .pick-card, .outlook-card {{ background: var(--card); border: 1px solid var(--border); border-radius: 16px; padding: 1.2rem; transition: all 0.3s ease; backdrop-filter: blur(12px); box-shadow: 0 4px 15px rgba(0,0,0,0.1); }}
-.sig-card:hover, .pick-card:hover {{ transform: translateY(-3px); border-color: var(--accent); box-shadow: 0 8px 25px rgba(0,0,0,0.2); }}
-.sig-card.sell {{ border-top: 3px solid var(--red); }} .sig-card.avg {{ border-top: 3px solid var(--yellow); }}
-.sig-card.hold {{ border-top: 3px solid var(--green); }} .sig-card.watch {{ border-top: 3px solid var(--muted); }}
-.pick-card {{ border-top: 3px solid var(--accent); }}
+/* Signal & Pick Cards */
+.sig-grid, .pick-grid, .outlook-grid {{ display: grid; grid-template-columns: repeat(auto-fill, minmax(320px, 1fr)); gap: 1.5rem; margin-top: 1rem; }}
+.sig-card, .pick-card, .outlook-card {{ background: var(--card); border: 1px solid var(--border); border-radius: 14px; padding: 1.5rem; transition: all 0.3s ease; backdrop-filter: blur(16px); box-shadow: 0 10px 20px -5px rgba(0,0,0,0.3); }}
+.sig-card:hover, .pick-card:hover {{ transform: translateY(-4px); border-color: var(--accent); box-shadow: 0 15px 30px -5px rgba(0,0,0,0.5); }}
+.sig-card.sell {{ border-top: 4px solid var(--red); }} .sig-card.avg {{ border-top: 4px solid var(--yellow); }}
+.sig-card.hold {{ border-top: 4px solid var(--green); }} .sig-card.watch {{ border-top: 4px solid var(--muted); }}
+.pick-card {{ border-top: 4px solid var(--accent); }}
 
-.sig-action {{ font-size: 0.85rem; font-weight: 800; margin-bottom: 0.6rem; text-transform: uppercase; letter-spacing: 0.05em; }}
-.sig-meta, .pick-sector {{ font-size: 0.75rem; color: var(--muted); font-weight: 500; }}
-.sig-reason, .pick-prices {{ font-size: 0.85rem; margin-top: 0.8rem; color: var(--text); line-height: 1.5; }}
-.sig-price, .pick-reason {{ font-size: 0.8rem; margin-top: 1rem; padding-top: 0.8rem; border-top: 1px solid var(--border); font-weight: 500; color: var(--muted); }}
-.str-bar {{ height: 4px; border-radius: 2px; margin-top: 1rem; background: var(--input); overflow: hidden; }}
-.str-fill {{ height: 100%; border-radius: 2px; transition: width 0.5s ease; }}
+.sig-action {{ font-size: 0.9rem; font-weight: 800; margin-bottom: 0.8rem; text-transform: uppercase; letter-spacing: 0.1em; }}
+.sig-meta, .pick-sector {{ font-size: 0.8rem; color: var(--muted); font-weight: 600; }}
+.sig-reason, .pick-prices {{ font-size: 0.9rem; margin-top: 1rem; color: var(--text); line-height: 1.6; }}
+.sig-price, .pick-reason {{ font-size: 0.85rem; margin-top: 1.2rem; padding-top: 1rem; border-top: 1px solid var(--border); font-weight: 600; color: var(--muted); }}
 
-/* Streamlit Native Element Overrides */
+/* Custom UI Inputs & Buttons */
 [data-testid="stSidebar"] {{ background: var(--card) !important; border-right: 1px solid var(--border); padding-top: 2rem; }}
-div[data-baseweb="input"], div[data-baseweb="select"], [data-testid="stNumberInputContainer"] {{ background-color: var(--input) !important; border: 1px solid var(--border) !important; border-radius: 8px !important; }}
-div[data-baseweb="input"] input, [data-testid="stNumberInputContainer"] input {{ color: var(--text) !important; -webkit-text-fill-color: var(--text) !important; background-color: transparent !important; font-family: 'Inter', sans-serif !important; }}
+div[data-baseweb="input"], div[data-baseweb="select"], [data-testid="stNumberInputContainer"] {{ background-color: var(--input) !important; border: 1px solid var(--border) !important; border-radius: 10px !important; }}
+div[data-baseweb="input"] input, [data-testid="stNumberInputContainer"] input {{ color: var(--text) !important; -webkit-text-fill-color: var(--text) !important; background-color: transparent !important; font-family: 'Plus Jakarta Sans', sans-serif !important; font-weight: 600 !important; }}
 button[data-testid="stNumberInputStepDown"], button[data-testid="stNumberInputStepUp"] {{ background-color: var(--card2) !important; color: var(--text) !important; border: none !important; }}
-button[data-testid="stNumberInputStepDown"] svg, button[data-testid="stNumberInputStepUp"] svg, div[data-baseweb="select"] svg {{ fill: var(--text) !important; }}
-div[role="listbox"] {{ background-color: var(--card2) !important; border: 1px solid var(--border) !important; border-radius: 8px !important; }}
-ul[role="listbox"] li {{ color: var(--text) !important; }} ul[role="listbox"] li[aria-selected="true"] {{ background-color: var(--accent) !important; color: white !important; }}
+div[role="listbox"] {{ background-color: var(--card2) !important; border: 1px solid var(--border) !important; border-radius: 10px !important; }}
+ul[role="listbox"] li {{ color: var(--text) !important; font-weight: 500 !important; }} ul[role="listbox"] li[aria-selected="true"] {{ background-color: var(--accent) !important; color: #000 !important; font-weight: 800 !important; }}
 
-/* Modern Buttons */
-.stButton>button {{ background: var(--card2) !important; border: 1px solid var(--border) !important; color: var(--text) !important; border-radius: 8px !important; font-weight: 600 !important; padding: 0.5rem 1rem !important; transition: all 0.2s ease !important; }}
-.stButton>button:hover {{ border-color: var(--accent) !important; background: var(--accent) !important; color: white !important; box-shadow: 0 4px 15px rgba(0,0,0,0.2) !important; }}
+.stButton>button {{ background: var(--card2) !important; border: 1px solid var(--border) !important; color: var(--text) !important; border-radius: 10px !important; font-weight: 700 !important; letter-spacing: 0.05em !important; padding: 0.6rem 1.2rem !important; transition: all 0.3s ease !important; }}
+.stButton>button:hover {{ border-color: var(--accent) !important; background: var(--accent) !important; color: #000 !important; box-shadow: 0 0 20px var(--accent) !important; transform: scale(1.02); }}
 
 /* Sleek Tabs */
-.stTabs [data-baseweb="tab-list"] {{ background: transparent; gap: 2rem; padding: 0 0.5rem; border-bottom: 1px solid var(--border); }}
-.stTabs [data-baseweb="tab"] {{ background: transparent; color: var(--muted); font-weight: 600; padding: 1rem 0; border: none; border-bottom: 2px solid transparent; text-transform: uppercase; letter-spacing: 0.05em; font-size: 0.8rem; }}
-.stTabs [aria-selected="true"] {{ background: transparent !important; color: var(--accent) !important; border-bottom-color: var(--accent) !important; }}
+.stTabs [data-baseweb="tab-list"] {{ background: transparent; gap: 2.5rem; padding: 0 0.5rem; border-bottom: 1px solid var(--border); }}
+.stTabs [data-baseweb="tab"] {{ background: transparent; color: var(--muted); font-weight: 700; padding: 1.2rem 0; border: none; border-bottom: 3px solid transparent; text-transform: uppercase; letter-spacing: 0.08em; font-size: 0.85rem; transition: color 0.3s ease; }}
+.stTabs [aria-selected="true"] {{ background: transparent !important; color: var(--text) !important; border-bottom-color: var(--accent) !important; }}
 
-/* Expanders */
-[data-testid="stExpander"] {{ background-color: var(--card) !important; border: 1px solid var(--border) !important; border-radius: 12px !important; margin-bottom: 1rem !important; box-shadow: 0 4px 10px rgba(0,0,0,0.1); }}
-[data-testid="stExpander"] summary p {{ font-weight: 700 !important; color: var(--text) !important; font-size: 0.95rem; }}
-
-/* Beautiful Market Regime Banner */
-.refresh-badge {{ display: inline-block; background: rgba(34, 197, 94, 0.15); color: var(--green); padding: 0.3rem 0.8rem; border-radius: 20px; font-size: 0.7rem; font-weight: 800; border: 1px solid rgba(34, 197, 94, 0.3); letter-spacing: 0.05em; }}
-.regime-banner {{ border-radius: 16px; padding: 1rem 1.5rem; display: flex; align-items: center; gap: 1rem; margin-bottom: 2rem; flex-wrap: wrap; box-shadow: 0 4px 20px rgba(0,0,0,0.15); border: 1px solid var(--border); }}
+/* Regime Banner - Glassy & Glowing */
+.refresh-badge {{ display: inline-block; background: rgba(16, 185, 129, 0.1); color: var(--green); padding: 0.4rem 1rem; border-radius: 30px; font-size: 0.75rem; font-weight: 800; border: 1px solid rgba(16, 185, 129, 0.4); letter-spacing: 0.1em; text-transform: uppercase; box-shadow: 0 0 15px rgba(16, 185, 129, 0.2); }}
+.regime-banner {{ border-radius: 16px; padding: 1.2rem 1.8rem; display: flex; align-items: center; gap: 1.2rem; margin-bottom: 2.5rem; flex-wrap: wrap; box-shadow: 0 15px 35px -10px rgba(0,0,0,0.6); border: 1px solid var(--border); backdrop-filter: blur(20px); -webkit-backdrop-filter: blur(20px); }}
 </style>
 """
 
