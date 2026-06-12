@@ -450,14 +450,19 @@ def get_market_regime():
             elif regime == "Bear": conf = 70
             elif regime == "Bear Rally": conf = 55
             
-            if nifty_rsi:
-                if nifty_rsi > 75: conf = max(30, conf - 15)  
-                elif nifty_rsi < 30: conf = max(30, conf - 15) 
+            # --- INSTITUTIONAL CONFIDENCE SCORING (MOMENTUM REWARDED) ---
+    if nifty_rsi:
+        if nifty_rsi > 70: 
+            conf = min(95, conf + 15)   # Reward Breakouts! (Power Zone)
+        elif nifty_rsi < 40: 
+            conf = max(20, conf - 20)   # Penalize bleeding/crashing markets
 
-    risk = "Low"
-    if nifty_rsi and nifty_rsi > 70: risk = "High (Overbought)"
-    elif nifty_rsi and nifty_rsi < 30: risk = "Low (Oversold)"
-    elif nifty_rsi and nifty_rsi > 60: risk = "Moderate-High"
+    # --- MOMENTUM RISK LABELS ---
+    risk = "Neutral"
+    if nifty_rsi:
+        if nifty_rsi > 70: risk = "High Momentum (Power Zone)"
+        elif nifty_rsi > 60: risk = "Building Momentum"
+        elif nifty_rsi < 40: risk = "High Risk (Downtrend/Bleeding)"
 
     result = {
         "regime": regime, "trend": trend,
@@ -494,7 +499,7 @@ def _compute_indicators_raw(symbol, period="1y", prefetched_df=None):
     rsi_series = compute_rsi_wilder(close, 14)
     rsi = round(float(rsi_series.iloc[-1]), 1) if not pd.isna(rsi_series.iloc[-1]) else None
 
-    # Swapped to Fast Momentum EMAs for 1-Week Swings
+    # --- SWAPPED TO FAST MOMENTUM EMAs FOR 1-WEEK SWINGS ---
     ema9 = float(close.ewm(span=9).mean().iloc[-1])
     ema21 = float(close.ewm(span=21).mean().iloc[-1])
     ema50 = float(close.ewm(span=50).mean().iloc[-1])
@@ -520,23 +525,23 @@ def _compute_indicators_raw(symbol, period="1y", prefetched_df=None):
     tr = pd.concat([high-low, (high-close.shift()).abs(), (low-close.shift()).abs()], axis=1).max(axis=1)
     atr = float(tr.rolling(14).mean().iloc[-1]) if len(tr) >= 14 else float(high.iloc[-1] - low.iloc[-1])
 
-    # ──> INSTITUTIONAL GATES <──
+    # --- INSTITUTIONAL GATES ---
     vol_avg = float(vol.rolling(20).mean().iloc[-1]) if len(vol) >= 20 else float(vol.mean())
     vol_ratio = float(vol.iloc[-1]) / vol_avg if vol_avg > 0 else 1.0
 
     avg_turnover = vol_avg * float(close.iloc[-1])
     
-    # 1. LIQUIDITY GATE: Raised to ₹10 Crore Minimum Turnover
+    # 1. LIQUIDITY GATE: ₹10 Crore Minimum Turnover
     if avg_turnover < 100_000_000:  
         return None
         
     # 2. VOLATILITY GATE: Reject if daily ATR is less than 3.5% of price
-    # (If a stock doesn't move 3.5% a day, it won't hit 20% in a week)
     if (atr / cmp) < 0.035:
         return None
 
-    support = float(low.rolling(20).min().iloc[-1])
-    resistance = float(high.rolling(20).max().iloc[-1])
+    # --- FAST MOMENTUM SUPPORT & RESISTANCE (7-DAY) ---
+    support = float(low.rolling(7).min().iloc[-1])
+    resistance = float(high.rolling(7).max().iloc[-1])
     high52, low52 = float(high.max()), float(low.min())
 
     trend = "Sideways"
@@ -557,7 +562,7 @@ def _compute_indicators_raw(symbol, period="1y", prefetched_df=None):
     supertrend, supertrend_bullish = None, None
     try:
         hl2 = (high + low) / 2
-        # TIGHTENED SUPERTREND FOR 1-WEEK SWING (7, 2)
+        # --- TIGHTENED SUPERTREND FOR 1-WEEK SWING (7, 2) ---
         atr_st = tr.rolling(7).mean()
         upper = hl2 + 2 * atr_st  
         lower = hl2 - 2 * atr_st
@@ -603,7 +608,7 @@ def _compute_indicators_raw(symbol, period="1y", prefetched_df=None):
 
     return {
         "symbol": symbol, "cmp": round(cmp, 2), "rsi": rsi,
-        "ema20": round(ema9, 2), "ema50": round(ema21, 2), # Rewired mapping for frontend
+        "ema20": round(ema9, 2), "ema50": round(ema21, 2), 
         "ema200": round(ema50, 2), 
         "macd_bullish": macd_bullish, "macd_bearish": macd_bearish,
         "rsi_divergence": rsi_div, "macd_divergence": macd_div,
@@ -913,10 +918,16 @@ def predict_sector_outlook(sector_df):
         elif score > 0.3: outlook, conf = "📈 Bullish", 70
         elif score > 0.1: outlook, conf = "➡️ Neutral-Bullish", 55
         elif score > -0.1: outlook, conf = "➡️ Neutral", 50
-        elif score > -0.3: outlook, conf = "📉 Weak", 40
-        else: outlook, conf = "🔻 Bearish", 30
-        if r["avg_rsi"] and r["avg_rsi"] > 70: outlook = "⚠️ Overbought"
-        elif r["avg_rsi"] and r["avg_rsi"] < 35: outlook = "🟢 Oversold — Bounce"; conf = min(conf+10, 95)
+        elif score > -0.3: outlook, conf = "📉 Weak", 30
+        else: outlook, conf = "🔻 Bearish", 20
+
+        # --- REWARD CAPITAL ROTATION INTO POWER ZONES ---
+        if r["avg_rsi"] and r["avg_rsi"] > 65: 
+            outlook = "🚀 Power Zone"
+            conf = min(conf + 15, 95)
+        elif r["avg_rsi"] and r["avg_rsi"] < 45: 
+            outlook = "🩸 Bleeding — Avoid"
+            conf = max(conf - 20, 20)
         preds.append({"sector": r["sector"], "outlook": outlook, "confidence": conf,
                       "momentum": r["momentum_score"], "avg_rsi": r["avg_rsi"],
                       "avg_pct": r["avg_pct"], "index_chg": r.get("index_chg")})
@@ -951,10 +962,19 @@ def find_sector_picks(selected_sectors=None, max_per_sector=3):
             if ind["vol_ratio"] > 1.3: score += 8; reasons.append(f"Vol surge ({ind['vol_ratio']:.1f}x)")
             
             if score < 45: continue
-            sl = round(max(ind["support"], cmp - 2*ind["atr"]), 2)
-            tgt = round(max(ind["resistance"], cmp + 3*ind["atr"]), 2)
+            
+            # --- UPDATED FOR 10% TARGET IN 5 DAYS ---
+            # Stop Loss tightened to 1.25 ATR for quick 1-week invalidation
+            sl = round(cmp - (1.25 * ind["atr"]), 2)
+            
+            # Target set to a baseline 10% (1.10) or immediate resistance
+            tgt = round(max(cmp * 1.10, cmp + (2.5 * ind["atr"])), 2) 
+            
             risk, reward = cmp - sl, tgt - cmp
-            rr = round(reward/risk, 2) if risk > 0 else None
+            rr = round(reward / risk, 2) if risk > 0 else None
+            
+            # Accept trades with a solid 1.5 R:R to allow for 10% base hits
+            if rr and rr < 1.5: continue
             
             if rr and rr < 1.5: continue
             
@@ -1027,7 +1047,7 @@ def generate_market_scanner():
         patterns = ind.get("patterns", [])
         candles = ind.get("candlesticks", [])
         
-        # Confluence Scoring Engine for 1-Week Explosive Entries
+        # --- CONFLUENCE SCORING ENGINE FOR 1-WEEK EXPLOSIVE ENTRIES ---
         score = 0
         
         if trend in ("Uptrend", "Strong Uptrend"): score += 3
@@ -1057,13 +1077,12 @@ def generate_market_scanner():
         all_pats = patterns + candles
         pat_str = " | ".join(all_pats) if all_pats else "—"
         
-        # Calculate strict 1-Week risk metrics for Universe Scan Output
+        # --- CALCULATE STRICT 1-WEEK RISK METRICS (10% TARGET, 1.25 ATR SL) ---
         atr = ind["atr"]
         sup, res = ind["support"], ind["resistance"]
         
-        # TIGHTENED SL: 1.5 ATR for 1-week holds. TARGET: 15% minimum baseline.
-        sl = round(cmp - 1.5*atr, 2)
-        tgt = round(max(res, cmp * 1.15), 2)
+        sl = round(cmp - (1.25 * atr), 2)
+        tgt = round(max(cmp * 1.10, cmp + (2.5 * atr)), 2)
         
         results.append({
             "Generated": datetime.now().strftime("%d %b %H:%M"),
