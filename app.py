@@ -25,10 +25,30 @@ from signals import (
     find_sector_picks, send_telegram, build_telegram_message,
     get_sector, get_market_regime, generate_market_scanner,
     SECTOR_MAP, _bulk_fetch_history, compute_indicators,
-    fetch_portfolio_news, scan_for_traps,
-    fetch_corporate_actions, fetch_bulk_corporate_actions,
-    scan_corporate_actions_universe
+    fetch_portfolio_news
 )
+
+# New functions added in signals.py v12+ — imported separately so the app
+# degrades gracefully if an older signals.py is deployed.
+try:
+    from signals import scan_for_traps as _scan_for_traps
+    scan_for_traps = _scan_for_traps
+except ImportError:
+    scan_for_traps = None
+
+try:
+    from signals import (
+        fetch_corporate_actions,
+        fetch_bulk_corporate_actions,
+        scan_corporate_actions_universe,
+    )
+except ImportError:
+    fetch_corporate_actions        = None
+    fetch_bulk_corporate_actions   = None
+    scan_corporate_actions_universe = None
+
+_TRAP_SCANNER_AVAILABLE = scan_for_traps is not None
+_CORP_ACTIONS_AVAILABLE = fetch_corporate_actions is not None
 
 # ── Auto-refresh ───────────────────────────────────────────────────────────────
 REFRESH_SEC = 300
@@ -1813,6 +1833,10 @@ with tab9:
 
 # ── Tab 10: Trap Scanner ───────────────────────────────────────────────────────
 with tab10:
+    if not _TRAP_SCANNER_AVAILABLE:
+        st.warning("🪤 Trap Scanner requires the updated **signals.py** (v12+). "
+                   "Deploy the new signals.py from the project outputs to enable this tab.")
+        st.stop()
     st.markdown('<div class="sec">🪤 Bull & Bear Trap Scanner — Full Nifty 500</div>',
                 unsafe_allow_html=True)
 
@@ -2002,6 +2026,10 @@ with tab10:
 
 # ── Tab 11: Corporate Actions ──────────────────────────────────────────────────
 with tab11:
+    if not _CORP_ACTIONS_AVAILABLE:
+        st.warning("📅 Corporate Actions requires the updated **signals.py** (v12+). "
+                   "Deploy the new signals.py from the project outputs to enable this tab.")
+        st.stop()
     st.markdown('<div class="sec">📅 Corporate Actions — Full Nifty 500</div>',
                 unsafe_allow_html=True)
     st.caption("Dividends · Stock Splits · Bonus Issues — sourced from NSE via yfinance. 6-hour cache.")
