@@ -760,11 +760,17 @@ def _compute_indicators_raw(symbol, period="1y", prefetched_df=None):
     except Exception:
         pass
 
-    # ── Bull / Bear Trap detection ────────────────────────────────────────────
+    # ── Bull / Bear Trap detection (v4 — ATR-normalised, RSI-at-peak) ────────
+    # Pull cached market regime so the regime-context factor activates live.
+    try:
+        _mkt_regime = get_market_regime()
+    except Exception:
+        _mkt_regime = None
     traps = detect_trap_signals(
-        close, high, low, vol, vol_avg, rsi,
+        close, high, low, vol, vol_avg, rsi_series,
         supertrend_bullish, resistance, support,
-        candlesticks, atr, window=15
+        candlesticks, atr, high52, low52, window=15,
+        market_regime=_mkt_regime
     )
 
     return {
@@ -1386,32 +1392,49 @@ def fetch_portfolio_news(open_trades_df):
 #   5. Candle confirmation on the reversal bar
 # ==============================================================================
 
-def detect_trap_signals(close, high, low, vol, vol_avg, rsi,
+def detect_trap_signals(close, high, low, vol, vol_avg, rsi_series,
                         supertrend_bullish, resistance, support,
-                        candles, atr, window=15):
+                        candles, atr, high52, low52, window=15,
+                        market_regime=None):
     """
-    Detects bull traps (false breakouts above resistance) and bear traps
-    (false breakdowns below support).
+    Detects bull traps (false breakout above resistance) and bear traps
+    (false breakdown below support).
 
-    FIX v2 — pre-window S/R:
-    ─────────────────────────────────────────────────────────────────────────
-    Previous bug: resistance = today's rolling 20-day HIGH. Since this max
-    includes the recent breakout bar, no bar in the window can mathematically
-    exceed it → zero traps detected across 2000+ stocks.
-
-    Fix: compute pre_resistance as the 20-day close high at bar -(window+1),
-    i.e. the resistance level that existed BEFORE the trap window started.
-    The breakout in the window can then legitimately exceed this older level.
+    SCORING v4 — ATR-normalised, RSI-at-peak, distribution-aware:
+    =========================================================================
+    KEY UPGRADES OVER v3:
+      • ATR-NORMALISED magnitude: spike/failure measured in ATR multiples,
+        not raw % — so a 3% move on a low-volatility large-cap scores higher
+        than a 3% move on a high-volatility small-cap (where 3% is noise).
+      • RSI-AT-PEAK: RSI is read at the breakout bar (where the trap formed),
+        not today's cooled-off value.
+      • FAILURE-BAR VOLUME: heavy volume on the rejection = distribution,
+        a much stronger trap confirmation than weak fade.
+      • REPEATED REJECTION: counts how many times this level rejected price
+        in the lookback — a level that rejected 3× is a real wall.
+      • 52-WEEK PROXIMITY: traps near 52w highs/lows = institutional
+        distribution/accumulation zones, weighted higher.
+      • MARKET-REGIME CONTEXT: a bull trap in a bear market is far more
+        reliable than one during a strong bull (where it's just a pullback).
 
     Geometry:
-       [pre-period: bars -60..-16] → establishes pre_resistance / pre_support
-       [window:     bars -15..-1 ] → breakout detected here
-       [current:    bar  0       ] → failure confirmed here
-    ─────────────────────────────────────────────────────────────────────────
-    Returns dict with keys:
-      bull_trap, bear_trap         : bool
-      bull_trap_conf, bear_trap_conf: int (0-100)
-      bull_trap_detail, bear_trap_detail: str
+       [pre-period bars -60..-16] → pre_resistance / pre_support + rejection count
+       [window     bars -15..-1 ] → breakout + RSI-at-peak + breakout vol
+       [current    bar  0       ] → failure confirmed + failure-bar vol
+
+    Scoring (max 100, fires at >= 55):
+       Base geometry                      18
+       1. Spike magnitude (ATR-norm)    0-20
+       2. Failure depth (ATR-norm)      0-16
+       3. Breakout volume quality       0-12
+       4. Failure-bar volume (distrib)  0-12
+       5. RSI-at-peak extreme           0-12
+       6. Repeated rejection (wall)     0-10
+       7. Reversal candle               0-10
+       8. 52-week proximity             0-8
+       9. Market regime alignment       0-8
+      10. Supertrend (light confirm)    0-6
+    =========================================================================
     """
     result = {
         "bull_trap": False, "bear_trap": False,
@@ -1419,116 +1442,202 @@ def detect_trap_signals(close, high, low, vol, vol_avg, rsi,
         "bull_trap_detail": "", "bear_trap_detail": ""
     }
 
-    # Need enough bars for rolling S/R computation + trap window
     if len(close) < window + 25:
         return result
 
-    cmp    = float(close.iloc[-1])
-    pre_idx = -(window + 1)          # bar just before the window starts
+    cmp     = float(close.iloc[-1])
+    pre_idx = -(window + 1)
+    atr_safe = max(atr, cmp * 0.005)          # floor ATR to avoid div-by-zero
 
-    # ── Pre-window S/R (close-based for clean comparison against closes) ──────
+    # ── Pre-window S/R (close-based, computed BEFORE the trap window) ─────────
     if len(close) >= window + 21:
         pre_resistance = float(close.rolling(20).max().iloc[pre_idx])
         pre_support    = float(close.rolling(20).min().iloc[pre_idx])
     else:
-        # Shorter history: use simple max/min of available pre-window bars
         pre_resistance = float(close.iloc[:pre_idx].tail(20).max())
         pre_support    = float(close.iloc[:pre_idx].tail(20).min())
 
-    # ATR-based tolerance (0.3× ATR avoids noise, larger than 0 avoids rounding)
     tol = max(atr * 0.3, pre_resistance * 0.003)
 
-    # Window: the 15 bars where the trap action plays out
-    recent_close = close.iloc[-window:]
-    recent_vol   = vol.iloc[-window:]
+    # Window slices
+    win_close = close.iloc[-window:]
+    win_vol   = vol.iloc[-window:]
+    win_high  = high.iloc[-window:]
+    win_low   = low.iloc[-window:]
 
-    # ── BULL TRAP ─────────────────────────────────────────────────────────────
-    # 1. Any close in window broke above pre-window resistance?
-    breakout_bars = [(i, float(c), float(v))
-                     for i, (c, v) in enumerate(zip(recent_close, recent_vol))
-                     if float(c) > pre_resistance + tol]
-    # 2. Current bar has failed back below pre-window resistance?
+    # RSI series aligned to window (for RSI-at-peak)
+    try:
+        win_rsi = rsi_series.iloc[-window:].values
+    except Exception:
+        win_rsi = None
+
+    # Regime flags
+    regime = (market_regime or {}).get("regime", "") if isinstance(market_regime, dict) else ""
+    is_bear_mkt = regime in ("Strong Bear", "Bear", "Bear Rally")
+    is_bull_mkt = regime in ("Strong Bull", "Bull")
+
+    # ── BULL TRAP ──────────────────────────────────────────────────────────────
+    breakout_idx = [i for i, c in enumerate(win_close.values)
+                    if float(c) > pre_resistance + tol]
     failed_up = cmp < pre_resistance - tol
 
-    bull_conf = 0
-    bull_detail = []
+    if breakout_idx and failed_up:
+        bo_closes = [float(win_close.values[i]) for i in breakout_idx]
+        bo_vols   = [float(win_vol.values[i])   for i in breakout_idx]
+        peak_i    = breakout_idx[int(np.argmax([float(win_close.values[i]) for i in breakout_idx]))]
+        max_spike = max(bo_closes)
 
-    if breakout_bars and failed_up:
-        bull_conf += 35
-        bull_detail.append(f"False breakout above ₹{pre_resistance:.1f}")
+        # ATR-normalised magnitudes
+        spike_atrs   = (max_spike - pre_resistance) / atr_safe
+        failure_atrs = (pre_resistance - cmp) / atr_safe
+        spike_pct    = (max_spike - pre_resistance) / max(pre_resistance, 1) * 100
+        failure_pct  = (pre_resistance - cmp) / max(pre_resistance, 1) * 100
 
-        breakout_vols = [v for _, _, v in breakout_bars]
-        if all(v < vol_avg * 1.5 for v in breakout_vols):
-            bull_conf += 20
-            bull_detail.append("weak breakout volume")
+        # Hard gates: at least 0.7 ATR breakout AND 0.4 ATR failure
+        if spike_atrs >= 0.7 and failure_atrs >= 0.4:
+            conf = 18
+            detail = [f"Failed breakout ₹{pre_resistance:.1f} (+{spike_pct:.1f}%)"]
 
-        if rsi and rsi > 65:
-            bull_conf += 15
-            bull_detail.append(f"RSI overbought ({rsi})")
+            # 1. Spike magnitude (ATR-normalised)
+            if   spike_atrs >= 3.0: conf += 20; detail.append(f"strong spike {spike_atrs:.1f}ATR")
+            elif spike_atrs >= 1.8: conf += 13; detail.append(f"moderate spike {spike_atrs:.1f}ATR")
+            elif spike_atrs >= 0.7: conf += 6
 
-        if supertrend_bullish is False:
-            bull_conf += 15
-            bull_detail.append("Supertrend bearish")
+            # 2. Failure depth (ATR-normalised)
+            if   failure_atrs >= 2.5: conf += 16; detail.append(f"deep rejection {failure_atrs:.1f}ATR")
+            elif failure_atrs >= 1.2: conf += 9;  detail.append(f"clear rejection {failure_atrs:.1f}ATR")
+            elif failure_atrs >= 0.4: conf += 4
 
-        reject_candles = ["🟥 Bearish Engulfing", "💫 Shooting Star",
-                          "🌆 Evening Star", "🦅 Three Black Crows"]
-        matched = [c for c in reject_candles if c in candles]
-        if matched:
-            bull_conf += 15
-            bull_detail.append(matched[0])
+            # 3. Breakout volume quality (weak = fake breakout)
+            avg_bo_vol = sum(bo_vols) / len(bo_vols)
+            bo_vr = avg_bo_vol / max(vol_avg, 1)
+            if   bo_vr < 1.0: conf += 12; detail.append(f"weak breakout vol ({bo_vr:.1f}x)")
+            elif bo_vr < 1.8: conf += 6;  detail.append(f"soft breakout vol ({bo_vr:.1f}x)")
 
-    if bull_conf >= 50:
-        result["bull_trap"] = True
-        result["bull_trap_conf"] = min(bull_conf, 95)
-        result["bull_trap_detail"] = " | ".join(bull_detail)
+            # 4. Failure-bar volume (heavy = distribution = strong)
+            fail_vol_ratio = float(win_vol.values[-1]) / max(vol_avg, 1)
+            if   fail_vol_ratio >= 2.0: conf += 12; detail.append(f"distribution vol ({fail_vol_ratio:.1f}x)")
+            elif fail_vol_ratio >= 1.3: conf += 6;  detail.append(f"elevated sell vol ({fail_vol_ratio:.1f}x)")
 
-    # ── BEAR TRAP ─────────────────────────────────────────────────────────────
-    # 1. Any close in window broke below pre-window support?
-    breakdown_bars = [(i, float(c), float(v))
-                      for i, (c, v) in enumerate(zip(recent_close, recent_vol))
-                      if float(c) < pre_support - tol]
-    # 2. Current bar has recovered back above pre-window support?
+            # 5. RSI AT PEAK (not today)
+            if win_rsi is not None and peak_i < len(win_rsi):
+                rsi_peak = win_rsi[peak_i]
+                if not np.isnan(rsi_peak):
+                    if   rsi_peak >= 75: conf += 12; detail.append(f"RSI {rsi_peak:.0f} at peak (extreme)")
+                    elif rsi_peak >= 68: conf += 7;  detail.append(f"RSI {rsi_peak:.0f} at peak")
+
+            # 6. Repeated rejection — how many times did price hit this zone & fail?
+            zone_lo, zone_hi = pre_resistance * 0.985, pre_resistance * 1.015
+            touches = int(((close.iloc[-60:] >= zone_lo) &
+                           (close.iloc[-60:] <= zone_hi)).sum())
+            if   touches >= 6: conf += 10; detail.append(f"strong wall ({touches} touches)")
+            elif touches >= 3: conf += 5;  detail.append(f"tested level ({touches} touches)")
+
+            # 7. Reversal candle
+            reject_candles = ["🟥 Bearish Engulfing", "💫 Shooting Star",
+                              "🌆 Evening Star", "🦅 Three Black Crows"]
+            matched = [c for c in reject_candles if c in candles]
+            if matched: conf += 10; detail.append(matched[0])
+
+            # 8. 52-week proximity (trap near 52w high = distribution zone)
+            if high52 and max_spike >= high52 * 0.97:
+                conf += 8; detail.append("near 52w high (distribution)")
+
+            # 9. Market regime: bull trap in bear market = high reliability
+            if is_bear_mkt: conf += 8; detail.append(f"{regime} context")
+            elif is_bull_mkt: conf -= 4    # likely just a pullback, not a trap
+
+            # 10. Supertrend (light confirm)
+            if supertrend_bullish is False:
+                conf += 6; detail.append("ST bearish")
+
+            if conf >= 55:
+                result["bull_trap"]        = True
+                result["bull_trap_conf"]   = int(min(max(conf, 0), 98))
+                result["bull_trap_detail"] = " | ".join(detail)
+
+    # ── BEAR TRAP ──────────────────────────────────────────────────────────────
+    breakdown_idx = [i for i, c in enumerate(win_close.values)
+                     if float(c) < pre_support - tol]
     failed_dn = cmp > pre_support + tol
 
-    bear_conf = 0
-    bear_detail = []
+    if breakdown_idx and failed_dn:
+        bd_closes = [float(win_close.values[i]) for i in breakdown_idx]
+        bd_vols   = [float(win_vol.values[i])   for i in breakdown_idx]
+        trough_i  = breakdown_idx[int(np.argmin([float(win_close.values[i]) for i in breakdown_idx]))]
+        max_drop  = min(bd_closes)
 
-    if breakdown_bars and failed_dn:
-        bear_conf += 35
-        bear_detail.append(f"False breakdown below ₹{pre_support:.1f}")
+        drop_atrs     = (pre_support - max_drop) / atr_safe
+        recovery_atrs = (cmp - pre_support) / atr_safe
+        drop_pct      = (pre_support - max_drop) / max(pre_support, 1) * 100
+        recovery_pct  = (cmp - pre_support) / max(pre_support, 1) * 100
 
-        breakdown_vols = [v for _, _, v in breakdown_bars]
-        if all(v < vol_avg * 1.5 for v in breakdown_vols):
-            bear_conf += 20
-            bear_detail.append("weak breakdown volume")
+        if drop_atrs >= 0.7 and recovery_atrs >= 0.4:
+            conf = 18
+            detail = [f"Failed breakdown ₹{pre_support:.1f} (-{drop_pct:.1f}%)"]
 
-        if rsi and rsi < 35:
-            bear_conf += 15
-            bear_detail.append(f"RSI oversold ({rsi})")
+            # 1. Drop magnitude (ATR-norm)
+            if   drop_atrs >= 3.0: conf += 20; detail.append(f"strong drop {drop_atrs:.1f}ATR")
+            elif drop_atrs >= 1.8: conf += 13; detail.append(f"moderate drop {drop_atrs:.1f}ATR")
+            elif drop_atrs >= 0.7: conf += 6
 
-        if supertrend_bullish is True:
-            bear_conf += 15
-            bear_detail.append("Supertrend bullish recovery")
+            # 2. Recovery depth (ATR-norm)
+            if   recovery_atrs >= 2.5: conf += 16; detail.append(f"strong recovery {recovery_atrs:.1f}ATR")
+            elif recovery_atrs >= 1.2: conf += 9;  detail.append(f"clear recovery {recovery_atrs:.1f}ATR")
+            elif recovery_atrs >= 0.4: conf += 4
 
-        recovery_candles = ["🟩 Bullish Engulfing", "🔨 Bullish Hammer",
-                            "🌅 Morning Star", "🪖 Three White Soldiers",
-                            "🛤️ Inverse H&S (Bottom)"]
-        matched = [c for c in recovery_candles if c in candles]
-        if matched:
-            bear_conf += 15
-            bear_detail.append(matched[0])
+            # 3. Breakdown volume (weak = fake breakdown)
+            avg_bd_vol = sum(bd_vols) / len(bd_vols)
+            bd_vr = avg_bd_vol / max(vol_avg, 1)
+            if   bd_vr < 1.0: conf += 12; detail.append(f"weak breakdown vol ({bd_vr:.1f}x)")
+            elif bd_vr < 1.8: conf += 6;  detail.append(f"soft breakdown vol ({bd_vr:.1f}x)")
 
-    if bear_conf >= 50:
-        result["bear_trap"] = True
-        result["bear_trap_conf"] = min(bear_conf, 95)
-        result["bear_trap_detail"] = " | ".join(bear_detail)
+            # 4. Recovery-bar volume (heavy = accumulation)
+            rec_vol_ratio = float(win_vol.values[-1]) / max(vol_avg, 1)
+            if   rec_vol_ratio >= 2.0: conf += 12; detail.append(f"accumulation vol ({rec_vol_ratio:.1f}x)")
+            elif rec_vol_ratio >= 1.3: conf += 6;  detail.append(f"elevated buy vol ({rec_vol_ratio:.1f}x)")
+
+            # 5. RSI AT TROUGH (not today)
+            if win_rsi is not None and trough_i < len(win_rsi):
+                rsi_trough = win_rsi[trough_i]
+                if not np.isnan(rsi_trough):
+                    if   rsi_trough <= 25: conf += 12; detail.append(f"RSI {rsi_trough:.0f} at trough (extreme)")
+                    elif rsi_trough <= 32: conf += 7;  detail.append(f"RSI {rsi_trough:.0f} at trough")
+
+            # 6. Repeated rejection at support
+            zone_lo, zone_hi = pre_support * 0.985, pre_support * 1.015
+            touches = int(((close.iloc[-60:] >= zone_lo) &
+                           (close.iloc[-60:] <= zone_hi)).sum())
+            if   touches >= 6: conf += 10; detail.append(f"strong floor ({touches} touches)")
+            elif touches >= 3: conf += 5;  detail.append(f"tested floor ({touches} touches)")
+
+            # 7. Recovery candle
+            recovery_candles = ["🟩 Bullish Engulfing", "🔨 Bullish Hammer",
+                                "🌅 Morning Star", "🪖 Three White Soldiers",
+                                "🛤️ Inverse H&S (Bottom)"]
+            matched = [c for c in recovery_candles if c in candles]
+            if matched: conf += 10; detail.append(matched[0])
+
+            # 8. 52-week proximity (trap near 52w low = accumulation zone)
+            if low52 and max_drop <= low52 * 1.03:
+                conf += 8; detail.append("near 52w low (accumulation)")
+
+            # 9. Market regime: bear trap in bull market = high reliability
+            if is_bull_mkt: conf += 8; detail.append(f"{regime} context")
+            elif is_bear_mkt: conf -= 4
+
+            # 10. Supertrend
+            if supertrend_bullish is True:
+                conf += 6; detail.append("ST bullish")
+
+            if conf >= 55:
+                result["bear_trap"]        = True
+                result["bear_trap_conf"]   = int(min(max(conf, 0), 98))
+                result["bear_trap_detail"] = " | ".join(detail)
 
     return result
 
 
-# ==============================================================================
-# PROACTIVE TRAP SCANNER — sweeps entire Nifty 500 universe
-# ==============================================================================
 def scan_for_traps(min_confidence=55):
     """
     Proactively sweeps all Nifty 500 stocks for live bull trap and bear trap
