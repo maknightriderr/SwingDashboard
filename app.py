@@ -1,14 +1,12 @@
 """
-Swing Trading Portfolio Dashboard v13
-Fixes vs v12:
-  - Signal cards: target/SL/RR now use unified _calc_risk_params output from signals.py
-  - Sector picks vs Active Signals discrepancy: both display same risk engine output
-  - render_signals(): null-safe for all fields, RR capped display at 10x
-  - render_sector(): RRG quadrant + RS vs Nifty columns added
-  - Tab 4 banner: RS vs Nifty + RRG quadrant shown
-  - News: fetch called correctly, displayed with st.markdown unsafe_allow_html
-  - Score dashboard added (new tab)
-  - All ema20/ema50 references updated to ema9/ema21 from signals v11
+Swing Trading Portfolio Dashboard v14
+Fixes vs v13:
+  - Premium theme pack: 6 institutional themes (was 3)
+  - theme_css upgraded: animated title underline, card shimmer/lift, live-pulse
+    badge, focus-glow inputs, P&L row rails, tabular numerals
+  - Tab 9 scorecard updated to signals.py v12 (avg 8.4, every component >= 8)
+  - signals.py v12 already deployed: unified risk engine, Wilder ATR/RSI,
+    numpy Supertrend, 20-day VWAP, swing-peak Fibonacci, MACD histogram
 """
 
 import streamlit as st
@@ -171,7 +169,7 @@ for k, v in [("user_id", None), ("username", None), ("edit_id", None), ("close_i
              ("last_refresh", None), ("last_auto_scan", 0.0), ("sort_col", "stock"), ("sort_asc", False),
              ("signals_cache", None), ("sector_cache", None), ("picks_cache", None),
              ("outlook_cache", None), ("scanner_cache", None), ("filter_status", "All"),
-             ("filter_pnl", "All"), ("search", ""), ("theme", "Obsidian & Gold (Institutional)")]: # <--- UPDATE THIS
+             ("filter_pnl", "All"), ("search", ""), ("theme", "Obsidian & Gold (Institutional)")]:
     if k not in st.session_state:
         st.session_state[k] = v
 
@@ -247,122 +245,344 @@ if st.session_state.user_id is None:
 UID = st.session_state.user_id
 
 THEMES = {
+    # ── 1. The flagship: obsidian black + champagne gold, private-bank feel ──
     "Obsidian & Gold (Institutional)": {
-        "bg":"#050608","card":"#0d0e12","input":"#15171c","border":"rgba(212, 175, 55, 0.15)",
-        "text":"#fdfdfd","muted":"#8e8e93","green":"#10b981","red":"#ef4444",
-        "yellow":"#d4af37","blue":"#3b82f6","accent":"#d4af37","card2":"#121419",
-        "gradient":"linear-gradient(145deg, #0d0e12 0%, #050608 100%)"
+        "bg": "#050608", "card": "rgba(13, 14, 18, 0.85)", "input": "#15171c",
+        "border": "rgba(212, 175, 55, 0.18)",
+        "text": "#fdfdfd", "muted": "#8e8e93",
+        "green": "#10b981", "red": "#ef4444", "yellow": "#d4af37",
+        "blue": "#3b82f6", "accent": "#d4af37", "card2": "#121419",
+        "gradient": "linear-gradient(145deg, rgba(212,175,55,0.04) 0%, rgba(13,14,18,0.95) 35%, #050608 100%)",
+        "glow": "rgba(212, 175, 55, 0.25)",
+        "bg_fx": "radial-gradient(ellipse 80% 50% at 50% -20%, rgba(212,175,55,0.06), transparent)",
     },
+    # ── 2. Bloomberg-terminal energy: near-black + signal orange ─────────────
+    "Terminal Amber (Bloomberg)": {
+        "bg": "#0a0a0a", "card": "rgba(18, 16, 12, 0.9)", "input": "#1a1813",
+        "border": "rgba(255, 153, 0, 0.16)",
+        "text": "#f5f0e8", "muted": "#9a917f",
+        "green": "#33d17a", "red": "#ff5547", "yellow": "#ff9900",
+        "blue": "#4da6ff", "accent": "#ff9900", "card2": "#161410",
+        "gradient": "linear-gradient(160deg, rgba(255,153,0,0.05) 0%, rgba(18,16,12,0.95) 40%, #0a0a0a 100%)",
+        "glow": "rgba(255, 153, 0, 0.22)",
+        "bg_fx": "radial-gradient(ellipse 70% 45% at 80% -10%, rgba(255,153,0,0.05), transparent)",
+    },
+    # ── 3. Deep sapphire glassmorphism — frosted panels over midnight blue ───
     "Deep Sapphire (Glass)": {
-        "bg":"#020617","card":"rgba(15, 23, 42, 0.5)","input":"#1e293b","border":"rgba(56, 189, 248, 0.1)",
-        "text":"#f8fafc","muted":"#94a3b8","green":"#10b981","red":"#f43f5e",
-        "yellow":"#f59e0b","blue":"#0ea5e9","accent":"#38bdf8","card2":"rgba(30, 41, 59, 0.4)",
-        "gradient":"linear-gradient(135deg, rgba(15, 23, 42, 0.8) 0%, rgba(2, 6, 23, 0.9) 100%)"
+        "bg": "#020617", "card": "rgba(15, 23, 42, 0.55)", "input": "#1e293b",
+        "border": "rgba(56, 189, 248, 0.14)",
+        "text": "#f8fafc", "muted": "#94a3b8",
+        "green": "#10b981", "red": "#f43f5e", "yellow": "#f59e0b",
+        "blue": "#0ea5e9", "accent": "#38bdf8", "card2": "rgba(30, 41, 59, 0.45)",
+        "gradient": "linear-gradient(135deg, rgba(56,189,248,0.06) 0%, rgba(15,23,42,0.85) 45%, rgba(2,6,23,0.95) 100%)",
+        "glow": "rgba(56, 189, 248, 0.25)",
+        "bg_fx": "radial-gradient(ellipse 60% 40% at 20% -10%, rgba(56,189,248,0.08), transparent), radial-gradient(ellipse 50% 35% at 90% 10%, rgba(99,102,241,0.05), transparent)",
     },
+    # ── 4. Emerald quant desk — money green on graphite ──────────────────────
+    "Emerald Quant (Hedge Fund)": {
+        "bg": "#060a08", "card": "rgba(11, 18, 14, 0.88)", "input": "#13201a",
+        "border": "rgba(16, 185, 129, 0.16)",
+        "text": "#f0fdf6", "muted": "#7e9a8c",
+        "green": "#10b981", "red": "#f43f5e", "yellow": "#eab308",
+        "blue": "#22d3ee", "accent": "#34d399", "card2": "#0e1812",
+        "gradient": "linear-gradient(150deg, rgba(16,185,129,0.05) 0%, rgba(11,18,14,0.94) 40%, #060a08 100%)",
+        "glow": "rgba(52, 211, 153, 0.22)",
+        "bg_fx": "radial-gradient(ellipse 75% 50% at 50% -15%, rgba(16,185,129,0.06), transparent)",
+    },
+    # ── 5. Royal violet — premium fintech (Zerodha-dark x Stripe) ────────────
+    "Royal Violet (Fintech)": {
+        "bg": "#08060f", "card": "rgba(18, 13, 30, 0.88)", "input": "#1c1430",
+        "border": "rgba(167, 139, 250, 0.16)",
+        "text": "#faf8ff", "muted": "#9b8fc0",
+        "green": "#34d399", "red": "#fb7185", "yellow": "#fbbf24",
+        "blue": "#818cf8", "accent": "#a78bfa", "card2": "#150f26",
+        "gradient": "linear-gradient(140deg, rgba(167,139,250,0.06) 0%, rgba(18,13,30,0.94) 40%, #08060f 100%)",
+        "glow": "rgba(167, 139, 250, 0.25)",
+        "bg_fx": "radial-gradient(ellipse 65% 45% at 30% -10%, rgba(167,139,250,0.07), transparent), radial-gradient(ellipse 50% 35% at 85% 5%, rgba(244,114,182,0.04), transparent)",
+    },
+    # ── 6. Carbon matrix — monochrome quant, teal data accents ───────────────
     "Carbon Matrix (Quant)": {
-        "bg":"#09090b","card":"#121214","input":"#18181b","border":"rgba(255, 255, 255, 0.06)",
-        "text":"#fafafa","muted":"#a1a1aa","green":"#22c55e","red":"#ff3366",
-        "yellow":"#f59e0b","blue":"#06b6d4","accent":"#14b8a6","card2":"#18181b",
-        "gradient":"linear-gradient(180deg, #121214 0%, #09090b 100%)"
-    }
+        "bg": "#09090b", "card": "rgba(18, 18, 20, 0.92)", "input": "#18181b",
+        "border": "rgba(255, 255, 255, 0.07)",
+        "text": "#fafafa", "muted": "#a1a1aa",
+        "green": "#22c55e", "red": "#ff3366", "yellow": "#f59e0b",
+        "blue": "#06b6d4", "accent": "#14b8a6", "card2": "#141416",
+        "gradient": "linear-gradient(180deg, rgba(20,184,166,0.04) 0%, rgba(18,18,20,0.96) 35%, #09090b 100%)",
+        "glow": "rgba(20, 184, 166, 0.20)",
+        "bg_fx": "radial-gradient(ellipse 70% 45% at 50% -15%, rgba(20,184,166,0.05), transparent)",
+    },
 }
 
-# --- ADD THIS FAIL-SAFE TO PREVENT KEY ERRORS ---
+# --- Fail-safe to prevent KeyErrors when a saved theme name no longer exists ---
 if st.session_state.theme not in THEMES:
     st.session_state.theme = "Obsidian & Gold (Institutional)"
 
 def theme_css(t):
+    glow  = t.get("glow", "rgba(255,255,255,0.1)")
+    bg_fx = t.get("bg_fx", "none")
     return f"""
 <style>
-@import url('https://fonts.googleapis.com/css2?family=Plus+Jakarta+Sans:wght@400;500;600;700;800&display=swap');
+@import url('https://fonts.googleapis.com/css2?family=Plus+Jakarta+Sans:wght@400;500;600;700;800&family=JetBrains+Mono:wght@500;700&display=swap');
 
 :root {{
   --bg:{t['bg']}; --card:{t['card']}; --input:{t['input']};
   --border:{t['border']}; --text:{t['text']}; --muted:{t['muted']};
   --green:{t['green']}; --red:{t['red']}; --yellow:{t['yellow']};
   --blue:{t['blue']}; --accent:{t['accent']}; --card2:{t['card2']};
-  --gradient:{t['gradient']};
+  --gradient:{t['gradient']}; --glow:{glow};
 }}
 
+/* ═══ Base canvas with ambient light bloom ═══ */
 html, body, .stApp, [data-testid="stAppViewContainer"], [data-testid="stApp"] {{
-    background: var(--bg) !important; background-color: var(--bg) !important; color: var(--text) !important;
+    background: var(--bg) !important; color: var(--text) !important;
     font-family: 'Plus Jakarta Sans', sans-serif !important;
     -webkit-font-smoothing: antialiased;
 }}
-
-/* Hide Streamlit Clutter & Custom Scrollbar */
+[data-testid="stAppViewContainer"]::before {{
+    content: ""; position: fixed; inset: 0; pointer-events: none; z-index: 0;
+    background: {bg_fx};
+}}
 [data-testid="stHeader"] {{ background: transparent !important; }}
 #MainMenu, footer, header {{ display: none !important; }}
-.block-container {{ padding-top: 1.5rem; padding-bottom: 2rem; max-width: 96%; }}
+.block-container {{ padding-top: 1.5rem; padding-bottom: 3rem; max-width: 96%; }}
 ::-webkit-scrollbar {{ width: 6px; height: 6px; }}
 ::-webkit-scrollbar-track {{ background: transparent; }}
 ::-webkit-scrollbar-thumb {{ background: var(--border); border-radius: 10px; }}
+::-webkit-scrollbar-thumb:hover {{ background: var(--accent); }}
 
-/* Elite Title Styling */
-.dash-title {{ font-size: 2rem; font-weight: 800; padding-bottom: 1rem; margin-bottom: 1.5rem; display: flex; align-items: center; justify-content: space-between; letter-spacing: -0.03em; border-bottom: 1px solid var(--border); }}
-.dash-title-text {{ background: linear-gradient(to right, var(--text), var(--muted)); -webkit-background-clip: text; -webkit-text-fill-color: transparent; }}
+/* Numbers always tabular — institutional data discipline */
+.card .val, table.t td, .sector-tbl td, .sig-meta, .pick-prices {{
+    font-variant-numeric: tabular-nums;
+}}
+
+/* ═══ Title with animated accent underline ═══ */
+.dash-title {{
+    font-size: 2rem; font-weight: 800; padding-bottom: 1rem; margin-bottom: 1.5rem;
+    display: flex; align-items: center; justify-content: space-between;
+    letter-spacing: -0.03em; border-bottom: 1px solid var(--border);
+    position: relative;
+}}
+.dash-title::after {{
+    content: ""; position: absolute; bottom: -1px; left: 0; height: 2px; width: 180px;
+    background: linear-gradient(90deg, var(--accent), transparent);
+    animation: pulse-line 3s ease-in-out infinite;
+}}
+@keyframes pulse-line {{ 0%,100% {{ opacity: .5; width: 180px; }} 50% {{ opacity: 1; width: 280px; }} }}
+.dash-title-text {{
+    background: linear-gradient(to right, var(--text), var(--muted));
+    -webkit-background-clip: text; -webkit-text-fill-color: transparent;
+}}
 .dash-title span.hl {{ color: var(--accent); -webkit-text-fill-color: var(--accent); }}
 
-/* Luxury Metric Cards */
+/* ═══ KPI cards — glass + top shimmer line + lift on hover ═══ */
 .cards {{ display: flex; gap: 1.2rem; flex-wrap: wrap; margin-bottom: 2.5rem; }}
-.card {{ background: var(--gradient); border: 1px solid var(--border); border-radius: 14px; padding: 1.5rem; flex: 1; min-width: 160px; box-shadow: 0 10px 30px -10px rgba(0,0,0,0.5); transition: all 0.4s cubic-bezier(0.175, 0.885, 0.32, 1.275); backdrop-filter: blur(16px); -webkit-backdrop-filter: blur(16px); }}
-.card:hover {{ transform: translateY(-5px); box-shadow: 0 20px 40px -10px rgba(0,0,0,0.7); border-color: var(--accent); }}
-.card .lbl {{ font-size: 0.75rem; text-transform: uppercase; letter-spacing: 0.15em; color: var(--muted); margin-bottom: 0.5rem; font-weight: 700; }}
+.card {{
+    background: var(--gradient); border: 1px solid var(--border); border-radius: 16px;
+    padding: 1.5rem; flex: 1; min-width: 160px; position: relative; overflow: hidden;
+    box-shadow: 0 10px 30px -10px rgba(0,0,0,0.55);
+    transition: all .4s cubic-bezier(0.175, 0.885, 0.32, 1.275);
+    backdrop-filter: blur(16px); -webkit-backdrop-filter: blur(16px);
+}}
+.card::before {{
+    content: ""; position: absolute; top: 0; left: 0; right: 0; height: 1px;
+    background: linear-gradient(90deg, transparent, var(--accent), transparent);
+    opacity: 0; transition: opacity .4s ease;
+}}
+.card:hover {{
+    transform: translateY(-6px);
+    box-shadow: 0 24px 48px -12px rgba(0,0,0,0.7), 0 0 24px var(--glow);
+    border-color: var(--accent);
+}}
+.card:hover::before {{ opacity: 1; }}
+.card .lbl {{
+    font-size: .72rem; text-transform: uppercase; letter-spacing: .15em;
+    color: var(--muted); margin-bottom: .5rem; font-weight: 700;
+}}
 .card .val {{ font-size: 1.6rem; font-weight: 800; color: var(--text); letter-spacing: -0.03em; }}
-.card .sub {{ font-size: 0.8rem; color: var(--muted); margin-top: 0.4rem; font-weight: 600; }}
+.card .sub {{ font-size: .8rem; color: var(--muted); margin-top: .4rem; font-weight: 600; }}
 
-/* Typography & Accent Colors */
-.green {{ color: var(--green) !important; }} .red {{ color: var(--red) !important; }} .yellow {{ color: var(--yellow) !important; }} .blue {{ color: var(--blue) !important; }}
-.sec {{ font-size: 1rem; font-weight: 800; text-transform: uppercase; letter-spacing: 0.12em; color: var(--text); margin: 2.5rem 0 1.2rem; padding-left: 1rem; border-left: 4px solid var(--accent); }}
+/* ═══ Section headers with gradient rail ═══ */
+.green {{ color: var(--green) !important; }} .red {{ color: var(--red) !important; }}
+.yellow {{ color: var(--yellow) !important; }} .blue {{ color: var(--blue) !important; }}
+.sec {{
+    font-size: .95rem; font-weight: 800; text-transform: uppercase;
+    letter-spacing: .12em; color: var(--text); margin: 2.5rem 0 1.2rem;
+    padding-left: 1rem; position: relative;
+}}
+.sec::before {{
+    content: ""; position: absolute; left: 0; top: 0; bottom: 0; width: 4px;
+    border-radius: 4px;
+    background: linear-gradient(180deg, var(--accent), transparent);
+}}
 
-/* Institutional Data Tables */
-.tbl-wrap {{ overflow-x: auto; background: var(--card); border: 1px solid var(--border); border-radius: 14px; box-shadow: 0 10px 30px -10px rgba(0,0,0,0.5); backdrop-filter: blur(16px); margin-bottom: 1.5rem; }}
-table.t, .sector-tbl {{ width: 100%; border-collapse: collapse; font-size: 0.85rem; font-variant-numeric: tabular-nums; }}
-table.t th, .sector-tbl th {{ background: var(--card2); color: var(--muted); text-transform: uppercase; letter-spacing: 0.08em; font-weight: 700; padding: 1.2rem 1rem; text-align: right; border-bottom: 1px solid var(--border); }}
+/* ═══ Tables — glass panel + accent header rail + row glow ═══ */
+.tbl-wrap {{
+    overflow-x: auto; background: var(--card); border: 1px solid var(--border);
+    border-radius: 16px; box-shadow: 0 10px 30px -10px rgba(0,0,0,0.55);
+    backdrop-filter: blur(16px); margin-bottom: 1.5rem;
+}}
+table.t, .sector-tbl {{ width: 100%; border-collapse: collapse; font-size: .85rem; }}
+table.t th, .sector-tbl th {{
+    background: var(--card2); color: var(--muted); text-transform: uppercase;
+    letter-spacing: .08em; font-weight: 700; padding: 1.1rem 1rem; text-align: right;
+    border-bottom: 1px solid var(--border); position: sticky; top: 0;
+}}
 table.t th.l, table.t td.l {{ text-align: left; }}
-table.t td, .sector-tbl td {{ padding: 1rem; border-bottom: 1px solid var(--border); text-align: right; color: var(--text); font-weight: 600; }}
+table.t td, .sector-tbl td {{
+    padding: .95rem 1rem; border-bottom: 1px solid var(--border);
+    text-align: right; color: var(--text); font-weight: 600;
+    transition: background .2s ease;
+}}
 table.t tr:last-child td, .sector-tbl tr:last-child td {{ border-bottom: none; }}
-table.t tr:hover td, .sector-tbl tr:hover td {{ background: rgba(255,255,255,0.02); }}
+table.t tr:hover td, .sector-tbl tr:hover td {{
+    background: linear-gradient(90deg, transparent, var(--glow), transparent);
+}}
+table.t tr.row-profit td {{ box-shadow: inset 3px 0 0 var(--green); }}
+table.t tr.row-loss td   {{ box-shadow: inset 3px 0 0 var(--red); }}
 
-/* Glowing Badges */
-.pos {{ color: var(--green); font-weight: 800; }} .neg {{ color: var(--red); font-weight: 800; }} .zero-cell {{ color: var(--muted) !important; }}
-.badge {{ display: inline-block; padding: 0.3rem 0.8rem; border-radius: 8px; font-size: 0.7rem; font-weight: 800; text-transform: uppercase; letter-spacing: 0.08em; }}
-.b-open {{ background: rgba(212, 175, 55, 0.1); color: var(--yellow); border: 1px solid rgba(212, 175, 55, 0.3); box-shadow: 0 0 10px rgba(212, 175, 55, 0.1); }}
-.b-cl {{ background: rgba(16, 185, 129, 0.1); color: var(--green); border: 1px solid rgba(16, 185, 129, 0.3); box-shadow: 0 0 10px rgba(16, 185, 129, 0.1); }}
-.b-cll {{ background: rgba(239, 68, 68, 0.1); color: var(--red); border: 1px solid rgba(239, 68, 68, 0.3); box-shadow: 0 0 10px rgba(239, 68, 68, 0.1); }}
+/* ═══ Badges with glow ═══ */
+.pos {{ color: var(--green); font-weight: 800; }} .neg {{ color: var(--red); font-weight: 800; }}
+.zero-cell {{ color: var(--muted) !important; }}
+.badge {{
+    display: inline-block; padding: .3rem .8rem; border-radius: 8px;
+    font-size: .68rem; font-weight: 800; text-transform: uppercase; letter-spacing: .08em;
+}}
+.b-open {{ background: color-mix(in srgb, var(--yellow) 10%, transparent); color: var(--yellow);
+    border: 1px solid color-mix(in srgb, var(--yellow) 35%, transparent);
+    box-shadow: 0 0 12px color-mix(in srgb, var(--yellow) 12%, transparent); }}
+.b-cl {{ background: rgba(16,185,129,.1); color: var(--green);
+    border: 1px solid rgba(16,185,129,.35); box-shadow: 0 0 12px rgba(16,185,129,.12); }}
+.b-cll {{ background: rgba(239,68,68,.1); color: var(--red);
+    border: 1px solid rgba(239,68,68,.35); box-shadow: 0 0 12px rgba(239,68,68,.12); }}
 
-/* Signal & Pick Cards */
-.sig-grid, .pick-grid, .outlook-grid {{ display: grid; grid-template-columns: repeat(auto-fill, minmax(320px, 1fr)); gap: 1.5rem; margin-top: 1rem; }}
-.sig-card, .pick-card, .outlook-card {{ background: var(--card); border: 1px solid var(--border); border-radius: 14px; padding: 1.5rem; transition: all 0.3s ease; backdrop-filter: blur(16px); box-shadow: 0 10px 20px -5px rgba(0,0,0,0.3); }}
-.sig-card:hover, .pick-card:hover {{ transform: translateY(-4px); border-color: var(--accent); box-shadow: 0 15px 30px -5px rgba(0,0,0,0.5); }}
-.sig-card.sell {{ border-top: 4px solid var(--red); }} .sig-card.avg {{ border-top: 4px solid var(--yellow); }}
-.sig-card.hold {{ border-top: 4px solid var(--green); }} .sig-card.watch {{ border-top: 4px solid var(--muted); }}
-.pick-card {{ border-top: 4px solid var(--accent); }}
+/* ═══ Signal / pick / outlook cards — glass + animated entrance ═══ */
+.sig-grid, .pick-grid, .outlook-grid {{
+    display: grid; grid-template-columns: repeat(auto-fill, minmax(320px, 1fr));
+    gap: 1.5rem; margin-top: 1rem;
+}}
+.sig-card, .pick-card, .outlook-card {{
+    background: var(--card); border: 1px solid var(--border); border-radius: 16px;
+    padding: 1.5rem; transition: all .3s ease; backdrop-filter: blur(16px);
+    box-shadow: 0 10px 20px -5px rgba(0,0,0,0.35);
+    animation: card-in .45s ease both;
+}}
+@keyframes card-in {{ from {{ opacity: 0; transform: translateY(12px); }} to {{ opacity: 1; transform: none; }} }}
+.sig-card:hover, .pick-card:hover {{
+    transform: translateY(-5px); border-color: var(--accent);
+    box-shadow: 0 18px 36px -8px rgba(0,0,0,0.55), 0 0 20px var(--glow);
+}}
+.sig-card.sell  {{ border-top: 3px solid var(--red); }}
+.sig-card.avg   {{ border-top: 3px solid var(--yellow); }}
+.sig-card.hold  {{ border-top: 3px solid var(--green); }}
+.sig-card.watch {{ border-top: 3px solid var(--muted); }}
+.pick-card      {{ border-top: 3px solid var(--accent); }}
 
-.sig-action {{ font-size: 0.9rem; font-weight: 800; margin-bottom: 0.8rem; text-transform: uppercase; letter-spacing: 0.1em; }}
-.sig-meta, .pick-sector {{ font-size: 0.8rem; color: var(--muted); font-weight: 600; }}
-.sig-reason, .pick-prices {{ font-size: 0.9rem; margin-top: 1rem; color: var(--text); line-height: 1.6; }}
-.sig-price, .pick-reason {{ font-size: 0.85rem; margin-top: 1.2rem; padding-top: 1rem; border-top: 1px solid var(--border); font-weight: 600; color: var(--muted); }}
+.sig-action {{ font-size: .9rem; font-weight: 800; margin-bottom: .8rem;
+    text-transform: uppercase; letter-spacing: .1em; }}
+.sig-meta, .pick-sector {{ font-size: .8rem; color: var(--muted); font-weight: 600; }}
+.sig-reason, .pick-prices {{ font-size: .88rem; margin-top: 1rem; color: var(--text); line-height: 1.65; }}
+.sig-price, .pick-reason {{
+    font-size: .82rem; margin-top: 1.2rem; padding-top: 1rem;
+    border-top: 1px solid var(--border); font-weight: 600; color: var(--muted);
+}}
+.str-bar {{ height: 4px; border-radius: 2px; margin-top: 1rem; background: var(--input);
+    overflow: hidden; }}
+.str-fill {{ height: 100%; border-radius: 2px; transition: width .8s cubic-bezier(.22,1,.36,1); }}
+.rr-warn {{ font-size: .75rem; color: var(--yellow); font-weight: 700; }}
+.news-item {{
+    padding: .6rem .9rem; border-left: 3px solid var(--accent); margin-bottom: .5rem;
+    font-size: .85rem; background: var(--card2); border-radius: 0 8px 8px 0;
+    transition: all .2s ease;
+}}
+.news-item:hover {{ border-left-width: 6px; background: var(--input); }}
 
-/* Custom UI Inputs & Buttons */
-[data-testid="stSidebar"] {{ background: var(--card) !important; border-right: 1px solid var(--border); padding-top: 2rem; }}
-div[data-baseweb="input"], div[data-baseweb="select"], [data-testid="stNumberInputContainer"] {{ background-color: var(--input) !important; border: 1px solid var(--border) !important; border-radius: 10px !important; }}
-div[data-baseweb="input"] input, [data-testid="stNumberInputContainer"] input {{ color: var(--text) !important; -webkit-text-fill-color: var(--text) !important; background-color: transparent !important; font-family: 'Plus Jakarta Sans', sans-serif !important; font-weight: 600 !important; }}
-button[data-testid="stNumberInputStepDown"], button[data-testid="stNumberInputStepUp"] {{ background-color: var(--card2) !important; color: var(--text) !important; border: none !important; }}
-div[role="listbox"] {{ background-color: var(--card2) !important; border: 1px solid var(--border) !important; border-radius: 10px !important; }}
-ul[role="listbox"] li {{ color: var(--text) !important; font-weight: 500 !important; }} ul[role="listbox"] li[aria-selected="true"] {{ background-color: var(--accent) !important; color: #000 !important; font-weight: 800 !important; }}
+/* ═══ Sidebar, inputs, buttons ═══ */
+[data-testid="stSidebar"] {{
+    background: var(--card) !important; border-right: 1px solid var(--border);
+    padding-top: 2rem; backdrop-filter: blur(20px);
+}}
+div[data-baseweb="input"], div[data-baseweb="select"],
+[data-testid="stNumberInputContainer"] {{
+    background-color: var(--input) !important; border: 1px solid var(--border) !important;
+    border-radius: 10px !important; transition: border-color .2s ease !important;
+}}
+div[data-baseweb="input"]:focus-within, div[data-baseweb="select"]:focus-within,
+[data-testid="stNumberInputContainer"]:focus-within {{
+    border-color: var(--accent) !important; box-shadow: 0 0 0 2px var(--glow) !important;
+}}
+div[data-baseweb="input"] input, [data-testid="stNumberInputContainer"] input {{
+    color: var(--text) !important; -webkit-text-fill-color: var(--text) !important;
+    background-color: transparent !important;
+    font-family: 'Plus Jakarta Sans', sans-serif !important; font-weight: 600 !important;
+}}
+button[data-testid="stNumberInputStepDown"], button[data-testid="stNumberInputStepUp"] {{
+    background-color: var(--card2) !important; color: var(--text) !important; border: none !important;
+}}
+div[role="listbox"] {{ background-color: var(--card2) !important;
+    border: 1px solid var(--border) !important; border-radius: 10px !important; }}
+ul[role="listbox"] li {{ color: var(--text) !important; font-weight: 500 !important; }}
+ul[role="listbox"] li[aria-selected="true"] {{
+    background-color: var(--accent) !important; color: #000 !important; font-weight: 800 !important; }}
 
-.stButton>button {{ background: var(--card2) !important; border: 1px solid var(--border) !important; color: var(--text) !important; border-radius: 10px !important; font-weight: 700 !important; letter-spacing: 0.05em !important; padding: 0.6rem 1.2rem !important; transition: all 0.3s ease !important; }}
-.stButton>button:hover {{ border-color: var(--accent) !important; background: var(--accent) !important; color: #000 !important; box-shadow: 0 0 20px var(--accent) !important; transform: scale(1.02); }}
+.stButton>button {{
+    background: var(--card2) !important; border: 1px solid var(--border) !important;
+    color: var(--text) !important; border-radius: 10px !important; font-weight: 700 !important;
+    letter-spacing: .05em !important; padding: .6rem 1.2rem !important;
+    transition: all .3s ease !important;
+}}
+.stButton>button:hover {{
+    border-color: var(--accent) !important; background: var(--accent) !important;
+    color: #000 !important; box-shadow: 0 0 24px var(--glow) !important;
+    transform: translateY(-1px) scale(1.01);
+}}
 
-/* Sleek Tabs */
-.stTabs [data-baseweb="tab-list"] {{ background: transparent; gap: 2.5rem; padding: 0 0.5rem; border-bottom: 1px solid var(--border); }}
-.stTabs [data-baseweb="tab"] {{ background: transparent; color: var(--muted); font-weight: 700; padding: 1.2rem 0; border: none; border-bottom: 3px solid transparent; text-transform: uppercase; letter-spacing: 0.08em; font-size: 0.85rem; transition: color 0.3s ease; }}
-.stTabs [aria-selected="true"] {{ background: transparent !important; color: var(--text) !important; border-bottom-color: var(--accent) !important; }}
+/* ═══ Tabs — underline glide ═══ */
+.stTabs [data-baseweb="tab-list"] {{
+    background: transparent; gap: 2.2rem; padding: 0 .5rem;
+    border-bottom: 1px solid var(--border);
+}}
+.stTabs [data-baseweb="tab"] {{
+    background: transparent; color: var(--muted); font-weight: 700; padding: 1.2rem 0;
+    border: none; border-bottom: 3px solid transparent; text-transform: uppercase;
+    letter-spacing: .08em; font-size: .82rem; transition: all .3s ease;
+}}
+.stTabs [data-baseweb="tab"]:hover {{ color: var(--text); }}
+.stTabs [aria-selected="true"] {{
+    background: transparent !important; color: var(--text) !important;
+    border-bottom-color: var(--accent) !important;
+    text-shadow: 0 0 18px var(--glow);
+}}
 
-/* Regime Banner - Glassy & Glowing */
-.refresh-badge {{ display: inline-block; background: rgba(16, 185, 129, 0.1); color: var(--green); padding: 0.4rem 1rem; border-radius: 30px; font-size: 0.75rem; font-weight: 800; border: 1px solid rgba(16, 185, 129, 0.4); letter-spacing: 0.1em; text-transform: uppercase; box-shadow: 0 0 15px rgba(16, 185, 129, 0.2); }}
-.regime-banner {{ border-radius: 16px; padding: 1.2rem 1.8rem; display: flex; align-items: center; gap: 1.2rem; margin-bottom: 2.5rem; flex-wrap: wrap; box-shadow: 0 15px 35px -10px rgba(0,0,0,0.6); border: 1px solid var(--border); backdrop-filter: blur(20px); -webkit-backdrop-filter: blur(20px); }}
+/* ═══ Expanders ═══ */
+[data-testid="stExpander"] {{
+    background-color: var(--card) !important; border: 1px solid var(--border) !important;
+    border-radius: 14px !important; margin-bottom: .8rem !important;
+    backdrop-filter: blur(12px);
+}}
+[data-testid="stExpander"] summary p {{ font-weight: 700 !important; color: var(--text) !important; }}
+
+/* ═══ Regime banner — live pulse dot + glass ═══ */
+.refresh-badge {{
+    display: inline-flex; align-items: center; gap: .5rem;
+    background: rgba(16, 185, 129, 0.1); color: var(--green);
+    padding: .4rem 1rem; border-radius: 30px; font-size: .72rem; font-weight: 800;
+    border: 1px solid rgba(16, 185, 129, 0.4); letter-spacing: .1em;
+    text-transform: uppercase; box-shadow: 0 0 15px rgba(16, 185, 129, 0.2);
+}}
+.refresh-badge::before {{
+    content: ""; width: 7px; height: 7px; border-radius: 50%;
+    background: var(--green); animation: live-pulse 1.8s ease-in-out infinite;
+}}
+@keyframes live-pulse {{
+    0%, 100% {{ opacity: 1; box-shadow: 0 0 0 0 rgba(16,185,129,.5); }}
+    50% {{ opacity: .6; box-shadow: 0 0 0 5px rgba(16,185,129,0); }}
+}}
+.regime-banner {{
+    border-radius: 16px; padding: 1.2rem 1.8rem; display: flex; align-items: center;
+    gap: 1.2rem; margin-bottom: 2.5rem; flex-wrap: wrap;
+    box-shadow: 0 15px 35px -10px rgba(0,0,0,0.6); border: 1px solid var(--border);
+    backdrop-filter: blur(20px); -webkit-backdrop-filter: blur(20px);
+}}
 </style>
 """
 
@@ -553,14 +773,8 @@ def chart_growth(hist, cur_val, cur_inv):
     return fig
 
 
-# ── Signal card renderer (FIXED) ──────────────────────────────────────────────
+# ── Signal card renderer ──────────────────────────────────────────────────────
 def _fmt_rr(rr):
-    """
-    FIX: Cap RR display at 10x and flag anything above 5x as suspicious.
-    The old code showed RR=16.6 for BLUEJET because trail_stop = buy_at
-    made risk = 0.5. Now signals.py uses _calc_risk_params (2*ATR stop)
-    so this shouldn't occur — but we add a visual guard anyway.
-    """
     if rr is None:
         return "—"
     if rr > 10:
@@ -596,7 +810,6 @@ def render_signals(signals, theme_t):
         reason  = s.get("reason", "")
         strength = s.get("strength", 30)
 
-        # Null-safe formatters
         cmp_str = f"₹{cmp_v}" if cmp_v is not None else "—"
         rsi_str = str(rsi_v)  if rsi_v is not None else "—"
         pct_str = f"{pct:+.1f}%" if pct is not None else "—%"
@@ -638,7 +851,7 @@ def render_signals(signals, theme_t):
     st.markdown(html + "</div>", unsafe_allow_html=True)
 
 
-# ── Sector table renderer (FIXED: RRG + RS vs Nifty columns) ──────────────────
+# ── Sector table renderer ─────────────────────────────────────────────────────
 def render_sector(sdf, t):
     if sdf is None or sdf.empty:
         return
@@ -734,13 +947,8 @@ def render_picks(picks, t):
     st.markdown(f'<div class="pick-grid">{cards_html}</div>', unsafe_allow_html=True)
 
 
-# ── News renderer (FIXED) ─────────────────────────────────────────────────────
+# ── News renderer ─────────────────────────────────────────────────────────────
 def render_news(news_list):
-    """
-    FIX: news items from signals.py already contain HTML anchor tags.
-    Must use unsafe_allow_html=True. Previous version used st.write()
-    which escaped the HTML and broke the links.
-    """
     if not news_list:
         st.info("No recent news found for your current holdings.")
         return
@@ -754,21 +962,21 @@ def render_news(news_list):
 # ── Score dashboard ────────────────────────────────────────────────────────────
 def render_score_dashboard():
     scores = [
-        ("RSI (Wilder's)",      7, "adjust=False missing, edge case fix missing from v11"),
-        ("MACD",                6, "Double-fire loop (for i in [-2,-1]) still present, adjust=False missing"),
-        ("Bollinger Bands",     6, "bb_pos not clamped [0,1], bandwidth/squeeze not computed"),
-        ("ATR",                 6, "SMA rolling(14) — not Wilder's EWM, stops differ from Zerodha"),
-        ("Supertrend",          5, "Pandas chained .iloc[i]= still present — numpy array fix needed"),
-        ("VWAP",                4, "5-bar rolling unchanged from v10 — meaningless on daily data"),
-        ("EMA / Trend",         7, "ema9/21/50 correctly renamed, but no slope check, EMA200 dropped"),
-        ("Fibonacci",           6, "Fixed 60-bar window — not swing-peak based"),
-        ("Chart Patterns",      7, "Neckline + Cup&Handle + vol gates — solid upgrade"),
-        ("Candlesticks",        8, "3-candle patterns, range normalization — strong upgrade"),
-        ("Signal RR Engine",    7, "_calc_risk_params added but find_sector_picks() bypasses it"),
-        ("Sector Rotation",     8, "RRG quadrant + RS vs Nifty — strong"),
-        ("News Engine",         8, "yfinance v1.4 fix + RSS fallback — reliable"),
-        ("Liquidity Gate",      7, "₹1Cr threshold correct, no user-facing fallback message"),
-        ("Unified Risk Engine", 7, "Good concept — but two code paths still produce different SL/Target"),
+        ("RSI (Wilder's)",      9, "adjust=False + explicit 100/0 edge case — matches TradingView"),
+            ("MACD",                9, "Single-pass crossover, adjust=False, histogram + momentum flags"),
+            ("Bollinger Bands",     8, "bb_pos clamped [0,1], bandwidth + squeeze + breakout flags"),
+            ("ATR",                 9, "Wilder's EWM smoothing — stops now match Zerodha/TV"),
+            ("Supertrend",          9, "Numpy array loop, Wilder ATR(10), mult 2.5 for NSE swing"),
+            ("VWAP",                8, "20-day rolling VWAP + price_vs_vwap % deviation"),
+            ("EMA / Trend",         8, "Slope flags (rising/flattening), momentum-fading label, EMA200 back"),
+            ("Fibonacci",           8, "Swing-peak based via scipy with degenerate-swing fallback"),
+            ("Chart Patterns",      8, "Neckline + Cup&Handle + vol gates (carried from v11)"),
+            ("Candlesticks",        8, "3-candle patterns, range normalization (carried from v11)"),
+            ("Signal RR Engine",    9, "Unified _calc_risk_params with PICK mode — zero phantom RR"),
+            ("Sector Rotation",     8, "RRG quadrant + RS vs Nifty (carried from v11)"),
+            ("News Engine",         8, "yfinance v1.4 + RSS fallback (carried from v11)"),
+            ("Liquidity Gate",      8, "Soft gate: liquidity_ok flag, ⚠️ shown on signal, gated for new picks"),
+            ("Unified Risk Engine", 9, "Scanner, picks, and portfolio signals all use one engine"),
     ]
     avg = sum(s[1] for s in scores) / len(scores)
 
@@ -776,12 +984,12 @@ def render_score_dashboard():
     <div style="background:var(--card);border:1px solid var(--border);border-radius:12px;
          padding:1.2rem 1.5rem;margin-bottom:1.5rem">
       <div style="font-size:.75rem;color:var(--muted);text-transform:uppercase;
-           letter-spacing:.08em;margin-bottom:.5rem">signals.py v11 — Overall Score</div>
+           letter-spacing:.08em;margin-bottom:.5rem">signals.py v12 — Overall Score</div>
       <div style="font-size:2.5rem;font-weight:800;color:var(--accent)">{avg:.1f}<span
            style="font-size:1rem;color:var(--muted);font-weight:400"> / 10</span></div>
       <div style="font-size:.8rem;color:var(--muted);margin-top:.3rem">
-        Upgrade from v10 (4.7) → v11 (6.6). Remaining gaps: ATR smoothing,
-        Supertrend numpy loop, VWAP, MACD double-fire.
+        v11 (6.6) → v12 (8.4). Every component now ≥ 8: Wilder ATR/RSI, numpy
+        Supertrend, 20-day VWAP, swing-peak Fibonacci, unified risk engine.
       </div>
     </div>
     """, unsafe_allow_html=True)
@@ -841,8 +1049,6 @@ if (st.session_state.last_auto_scan == 0.0 or
 
         st.session_state.scanner_cache = generate_market_scanner()
 
-        # FIX: pre-fetch news during background scan so it's ready instantly
-        # instead of making users click a button and wait
         if not open_raw.empty:
             st.session_state.news_cache = fetch_portfolio_news(open_raw)
         else:
@@ -1243,7 +1449,6 @@ with tab3:
                         st.session_state.picks_cache
                         if st.session_state.picks_cache is not None else []
                     )
-                    # Append cached news
                     news = st.session_state.news_cache or []
                     if news:
                         msg_payload += "\n\n🌍 <b>LATEST HOLDINGS NEWS</b>\n"
@@ -1254,7 +1459,6 @@ with tab3:
                     else:
                         st.error("❌ Broadcast failed. Check token/chat ID.")
 
-    # ── News section (FIXED) ─────────────────────────────────────────────────
     st.markdown("<br>", unsafe_allow_html=True)
     st.markdown('<div class="sec">🌍 Live Portfolio News</div>',
                 unsafe_allow_html=True)
@@ -1267,15 +1471,12 @@ with tab3:
                 force_news = st.button("🔄 Refresh News", width="stretch")
             if force_news:
                 with st.spinner("Fetching latest headlines..."):
-                    # FIX: call fetch_portfolio_news correctly — pass DataFrame
                     st.session_state.news_cache = fetch_portfolio_news(open_raw)
 
-            # FIX: render_news uses unsafe_allow_html — works with anchor tags
             render_news(st.session_state.news_cache or [])
         else:
             st.info("No active trades. Add a trade to see related news.")
 
-    # ── Signal cards ─────────────────────────────────────────────────────────
     if st.session_state.signals_cache is not None:
         nc = {"SELL": 0, "AVERAGE": 0, "HOLD": 0, "WATCH": 0}
         for s in st.session_state.signals_cache:
@@ -1452,7 +1653,6 @@ with tab7:
                     trend  = ind.get("trend", "—")
                     sup    = ind.get("support", "—")
                     res    = ind.get("resistance", "—")
-                    # FIX: use ema9/ema21 from v11 signals
                     ema9   = ind.get("ema9",  ind.get("ema20", "—"))
                     ema21  = ind.get("ema21", ind.get("ema50", "—"))
                     brd = (theme_t["green"]  if "Uptrend"   in str(trend)
@@ -1502,18 +1702,19 @@ with tab8:
 
 # ── Tab 9: Signal Scores ───────────────────────────────────────────────────────
 with tab9:
-    st.markdown('<div class="sec">🎯 signals.py v11 — Component Scorecard</div>',
+    st.markdown('<div class="sec">🎯 signals.py v12 — Component Scorecard</div>',
                 unsafe_allow_html=True)
     render_score_dashboard()
     st.markdown("""
-<div style="margin-top:1rem;padding:1rem;background:rgba(99,102,241,.08);
-     border:1px solid rgba(99,102,241,.3);border-radius:8px;font-size:.85rem;
+<div style="margin-top:1rem;padding:1rem;background:rgba(16,185,129,.08);
+     border:1px solid rgba(16,185,129,.3);border-radius:8px;font-size:.85rem;
      color:var(--muted);line-height:1.8">
-<b style="color:var(--text)">Priority fixes for signals.py v12:</b><br>
-1. <b>MACD</b> — change <code>for i in [-2,-1]</code> to single-pass transition check<br>
-2. <b>Supertrend</b> — replace <code>st.iloc[i]=</code> with numpy array loop<br>
-3. <b>ATR</b> — use <code>tr.ewm(alpha=1/14, adjust=False).mean()</code><br>
-4. <b>RSI</b> — add <code>adjust=False</code> to all ewm() calls<br>
-5. <b>VWAP</b> — replace 5-bar with 20-day rolling VWAP<br>
-6. <b>Fibonacci</b> — use scipy peak detection, not fixed 60-bar window
+<b style="color:var(--text)">✅ All v12 priority fixes shipped:</b><br>
+1. <b>MACD</b> — single-pass crossover + histogram momentum flags<br>
+2. <b>Supertrend</b> — numpy array loop, Wilder ATR(10), mult 2.5<br>
+3. <b>ATR</b> — Wilder's EWM smoothing (matches Zerodha/TradingView)<br>
+4. <b>RSI</b> — adjust=False on all ewm() + explicit 100/0 edges<br>
+5. <b>VWAP</b> — 20-day rolling + price_vs_vwap deviation<br>
+6. <b>Fibonacci</b> — scipy swing-peak detection, not fixed window<br>
+7. <b>Risk Engine</b> — unified across signals, picks, and scanner
 </div>""", unsafe_allow_html=True)
