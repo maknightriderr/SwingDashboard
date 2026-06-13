@@ -1350,3 +1350,123 @@ def detect_trap_signals(close, high, low, vol, vol_avg, rsi,
         result["bear_trap_detail"] = " | ".join(bear_detail)
 
     return result
+
+
+# ==============================================================================
+# PROACTIVE TRAP SCANNER — sweeps entire Nifty 500 universe
+# ==============================================================================
+def scan_for_traps(min_confidence=55):
+    """
+    Proactively sweeps all Nifty 500 stocks for live bull trap and bear trap
+    patterns. Unlike the embedded flags in generate_signals() which only cover
+    your portfolio, this function scans the FULL universe and surfaces every
+    trap currently forming — letting you act before you're already in a trade.
+
+    Returns:
+        {
+          "bull_traps"  : list[dict]  — sorted by confidence desc
+          "bear_traps"  : list[dict]  — sorted by confidence desc
+          "scanned"     : int         — total symbols attempted
+          "liquid"      : int         — symbols that passed liquidity gate
+          "bull_count"  : int
+          "bear_count"  : int
+          "timestamp"   : str
+        }
+
+    Each bull_trap entry:
+        stock, sector, cmp, rsi, confidence, detail,
+        support, resistance, atr, stop_loss, trend,
+        vol_ratio, supertrend_bullish
+
+    Each bear_trap entry (adds trade-ready params):
+        stock, sector, cmp, rsi, confidence, detail,
+        support, resistance, atr, entry, target,
+        stop_loss, risk_reward, trend, vol_ratio, supertrend_bullish
+    """
+    all_symbols = []
+    for sector, stocks in SECTOR_STOCKS.items():
+        all_symbols.extend(stocks)
+
+    # Bulk fetch — single network pass for the whole universe
+    bulk_data = _bulk_fetch_history(all_symbols, period="6mo")
+
+    bull_traps = []
+    bear_traps = []
+    liquid_count = 0
+
+    for symbol in all_symbols:
+        sector = get_sector(symbol)
+        df  = bulk_data.get(symbol)
+        ind = compute_indicators(symbol, period="6mo", prefetched_df=df)
+        if not ind:
+            continue
+        # Liquidity gate — no point alerting on stocks you can't trade
+        if not ind.get("liquidity_ok", True):
+            continue
+        liquid_count += 1
+
+        cmp = ind["cmp"]
+        atr = ind["atr"]
+
+        # ── Bull Trap alert ───────────────────────────────────────────────────
+        if ind.get("bull_trap") and ind.get("bull_trap_conf", 0) >= min_confidence:
+            # For bull traps: target = current price (exit NOW),
+            # re-entry SL shown so trader knows where to re-enter if wrong
+            _, re_entry_sl, _ = _calc_risk_params(
+                cmp, atr, ind["resistance"], action="SELL"
+            )
+            bull_traps.append({
+                "stock":              symbol,
+                "sector":             sector,
+                "cmp":                cmp,
+                "rsi":                ind["rsi"],
+                "confidence":         ind["bull_trap_conf"],
+                "detail":             ind["bull_trap_detail"],
+                "support":            ind["support"],
+                "resistance":         ind["resistance"],
+                "atr":                atr,
+                "re_entry_sl":        re_entry_sl,
+                "trend":              ind["trend"],
+                "vol_ratio":          ind["vol_ratio"],
+                "supertrend_bullish": ind.get("supertrend_bullish"),
+                "patterns":           " | ".join(ind.get("patterns", []) + ind.get("candlesticks", [])),
+            })
+
+        # ── Bear Trap alert ───────────────────────────────────────────────────
+        if ind.get("bear_trap") and ind.get("bear_trap_conf", 0) >= min_confidence:
+            tgt, sl, rr = _calc_risk_params(
+                cmp, atr, ind["resistance"], action="PICK"
+            )
+            bear_traps.append({
+                "stock":              symbol,
+                "sector":             sector,
+                "cmp":                cmp,
+                "rsi":                ind["rsi"],
+                "confidence":         ind["bear_trap_conf"],
+                "detail":             ind["bear_trap_detail"],
+                "support":            ind["support"],
+                "resistance":         ind["resistance"],
+                "atr":                atr,
+                "entry":              round(cmp, 2),
+                "target":             tgt,
+                "stop_loss":          sl,
+                "risk_reward":        rr,
+                "trend":              ind["trend"],
+                "vol_ratio":          ind["vol_ratio"],
+                "supertrend_bullish": ind.get("supertrend_bullish"),
+                "patterns":           " | ".join(ind.get("patterns", []) + ind.get("candlesticks", [])),
+            })
+
+    # Sort by confidence descending
+    bull_traps.sort(key=lambda x: x["confidence"], reverse=True)
+    bear_traps.sort(key=lambda x: x["confidence"], reverse=True)
+
+    return {
+        "bull_traps":  bull_traps,
+        "bear_traps":  bear_traps,
+        "scanned":     len(all_symbols),
+        "liquid":      liquid_count,
+        "bull_count":  len(bull_traps),
+        "bear_count":  len(bear_traps),
+        "timestamp":   datetime.now().strftime("%d %b %Y %H:%M"),
+    }
