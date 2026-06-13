@@ -773,6 +773,12 @@ def _compute_indicators_raw(symbol, period="1y", prefetched_df=None):
         market_regime=_mkt_regime
     )
 
+    # ── Smart Money Concepts (FVG, OB, Liquidity, Premium/Discount, Displacement) ─
+    try:
+        smc = compute_smc(open_p, high, low, close, vol, atr)
+    except Exception:
+        smc = {}
+
     return {
         "symbol": symbol, "cmp": round(cmp, 2), "rsi": rsi,
 
@@ -814,6 +820,8 @@ def _compute_indicators_raw(symbol, period="1y", prefetched_df=None):
         "bear_trap_conf": traps["bear_trap_conf"],
         "bull_trap_detail": traps["bull_trap_detail"],
         "bear_trap_detail": traps["bear_trap_detail"],
+        # Smart Money Concepts — merged via **smc
+        **smc,
     }
 
 
@@ -1182,6 +1190,16 @@ def find_sector_picks(selected_sectors=None, max_per_sector=3):
             if ind["vol_ratio"] > 1.3: score += 8; reasons.append(f"Vol surge ({ind['vol_ratio']:.1f}x)")
             if ind.get("bear_trap"): score += 20; reasons.append(f"🪤 Bear Trap (conf {ind.get('bear_trap_conf',0)}%)")
             if ind.get("bull_trap"): score -= 25  # avoid buying into a bull trap
+            # SMC confluence — institutional structure boosts/reduces conviction
+            _smc_score = ind.get("smc_score", 0)
+            if _smc_score >= 35:
+                score += 12; reasons.append(f"🏦 Bullish SMC ({_smc_score:+d})")
+            elif _smc_score <= -35:
+                score -= 12
+            if ind.get("smc_zone") == "Discount":
+                score += 6; reasons.append("SMC Discount zone")
+            if ind.get("smc_at_bull_ob"):
+                score += 8; reasons.append("At bull Order Block")
             if score < 45:
                 continue
 
@@ -1950,4 +1968,412 @@ def scan_corporate_actions_universe(min_dividend=0.0):
         "recent_splits":        recent_splits,
         "scanned":              len(all_symbols),
         "timestamp":            datetime.now().strftime("%d %b %Y %H:%M"),
+    }
+
+
+# ==============================================================================
+# SMART MONEY CONCEPTS (SMC / ICT) MODULE
+# ==============================================================================
+# Five institutional-footprint detectors for NSE daily charts:
+#   1. detect_fvg()              — Fair Value Gaps (3-candle price inefficiency)
+#   2. detect_order_blocks()     — Bullish/Bearish institutional order blocks
+#   3. detect_liquidity_pools()  — Equal highs/lows (stop-loss clusters)
+#   4. premium_discount_zone()   — 50% range bias (premium=sell, discount=buy)
+#   5. detect_displacement()     — Strong momentum candles (institutional moves)
+#
+# NSE-SPECIFIC HANDLING:
+#   • Circuit filters: gaps caused by 5/10/20% circuit limits are flagged,
+#     not treated as genuine FVGs (they're forced moves, not inefficiencies).
+#   • ATR-relative thresholds: all "significance" gates scale with volatility
+#     so a small-cap and a large-cap are judged on the same relative basis.
+#   • Unmitigated tracking: FVGs/OBs are flagged as still-valid only if price
+#     hasn't already traded back through them.
+# ==============================================================================
+
+
+def detect_fvg(high, low, close, atr, lookback=30, max_zones=5):
+    """
+    Fair Value Gap: a 3-candle pattern where candle-1 and candle-3 do not
+    overlap, leaving a price 'gap' that tends to act as a magnet.
+
+      Bullish FVG: low[i+1] > high[i-1]   (gap below price, support zone)
+      Bearish FVG: high[i+1] < low[i-1]   (gap above price, resistance zone)
+
+    Returns dict:
+      bull_fvgs / bear_fvgs : list of {top, bottom, mid, idx, mitigated, size_atr}
+      nearest_bull_fvg      : closest unmitigated bullish FVG below price (or None)
+      nearest_bear_fvg      : closest unmitigated bearish FVG above price (or None)
+      in_bull_fvg / in_bear_fvg : bool — is current price inside an unfilled FVG
+    """
+    result = {
+        "bull_fvgs": [], "bear_fvgs": [],
+        "nearest_bull_fvg": None, "nearest_bear_fvg": None,
+        "in_bull_fvg": False, "in_bear_fvg": False,
+    }
+    n = len(close)
+    if n < 5:
+        return result
+
+    h = high.values; l = low.values; c = close.values
+    cmp = float(c[-1])
+    # Minimum gap size to count (filters noise): 0.25 ATR
+    min_gap = max(atr * 0.25, cmp * 0.001)
+    # Circuit-filter heuristic: a single-bar move > 4.5% on NSE is often a
+    # circuit-driven forced move, not a genuine inefficiency. Flag those.
+    start = max(2, n - lookback)
+
+    for i in range(start, n - 1):
+        # Bullish FVG: gap between high[i-1] and low[i+1]
+        gap_bot = h[i - 1]
+        gap_top = l[i + 1]
+        if gap_top > gap_bot + min_gap:
+            size = gap_top - gap_bot
+            # circuit check: was the displacement candle (i) a huge single move?
+            cand_move = abs(c[i] - c[i - 1]) / max(c[i - 1], 1) * 100
+            is_circuit = cand_move > 4.5
+            # mitigated if price has since traded back below the gap top
+            mitigated = bool(np.any(l[i + 2:] <= gap_bot)) if i + 2 < n else False
+            result["bull_fvgs"].append({
+                "top": round(float(gap_top), 2), "bottom": round(float(gap_bot), 2),
+                "mid": round(float((gap_top + gap_bot) / 2), 2),
+                "idx": int(i), "mitigated": mitigated,
+                "size_atr": round(size / max(atr, 0.01), 2),
+                "circuit": is_circuit,
+            })
+        # Bearish FVG: gap between low[i-1] and high[i+1]
+        gap_top2 = l[i - 1]
+        gap_bot2 = h[i + 1]
+        if gap_bot2 < gap_top2 - min_gap:
+            size = gap_top2 - gap_bot2
+            cand_move = abs(c[i] - c[i - 1]) / max(c[i - 1], 1) * 100
+            is_circuit = cand_move > 4.5
+            mitigated = bool(np.any(h[i + 2:] >= gap_top2)) if i + 2 < n else False
+            result["bear_fvgs"].append({
+                "top": round(float(gap_top2), 2), "bottom": round(float(gap_bot2), 2),
+                "mid": round(float((gap_top2 + gap_bot2) / 2), 2),
+                "idx": int(i), "mitigated": mitigated,
+                "size_atr": round(size / max(atr, 0.01), 2),
+                "circuit": is_circuit,
+            })
+
+    # Trim to most recent max_zones each
+    result["bull_fvgs"] = result["bull_fvgs"][-max_zones:]
+    result["bear_fvgs"] = result["bear_fvgs"][-max_zones:]
+
+    # Nearest unmitigated, non-circuit zones
+    valid_bull = [f for f in result["bull_fvgs"]
+                  if not f["mitigated"] and not f["circuit"] and f["top"] < cmp]
+    valid_bear = [f for f in result["bear_fvgs"]
+                  if not f["mitigated"] and not f["circuit"] and f["bottom"] > cmp]
+    if valid_bull:
+        result["nearest_bull_fvg"] = max(valid_bull, key=lambda f: f["top"])
+    if valid_bear:
+        result["nearest_bear_fvg"] = min(valid_bear, key=lambda f: f["bottom"])
+
+    # Is price currently inside an unfilled FVG?
+    for f in result["bull_fvgs"]:
+        if not f["mitigated"] and f["bottom"] <= cmp <= f["top"]:
+            result["in_bull_fvg"] = True
+    for f in result["bear_fvgs"]:
+        if not f["mitigated"] and f["bottom"] <= cmp <= f["top"]:
+            result["in_bear_fvg"] = True
+
+    return result
+
+
+def detect_order_blocks(open_, high, low, close, atr, lookback=40, max_blocks=4):
+    """
+    Order Block: the last opposing candle before a strong displacement move.
+      Bullish OB: last DOWN candle before a strong UP move (institutional buying)
+      Bearish OB: last UP candle before a strong DOWN move (institutional selling)
+
+    A move qualifies as 'displacement' if it travels >= 1.5 ATR within 3 bars
+    of the order-block candle.
+
+    Returns dict:
+      bull_obs / bear_obs : list of {top, bottom, mid, idx, mitigated, strength_atr}
+      nearest_bull_ob     : closest unmitigated bullish OB below price (support)
+      nearest_bear_ob     : closest unmitigated bearish OB above price (resistance)
+      at_bull_ob / at_bear_ob : bool — price currently inside an OB zone
+    """
+    result = {
+        "bull_obs": [], "bear_obs": [],
+        "nearest_bull_ob": None, "nearest_bear_ob": None,
+        "at_bull_ob": False, "at_bear_ob": False,
+    }
+    n = len(close)
+    if n < 6:
+        return result
+
+    o = open_.values; h = high.values; l = low.values; c = close.values
+    cmp = float(c[-1])
+    disp_thresh = atr * 1.5
+    start = max(1, n - lookback)
+
+    for i in range(start, n - 3):
+        is_down = c[i] < o[i]
+        is_up   = c[i] > o[i]
+        # Look at the 3 bars following the candle for displacement
+        fwd_high = np.max(h[i + 1:i + 4])
+        fwd_low  = np.min(l[i + 1:i + 4])
+
+        # Bullish OB: a down candle, then price displaces UP >= 1.5 ATR
+        if is_down and (fwd_high - h[i]) >= disp_thresh:
+            ob_top = max(o[i], c[i]); ob_bot = l[i]
+            mitigated = bool(np.any(l[i + 4:] <= ob_bot)) if i + 4 < n else False
+            result["bull_obs"].append({
+                "top": round(float(ob_top), 2), "bottom": round(float(ob_bot), 2),
+                "mid": round(float((ob_top + ob_bot) / 2), 2),
+                "idx": int(i), "mitigated": mitigated,
+                "strength_atr": round((fwd_high - h[i]) / max(atr, 0.01), 2),
+            })
+        # Bearish OB: an up candle, then price displaces DOWN >= 1.5 ATR
+        if is_up and (l[i] - fwd_low) >= disp_thresh:
+            ob_top = h[i]; ob_bot = min(o[i], c[i])
+            mitigated = bool(np.any(h[i + 4:] >= ob_top)) if i + 4 < n else False
+            result["bear_obs"].append({
+                "top": round(float(ob_top), 2), "bottom": round(float(ob_bot), 2),
+                "mid": round(float((ob_top + ob_bot) / 2), 2),
+                "idx": int(i), "mitigated": mitigated,
+                "strength_atr": round((l[i] - fwd_low) / max(atr, 0.01), 2),
+            })
+
+    result["bull_obs"] = result["bull_obs"][-max_blocks:]
+    result["bear_obs"] = result["bear_obs"][-max_blocks:]
+
+    valid_bull = [b for b in result["bull_obs"]
+                  if not b["mitigated"] and b["top"] < cmp]
+    valid_bear = [b for b in result["bear_obs"]
+                  if not b["mitigated"] and b["bottom"] > cmp]
+    if valid_bull:
+        result["nearest_bull_ob"] = max(valid_bull, key=lambda b: b["top"])
+    if valid_bear:
+        result["nearest_bear_ob"] = min(valid_bear, key=lambda b: b["bottom"])
+
+    for b in result["bull_obs"]:
+        if not b["mitigated"] and b["bottom"] <= cmp <= b["top"]:
+            result["at_bull_ob"] = True
+    for b in result["bear_obs"]:
+        if not b["mitigated"] and b["bottom"] <= cmp <= b["top"]:
+            result["at_bear_ob"] = True
+
+    return result
+
+
+def detect_liquidity_pools(high, low, close, atr, lookback=50, tol_atr=0.15):
+    """
+    Liquidity Pool: clusters of near-equal highs (buy-side liquidity, where
+    stops of short-sellers sit) or near-equal lows (sell-side liquidity, where
+    stops of long-holders sit). Smart money targets these stop clusters.
+
+    Two swing points are 'equal' if within tol_atr * ATR of each other.
+
+    Returns dict:
+      buyside_liquidity  : list of price levels (equal highs) above interest
+      sellside_liquidity : list of price levels (equal lows)
+      nearest_buyside     : closest equal-high cluster above price (or None)
+      nearest_sellside    : closest equal-low cluster below price (or None)
+    """
+    result = {
+        "buyside_liquidity": [], "sellside_liquidity": [],
+        "nearest_buyside": None, "nearest_sellside": None,
+    }
+    n = len(close)
+    if n < 10:
+        return result
+
+    h = high.values; l = low.values
+    cmp = float(close.values[-1])
+    tol = atr * tol_atr
+    start = max(2, n - lookback)
+
+    # Find local swing highs/lows (3-bar fractal)
+    swing_highs = []
+    swing_lows  = []
+    for i in range(start, n - 1):
+        if h[i] >= h[i - 1] and h[i] >= h[i + 1]:
+            swing_highs.append((i, h[i]))
+        if l[i] <= l[i - 1] and l[i] <= l[i + 1]:
+            swing_lows.append((i, l[i]))
+
+    # Cluster equal highs (buy-side liquidity)
+    used = set()
+    for idx_a, (ia, pa) in enumerate(swing_highs):
+        if ia in used:
+            continue
+        cluster = [pa]
+        for ib, pb in swing_highs[idx_a + 1:]:
+            if abs(pb - pa) <= tol:
+                cluster.append(pb); used.add(ib)
+        if len(cluster) >= 2:  # need >=2 equal highs to be a pool
+            level = round(float(np.mean(cluster)), 2)
+            result["buyside_liquidity"].append({"level": level, "touches": len(cluster)})
+
+    # Cluster equal lows (sell-side liquidity)
+    used = set()
+    for idx_a, (ia, pa) in enumerate(swing_lows):
+        if ia in used:
+            continue
+        cluster = [pa]
+        for ib, pb in swing_lows[idx_a + 1:]:
+            if abs(pb - pa) <= tol:
+                cluster.append(pb); used.add(ib)
+        if len(cluster) >= 2:
+            level = round(float(np.mean(cluster)), 2)
+            result["sellside_liquidity"].append({"level": level, "touches": len(cluster)})
+
+    # Nearest pools relative to current price
+    above = [p for p in result["buyside_liquidity"] if p["level"] > cmp]
+    below = [p for p in result["sellside_liquidity"] if p["level"] < cmp]
+    if above:
+        result["nearest_buyside"] = min(above, key=lambda p: p["level"] - cmp)
+    if below:
+        result["nearest_sellside"] = min(below, key=lambda p: cmp - p["level"])
+
+    return result
+
+
+def premium_discount_zone(high, low, close, lookback=40):
+    """
+    Premium/Discount: divides the recent dealing range by its 50% midpoint.
+      Price in PREMIUM (upper 50%)  → favour selling / caution on longs
+      Price in DISCOUNT (lower 50%) → favour buying
+      Equilibrium (~50%)            → neutral
+
+    Returns dict:
+      zone        : 'Premium' | 'Discount' | 'Equilibrium'
+      range_high / range_low / equilibrium : float
+      pct_in_range: where price sits, 0 (low) to 100 (high)
+      bias        : 'Bullish' | 'Bearish' | 'Neutral'
+    """
+    result = {
+        "zone": "Unknown", "range_high": None, "range_low": None,
+        "equilibrium": None, "pct_in_range": None, "bias": "Neutral",
+    }
+    n = len(close)
+    if n < 5:
+        return result
+
+    window = min(lookback, n)
+    rng_high = float(high.values[-window:].max())
+    rng_low  = float(low.values[-window:].min())
+    cmp = float(close.values[-1])
+    if rng_high <= rng_low:
+        return result
+
+    eq = (rng_high + rng_low) / 2
+    pct = (cmp - rng_low) / (rng_high - rng_low) * 100
+
+    if pct >= 60:
+        zone, bias = "Premium", "Bearish"
+    elif pct <= 40:
+        zone, bias = "Discount", "Bullish"
+    else:
+        zone, bias = "Equilibrium", "Neutral"
+
+    result.update({
+        "zone": zone, "range_high": round(rng_high, 2), "range_low": round(rng_low, 2),
+        "equilibrium": round(eq, 2), "pct_in_range": round(pct, 1), "bias": bias,
+    })
+    return result
+
+
+def detect_displacement(open_, high, low, close, atr, lookback=10):
+    """
+    Displacement: a strong, large-bodied candle signalling institutional
+    intent. Defined as a candle whose body >= 1.5 ATR with a close in the
+    top/bottom third of its range (conviction close).
+
+    Returns dict:
+      recent_displacement : bool — any displacement in the lookback window
+      direction           : 'Bullish' | 'Bearish' | None (most recent)
+      bars_ago            : how many bars since the last displacement
+      strength_atr        : body size of the last displacement in ATR
+    """
+    result = {
+        "recent_displacement": False, "direction": None,
+        "bars_ago": None, "strength_atr": None,
+    }
+    n = len(close)
+    if n < 3:
+        return result
+
+    o = open_.values; h = high.values; l = low.values; c = close.values
+    start = max(0, n - lookback)
+    for i in range(n - 1, start - 1, -1):
+        body = abs(c[i] - o[i])
+        rng  = max(h[i] - l[i], 1e-9)
+        if body >= atr * 1.5:
+            # conviction close: in top third (bullish) or bottom third (bearish)
+            close_pos = (c[i] - l[i]) / rng
+            if c[i] > o[i] and close_pos >= 0.66:
+                result.update({"recent_displacement": True, "direction": "Bullish",
+                               "bars_ago": int(n - 1 - i),
+                               "strength_atr": round(body / max(atr, 0.01), 2)})
+                return result
+            if c[i] < o[i] and close_pos <= 0.34:
+                result.update({"recent_displacement": True, "direction": "Bearish",
+                               "bars_ago": int(n - 1 - i),
+                               "strength_atr": round(body / max(atr, 0.01), 2)})
+                return result
+    return result
+
+
+def compute_smc(open_, high, low, close, vol, atr):
+    """
+    Master SMC aggregator — runs all five detectors and returns a flat dict
+    of the most actionable signals plus a combined SMC bias score.
+
+    smc_bias: -100 (strong bearish confluence) to +100 (strong bullish).
+    """
+    fvg  = detect_fvg(high, low, close, atr)
+    obs  = detect_order_blocks(open_, high, low, close, atr)
+    liq  = detect_liquidity_pools(high, low, close, atr)
+    pdz  = premium_discount_zone(high, low, close)
+    disp = detect_displacement(open_, high, low, close, atr)
+
+    # Combined bias score from confluence
+    score = 0
+    if pdz["bias"] == "Bullish": score += 20
+    elif pdz["bias"] == "Bearish": score -= 20
+    if fvg["in_bull_fvg"]: score += 15
+    if fvg["in_bear_fvg"]: score -= 15
+    if obs["at_bull_ob"]: score += 20
+    if obs["at_bear_ob"]: score -= 20
+    if disp["direction"] == "Bullish" and disp["bars_ago"] is not None and disp["bars_ago"] <= 3:
+        score += 15
+    elif disp["direction"] == "Bearish" and disp["bars_ago"] is not None and disp["bars_ago"] <= 3:
+        score -= 15
+    # Nearest unfilled FVG acting as pull
+    if fvg["nearest_bull_fvg"]: score += 8
+    if fvg["nearest_bear_fvg"]: score -= 8
+    score = max(-100, min(100, score))
+
+    if score >= 35:   smc_label = "Bullish SMC"
+    elif score <= -35: smc_label = "Bearish SMC"
+    else:             smc_label = "Neutral SMC"
+
+    return {
+        # Premium/Discount
+        "smc_zone": pdz["zone"], "smc_zone_pct": pdz["pct_in_range"],
+        "smc_bias": pdz["bias"], "smc_equilibrium": pdz["equilibrium"],
+        "smc_range_high": pdz["range_high"], "smc_range_low": pdz["range_low"],
+        # FVG
+        "smc_in_bull_fvg": fvg["in_bull_fvg"], "smc_in_bear_fvg": fvg["in_bear_fvg"],
+        "smc_nearest_bull_fvg": fvg["nearest_bull_fvg"],
+        "smc_nearest_bear_fvg": fvg["nearest_bear_fvg"],
+        "smc_bull_fvg_count": len([f for f in fvg["bull_fvgs"] if not f["mitigated"]]),
+        "smc_bear_fvg_count": len([f for f in fvg["bear_fvgs"] if not f["mitigated"]]),
+        # Order Blocks
+        "smc_at_bull_ob": obs["at_bull_ob"], "smc_at_bear_ob": obs["at_bear_ob"],
+        "smc_nearest_bull_ob": obs["nearest_bull_ob"],
+        "smc_nearest_bear_ob": obs["nearest_bear_ob"],
+        # Liquidity
+        "smc_nearest_buyside": liq["nearest_buyside"],
+        "smc_nearest_sellside": liq["nearest_sellside"],
+        # Displacement
+        "smc_displacement": disp["direction"],
+        "smc_displacement_bars_ago": disp["bars_ago"],
+        # Combined
+        "smc_score": score, "smc_label": smc_label,
     }
