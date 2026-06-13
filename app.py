@@ -38,6 +38,12 @@ except ImportError:
     scan_for_traps = None
 
 try:
+    from signals import scan_for_smc_setups as _scan_for_smc_setups
+    scan_for_smc_setups = _scan_for_smc_setups
+except ImportError:
+    scan_for_smc_setups = None
+
+try:
     from signals import (
         fetch_corporate_actions,
         fetch_bulk_corporate_actions,
@@ -50,6 +56,7 @@ except ImportError:
 
 _TRAP_SCANNER_AVAILABLE = scan_for_traps is not None
 _CORP_ACTIONS_AVAILABLE = fetch_corporate_actions is not None
+_SMC_SCANNER_AVAILABLE  = scan_for_smc_setups is not None
 
 # ── Performance: @st.cache_data wrappers ──────────────────────────────────────
 # market_regime is global (same for all users) — safe to cache across sessions.
@@ -228,6 +235,7 @@ for k, v in [("user_id", None), ("username", None), ("edit_id", None), ("close_i
              ("outlook_cache", None), ("scanner_cache", None), ("trap_scan_cache", None),
              ("corp_actions_cache", None), ("selected_scanner_sector", "All Sectors"),
              ("custom_stocks_input", ""), ("active_page", "portfolio"),
+             ("smc_scan_cache", None),
              ("filter_status", "All"),
              ("filter_pnl", "All"), ("search", ""), ("theme", "Obsidian & Gold (Institutional)")]:
     if k not in st.session_state:
@@ -2471,8 +2479,69 @@ elif _page == 'smc':
             label = ind.get("smc_label", "Neutral SMC")
             zone  = ind.get("smc_zone", "Unknown")
             bias  = ind.get("smc_bias", "Neutral")
+            action = ind.get("smc_action", "WAIT")
+            entry  = ind.get("smc_entry")
+            target = ind.get("smc_target")
+            sl     = ind.get("smc_sl")
+            rr     = ind.get("smc_rr")
+            quality = ind.get("smc_setup_quality")
+            reason = ind.get("smc_setup_reason", "")
 
-            # ── Headline SMC bias card ─────────────────────────────────────────
+            # ── ACTIONABLE TRADE SETUP CARD (the headline) ─────────────────────
+            if action in ("BUY", "SELL") and entry:
+                act_clr = theme_t["green"] if action == "BUY" else theme_t["red"]
+                act_bg  = ("rgba(16,185,129,.08)" if action == "BUY"
+                           else "rgba(239,68,68,.08)")
+                q_clr = ("#fbbf24" if quality == "A+" else
+                         theme_t["accent"] if quality == "A" else theme_t["muted"])
+                st.markdown(
+                    f'<div style="background:{act_bg};border:2px solid {act_clr};'
+                    f'border-radius:14px;padding:1.4rem;margin:1rem 0">'
+                    f'<div style="display:flex;justify-content:space-between;'
+                    f'align-items:center;margin-bottom:1rem">'
+                    f'<div style="font-size:1.8rem;font-weight:800;color:{act_clr}">'
+                    f'{"🟢" if action=="BUY" else "🔴"} {action} {target_sym}</div>'
+                    f'<div style="background:{q_clr};color:#000;padding:.3rem .9rem;'
+                    f'border-radius:8px;font-size:.95rem;font-weight:800">'
+                    f'{quality} Setup</div></div>'
+                    f'<div style="display:grid;grid-template-columns:repeat(4,1fr);'
+                    f'gap:.8rem;margin-bottom:1rem">'
+                    f'<div style="background:var(--card);border-radius:10px;padding:.9rem;'
+                    f'text-align:center"><div style="font-size:.7rem;color:var(--muted);'
+                    f'font-weight:700;text-transform:uppercase">Entry</div>'
+                    f'<div style="font-size:1.3rem;font-weight:800;color:var(--text)">'
+                    f'₹{entry}</div></div>'
+                    f'<div style="background:var(--card);border-radius:10px;padding:.9rem;'
+                    f'text-align:center"><div style="font-size:.7rem;color:var(--muted);'
+                    f'font-weight:700;text-transform:uppercase">Target</div>'
+                    f'<div style="font-size:1.3rem;font-weight:800;color:{theme_t["green"]}">'
+                    f'₹{target}</div></div>'
+                    f'<div style="background:var(--card);border-radius:10px;padding:.9rem;'
+                    f'text-align:center"><div style="font-size:.7rem;color:var(--muted);'
+                    f'font-weight:700;text-transform:uppercase">Stop Loss</div>'
+                    f'<div style="font-size:1.3rem;font-weight:800;color:{theme_t["red"]}">'
+                    f'₹{sl}</div></div>'
+                    f'<div style="background:var(--card);border-radius:10px;padding:.9rem;'
+                    f'text-align:center"><div style="font-size:.7rem;color:var(--muted);'
+                    f'font-weight:700;text-transform:uppercase">Risk:Reward</div>'
+                    f'<div style="font-size:1.3rem;font-weight:800;color:var(--accent)">'
+                    f'1:{rr}</div></div>'
+                    f'</div>'
+                    f'<div style="font-size:.82rem;color:var(--muted);line-height:1.6">'
+                    f'📋 {reason}</div>'
+                    f'</div>',
+                    unsafe_allow_html=True)
+            else:
+                st.markdown(
+                    f'<div style="background:var(--card);border:2px solid var(--border);'
+                    f'border-radius:14px;padding:1.4rem;margin:1rem 0;text-align:center">'
+                    f'<div style="font-size:1.5rem;font-weight:800;color:var(--muted)">'
+                    f'⏸ WAIT — {target_sym}</div>'
+                    f'<div style="font-size:.85rem;color:var(--muted);margin-top:.5rem">'
+                    f'{reason}</div></div>',
+                    unsafe_allow_html=True)
+
+            # ── Context cards (now secondary, below the action) ────────────────
             score_clr = (theme_t["green"] if score >= 35 else
                          theme_t["red"] if score <= -35 else theme_t["muted"])
             zone_clr  = (theme_t["red"] if zone == "Premium" else
@@ -2649,3 +2718,75 @@ elif _page == 'smc':
                           f'font-weight:700;margin:.2rem">{txt}</span> ')
             st.markdown(f'<div style="display:flex;flex-wrap:wrap;gap:.3rem">{chips}</div>',
                         unsafe_allow_html=True)
+
+    # ── Universe-wide SMC setup scanner ────────────────────────────────────────
+    st.markdown("<hr style='border-color:var(--border);margin:1.5rem 0'>",
+                unsafe_allow_html=True)
+    st.markdown('<div class="sec">🎯 Scan Universe for SMC Setups</div>',
+                unsafe_allow_html=True)
+
+    if not _SMC_SCANNER_AVAILABLE:
+        st.warning("Universe SMC scan requires the updated signals.py (with "
+                   "scan_for_smc_setups). Deploy the latest signals.py to enable.",
+                   icon="⚠️")
+    else:
+        scs1, scs2, scs3 = st.columns([1.2, 1.2, 1])
+        with scs1:
+            min_q = st.selectbox("Min quality", ["B", "A", "A+"],
+                                 label_visibility="collapsed")
+        with scs2:
+            act_f = st.selectbox("Action", ["All", "BUY", "SELL"],
+                                 label_visibility="collapsed")
+        with scs3:
+            run_smc_scan = st.button("🎯 Scan Setups", width="stretch")
+
+        if run_smc_scan:
+            with st.spinner(f"Scanning {len(SECTOR_MAP)} stocks for SMC setups…"):
+                st.session_state.smc_scan_cache = scan_for_smc_setups(
+                    min_quality=min_q, action_filter=act_f)
+                sc = st.session_state.smc_scan_cache
+                st.toast(f"✅ {sc['buy_count']} BUY · {sc['sell_count']} SELL setups",
+                         icon="🎯")
+
+        sc = st.session_state.get("smc_scan_cache")
+        if sc:
+            st.markdown(
+                f'<div style="font-size:.75rem;color:var(--muted);margin:.5rem 0">'
+                f'Scanned {sc["scanned"]} · {sc["liquid"]} liquid · '
+                f'{sc["buy_count"]} BUY · {sc["sell_count"]} SELL · {sc["timestamp"]}</div>',
+                unsafe_allow_html=True)
+
+            all_setups = sc["buy_setups"] + sc["sell_setups"]
+            if all_setups:
+                rows = []
+                for s in all_setups:
+                    rows.append({
+                        "Stock": s["stock"], "Sector": s["sector"],
+                        "Action": s["action"], "Grade": s["quality"],
+                        "CMP": s["cmp"], "Entry": s["entry"],
+                        "Target": s["target"], "SL": s["stop_loss"],
+                        "RR": s["risk_reward"], "Zone": s["zone"],
+                        "SMC": s["smc_score"],
+                    })
+                setup_df = pd.DataFrame(rows)
+                st.dataframe(
+                    setup_df, hide_index=True, height=440, use_container_width=True,
+                    column_config={
+                        "Action": st.column_config.TextColumn("Action", width="small"),
+                        "Grade":  st.column_config.TextColumn("Grade", width="small"),
+                        "CMP":    st.column_config.NumberColumn("CMP", format="₹%.2f"),
+                        "Entry":  st.column_config.NumberColumn("Entry", format="₹%.2f"),
+                        "Target": st.column_config.NumberColumn("Target", format="₹%.2f"),
+                        "SL":     st.column_config.NumberColumn("SL", format="₹%.2f"),
+                        "RR":     st.column_config.NumberColumn("R:R", format="%.2f"),
+                        "SMC":    st.column_config.NumberColumn("Score", format="%d"),
+                    })
+                st.download_button(
+                    "⬇️ Export SMC Setups CSV",
+                    setup_df.to_csv(index=False).encode("utf-8"),
+                    file_name=f"smc_setups_{datetime.now().strftime('%Y%m%d_%H%M')}.csv",
+                    mime="text/csv")
+            else:
+                st.info("No setups found at this quality/action filter. Try lowering to grade B or 'All' actions.")
+        else:
+            st.info("Click **🎯 Scan Setups** to find SMC trade setups across the universe.")
