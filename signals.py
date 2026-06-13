@@ -29,10 +29,9 @@ from scipy.signal import find_peaks
 # 1. MULTI-SOURCE NSE UNIVERSE LOADER
 # ==============================================================================
 #
-# NSE Cloudflare blocks all server-side downloads. Place CSV files in the
-# same directory as signals.py (i.e., your repo root) and they are auto-loaded.
+# Place CSV files in the SAME directory as signals.py (repo root).
 #
-# DOWNLOAD LINKS (visit in browser, click Download CSV/Excel):
+# Download links (browser → CSV button):
 #  Nifty 500:    nseindia.com/products-services/indices-nifty500-index
 #  Nifty 1000:   nseindia.com/products-services/indices-nifty-indices-nifty1000
 #  Midcap 150:   nseindia.com/products-services/indices-nifty-midcap-150-index
@@ -40,118 +39,179 @@ from scipy.signal import find_peaks
 #  Microcap 250: nseindia.com/products-services/indices-nifty-microcap-250-index
 #  All NSE:      nseindia.com/market-data/live-equity-market → Download (EQ series)
 #
-# CSV format expected (NSE standard):
-#   Nifty index CSVs → columns: Symbol, Company Name, Industry, ...
-#   EQUITY_L.csv     → columns: SYMBOL, NAME OF COMPANY, SERIES, ...
+# Supported column variants are auto-detected — no manual editing needed.
 # ==============================================================================
 
-# ── Config: All supported CSV sources in priority order ──────────────────────
+# ── Absolute base directory — ALWAYS reliable regardless of cwd ──────────────
+_BASE_DIR = os.path.dirname(os.path.abspath(__file__))
+
+# ── CSV configs: (filename, label, series_filter or None) ────────────────────
+# Symbol and sector columns are auto-detected from the actual file.
 _NSE_CSV_CONFIGS = [
-    # (filename, label, symbol_col, sector_col, series_filter)
-    # series_filter: None = use all rows, list = filter SERIES column
-    ("ind_nifty500list.csv",         "Nifty 500",       "Symbol",  "Industry",  None),
-    ("ind_nifty1000list.csv",        "Nifty 1000",      "Symbol",  "Industry",  None),
-    ("ind_niftymidcap150list.csv",   "Nifty Midcap 150","Symbol",  "Industry",  None),
-    ("ind_niftysmallcap250list.csv", "Nifty SC 250",    "Symbol",  "Industry",  None),
-    ("ind_niftymicrocap250list.csv", "Nifty MC 250",    "Symbol",  "Industry",  None),
-    ("ind_niftylargemidcap250list.csv","Nifty LM 250",  "Symbol",  "Industry",  None),
-    ("ind_niftytotalmarket.csv",     "Nifty Total Mkt", "Symbol",  "Industry",  None),
-    # EQUITY_L: all NSE listed equities, sector tagged as "NSE Listed"
-    # Only EQ/BE series included (avoids warrants, SME, preference shares)
-    ("EQUITY_L.csv",                 "NSE All Listed",  "SYMBOL",  None,        ["EQ","BE"]),
+    ("ind_nifty500list.csv",           "Nifty 500",       None),
+    ("ind_nifty1000list.csv",          "Nifty 1000",      None),
+    ("ind_niftymidcap150list.csv",     "Nifty Midcap 150",None),
+    ("ind_niftysmallcap250list.csv",   "Nifty SC 250",    None),
+    ("ind_niftymicrocap250list.csv",   "Nifty MC 250",    None),
+    ("ind_niftylargemidcap250list.csv","Nifty LM 250",    None),
+    ("ind_niftytotalmarket.csv",       "Nifty Total Mkt", None),
+    # EQUITY_L: all NSE equities — EQ/BE series only, no sector column
+    ("EQUITY_L.csv",                   "NSE All Listed",  ["EQ","BE","N"]),
 ]
+
+# ── Known column name variants (handles whitespace, case, BOM differences) ───
+_SYM_CANDIDATES = ["Symbol", "SYMBOL", "symbol", "Sym", "SYM",
+                   "NSE Symbol", "NSESymbol"]
+_SEC_CANDIDATES = ["Industry", "INDUSTRY", "industry", "Sector", "SECTOR",
+                   "sector", "Ind", "IND", "IndustryName", "Industry Name"]
+_SER_CANDIDATES = ["Series", "SERIES", "series"]
+
+
+def _norm_cols(df):
+    """Strip whitespace, BOM, and normalise column names in-place."""
+    df.columns = [str(c).strip().lstrip("\ufeff").strip() for c in df.columns]
+    return df
+
+
+def _find_col(df_cols, candidates):
+    """Return first matching column name (exact → case-insensitive)."""
+    col_set   = set(df_cols)
+    upper_map = {c.upper(): c for c in df_cols}
+    for cand in candidates:
+        if cand in col_set:
+            return cand
+        if cand.upper() in upper_map:
+            return upper_map[cand.upper()]
+    return None
+
 
 SECTOR_STOCKS    = {}
 SECTOR_MAP       = {}
-UNIVERSE_SOURCES = []   # list of (label, count) loaded — used by app.py for display
+UNIVERSE_SOURCES = []   # [(label, loaded_count, skipped_count, error_msg)]
 _seen_symbols    = set()
 
 
-def _load_csv_source(filename, label, sym_col, sec_col, series_filter):
-    """Load one NSE CSV source. Returns (loaded_count, skipped_count)."""
+def _load_one_csv(filename, label, series_filter):
+    """
+    Load one NSE CSV. Returns (loaded, skipped, error_str).
+    Handles: BOM, Windows line endings, mixed encoding, missing columns.
+    """
     global SECTOR_STOCKS, SECTOR_MAP, _seen_symbols
-    if not os.path.exists(filename):
-        return 0, 0
-    try:
-        df = pd.read_csv(filename, encoding="utf-8", on_bad_lines="skip")
-    except UnicodeDecodeError:
+
+    filepath = os.path.join(_BASE_DIR, filename)
+
+    # ── 1. File existence check (absolute path) ───────────────────────────────
+    if not os.path.exists(filepath):
+        return 0, 0, f"File not found: {filepath}"
+
+    # ── 2. Read with encoding fallback ────────────────────────────────────────
+    df = None
+    for enc in ("utf-8-sig", "utf-8", "latin-1", "cp1252"):
         try:
-            df = pd.read_csv(filename, encoding="latin-1", on_bad_lines="skip")
+            df = pd.read_csv(filepath, encoding=enc,
+                             on_bad_lines="skip", low_memory=False)
+            _norm_cols(df)
+            break
         except Exception:
-            return 0, 0
-    except Exception:
-        return 0, 0
+            df = None
 
-    # Normalize column names
-    df.columns = [c.strip() for c in df.columns]
+    if df is None or df.empty:
+        return 0, 0, f"Could not parse {filename}"
 
-    # Verify required symbol column exists
-    if sym_col not in df.columns:
-        # Try case-insensitive match
-        col_map = {c.upper(): c for c in df.columns}
-        sym_col = col_map.get(sym_col.upper(), None)
-        if sym_col is None:
-            return 0, 0
+    # ── 3. Find symbol column ─────────────────────────────────────────────────
+    sym_col = _find_col(df.columns, _SYM_CANDIDATES)
+    if sym_col is None:
+        return 0, 0, (f"No symbol column in {filename}. "
+                      f"Found: {list(df.columns[:5])}")
 
-    # Apply series filter (EQUITY_L.csv)
-    if series_filter and "SERIES" in df.columns:
-        df = df[df["SERIES"].str.strip().str.upper().isin(series_filter)]
+    # ── 4. Find sector column (optional) ─────────────────────────────────────
+    sec_col = _find_col(df.columns, _SEC_CANDIDATES)   # None for EQUITY_L
 
+    # ── 5. Apply series filter ────────────────────────────────────────────────
+    if series_filter:
+        ser_col = _find_col(df.columns, _SER_CANDIDATES)
+        if ser_col:
+            df = df[df[ser_col].astype(str).str.strip().str.upper()
+                    .isin([s.upper() for s in series_filter])]
+
+    # ── 6. Load rows ──────────────────────────────────────────────────────────
     loaded = skipped = 0
     for _, row in df.iterrows():
-        raw_sym = str(row[sym_col]).strip().upper()
-        if not raw_sym or raw_sym == "NAN" or raw_sym == "SYMBOL":
+        sym = str(row[sym_col]).strip().upper()
+        if not sym or sym in ("NAN", "SYMBOL", "SYM", ""):
             continue
-        if raw_sym in _seen_symbols:
+        if sym in _seen_symbols:
             skipped += 1
             continue
 
-        # Determine sector
-        if sec_col and sec_col in df.columns:
+        # Sector: from column if available, else label
+        if sec_col:
             sector = str(row[sec_col]).strip()
             if not sector or sector.upper() in ("NAN", "INDUSTRY", "SECTOR", ""):
                 sector = "Others"
         else:
-            # EQUITY_L.csv has no industry column — tag by label
-            sector = label
+            sector = label          # e.g. "NSE All Listed"
 
         if sector not in SECTOR_STOCKS:
             SECTOR_STOCKS[sector] = []
-        SECTOR_STOCKS[sector].append(raw_sym)
-        SECTOR_MAP[raw_sym] = sector
-        _seen_symbols.add(raw_sym)
+        SECTOR_STOCKS[sector].append(sym)
+        SECTOR_MAP[sym] = sector
+        _seen_symbols.add(sym)
         loaded += 1
 
-    return loaded, skipped
+    return loaded, skipped, None     # None = no error
+
+
+def debug_universe_load():
+    """
+    Returns a human-readable string showing what was loaded from each CSV,
+    what files were scanned, and any errors. Use in app.py for diagnostics.
+    """
+    lines = [f"🔍 Universe load report — base dir: {_BASE_DIR}"]
+    for filename, label, _ in _NSE_CSV_CONFIGS:
+        fp = os.path.join(_BASE_DIR, filename)
+        exists  = os.path.exists(fp)
+        sz      = f"{os.path.getsize(fp):,} bytes" if exists else "—"
+        status  = "✅ found" if exists else "❌ not found"
+        lines.append(f"  {status}  {filename:40s}  {sz}")
+    lines.append(f"\nLoaded sources:")
+    for lbl, n, sk, err in UNIVERSE_SOURCES:
+        if err:
+            lines.append(f"  ❌ {lbl}: {err}")
+        else:
+            lines.append(f"  ✅ {lbl}: {n:,} new symbols, {sk:,} duplicates skipped")
+    lines.append(f"\nTotal universe: {UNIVERSE_TOTAL:,} symbols across "
+                 f"{len(SECTOR_STOCKS):,} sectors")
+    return "\n".join(lines)
 
 
 # ── Run loader at import time ─────────────────────────────────────────────────
 _any_loaded = False
 for _cfg in _NSE_CSV_CONFIGS:
-    _fn, _lbl, _sc, _sec, _sf = _cfg
-    _n, _sk = _load_csv_source(_fn, _lbl, _sc, _sec, _sf)
+    _fn, _lbl, _sf = _cfg
+    _n, _sk, _err = _load_one_csv(_fn, _lbl, _sf)
+    UNIVERSE_SOURCES.append((_lbl, _n, _sk, _err))
     if _n > 0:
-        UNIVERSE_SOURCES.append((_lbl, _n, _sk))
         _any_loaded = True
 
 if not _any_loaded:
-    # Hardcoded fallback — enough to boot without any CSV
+    # Hardcoded fallback so app boots without any CSV
     SECTOR_STOCKS = {
-        "Banking":    ["HDFCBANK", "ICICIBANK", "SBIN", "AXISBANK", "KOTAKBANK"],
-        "IT":         ["TCS", "INFY", "HCLTECH", "WIPRO", "TECHM"],
-        "Energy":     ["RELIANCE", "ONGC", "NTPC", "POWERGRID"],
-        "Pharma":     ["SUNPHARMA", "DRREDDY", "CIPLA", "DIVISLAB"],
-        "Auto":       ["MARUTI", "TATAMOTORS", "BAJAJ-AUTO", "HEROMOTOCO"],
-        "FMCG":       ["HINDUNILVR", "ITC", "NESTLEIND", "BRITANNIA"],
-        "Metals":     ["TATASTEEL", "JSWSTEEL", "HINDALCO", "VEDL"],
-        "Realty":     ["DLF", "GODREJPROP", "LODHA", "OBEROIRLTY"],
+        "Banking":  ["HDFCBANK","ICICIBANK","SBIN","AXISBANK","KOTAKBANK"],
+        "IT":       ["TCS","INFY","HCLTECH","WIPRO","TECHM"],
+        "Energy":   ["RELIANCE","ONGC","NTPC","POWERGRID"],
+        "Pharma":   ["SUNPHARMA","DRREDDY","CIPLA","DIVISLAB"],
+        "Auto":     ["MARUTI","TATAMOTORS","BAJAJ-AUTO","HEROMOTOCO"],
+        "FMCG":     ["HINDUNILVR","ITC","NESTLEIND","BRITANNIA"],
+        "Metals":   ["TATASTEEL","JSWSTEEL","HINDALCO","VEDL"],
+        "Realty":   ["DLF","GODREJPROP","LODHA","OBEROIRLTY"],
     }
     for _sec, _stks in SECTOR_STOCKS.items():
         for _s in _stks:
             SECTOR_MAP[_s] = _sec
-    UNIVERSE_SOURCES = [("Fallback (no CSV found)", len(SECTOR_MAP), 0)]
+    UNIVERSE_SOURCES = [("Fallback (no CSV found)", len(SECTOR_MAP), 0, None)]
 
-# Total universe size — exposed for app.py display
+# Total exposed for display
 UNIVERSE_TOTAL = sum(len(v) for v in SECTOR_STOCKS.values())
 
 
