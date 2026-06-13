@@ -2319,6 +2319,164 @@ def detect_displacement(open_, high, low, close, atr, lookback=10):
     return result
 
 
+def build_smc_setup(cmp, atr, fvg, obs, liq, pdz, disp, score):
+    """
+    Converts raw SMC structure into a single actionable trade setup with
+    concrete Entry, Target, and Stop-Loss — all derived from real structural
+    levels, not arbitrary ATR multiples.
+
+    LOGIC
+    ─────────────────────────────────────────────────────────────────────────
+    BUY setup (needs bullish confluence):
+      • Trigger: price in/near a bull Order Block OR bull FVG, in Discount or
+        Equilibrium, ideally with recent bullish displacement.
+      • Entry : top of the bull OB (or FVG mid) — where demand sits.
+      • SL    : just below the OB/FVG bottom (structure invalidation).
+      • Target: nearest buy-side liquidity above (equal highs = stop cluster
+        price is drawn toward); fallback to range high / 2R.
+
+    SELL setup (mirror, bearish confluence):
+      • Entry : bottom of bear OB (or FVG mid).
+      • SL    : just above the OB/FVG top.
+      • Target: nearest sell-side liquidity below; fallback range low / 2R.
+
+    Returns dict:
+      smc_action      : 'BUY' | 'SELL' | 'WAIT'
+      smc_entry/target/sl : float | None
+      smc_rr          : float | None  (reward:risk)
+      smc_setup_quality : 'A+' | 'A' | 'B' | None  (confluence grade)
+      smc_setup_reason  : str  (human explanation)
+    ─────────────────────────────────────────────────────────────────────────
+    """
+    out = {
+        "smc_action": "WAIT", "smc_entry": None, "smc_target": None,
+        "smc_sl": None, "smc_rr": None, "smc_setup_quality": None,
+        "smc_setup_reason": "No high-confluence SMC setup right now.",
+    }
+
+    sl_buffer = max(atr * 0.25, cmp * 0.002)   # small buffer beyond structure
+
+    # ── BUY SETUP ──────────────────────────────────────────────────────────────
+    bull_zone = obs.get("nearest_bull_ob") or (
+        {"top": obs["at_bull_ob"]} if False else None)
+    # Prefer an OB the price is AT or just above; else nearest bull FVG
+    buy_zone = None; buy_src = None
+    if obs.get("at_bull_ob") and obs.get("nearest_bull_ob"):
+        buy_zone = obs["nearest_bull_ob"]; buy_src = "Order Block"
+    elif obs.get("nearest_bull_ob"):
+        buy_zone = obs["nearest_bull_ob"]; buy_src = "Order Block"
+    elif fvg.get("in_bull_fvg") and fvg.get("nearest_bull_fvg"):
+        buy_zone = fvg["nearest_bull_fvg"]; buy_src = "Fair Value Gap"
+    elif fvg.get("nearest_bull_fvg"):
+        buy_zone = fvg["nearest_bull_fvg"]; buy_src = "Fair Value Gap"
+
+    # ── SELL SETUP ─────────────────────────────────────────────────────────────
+    sell_zone = None; sell_src = None
+    if obs.get("at_bear_ob") and obs.get("nearest_bear_ob"):
+        sell_zone = obs["nearest_bear_ob"]; sell_src = "Order Block"
+    elif obs.get("nearest_bear_ob"):
+        sell_zone = obs["nearest_bear_ob"]; sell_src = "Order Block"
+    elif fvg.get("in_bear_fvg") and fvg.get("nearest_bear_fvg"):
+        sell_zone = fvg["nearest_bear_fvg"]; sell_src = "Fair Value Gap"
+    elif fvg.get("nearest_bear_fvg"):
+        sell_zone = fvg["nearest_bear_fvg"]; sell_src = "Fair Value Gap"
+
+    zone_pct = pdz.get("pct_in_range")
+    disp_dir = disp.get("direction")
+    disp_recent = disp.get("bars_ago") is not None and disp.get("bars_ago") <= 4
+
+    # ── Decide direction by confluence score + zone availability ───────────────
+    want_buy  = score >= 25 and buy_zone is not None
+    want_sell = score <= -25 and sell_zone is not None
+
+    # If both or neither, pick the stronger-aligned one
+    if want_buy and not want_sell:
+        decision = "BUY"
+    elif want_sell and not want_buy:
+        decision = "SELL"
+    elif want_buy and want_sell:
+        decision = "BUY" if score > 0 else "SELL"
+    else:
+        decision = "WAIT"
+
+    # ── Build BUY ──────────────────────────────────────────────────────────────
+    if decision == "BUY" and buy_zone:
+        entry = float(buy_zone["top"])           # enter at demand top
+        zbot  = float(buy_zone["bottom"])
+        sl    = round(zbot - sl_buffer, 2)
+        # Target = nearest buy-side liquidity above, else range high, else 2R
+        tgt = None
+        nbs = liq.get("nearest_buyside")
+        if nbs and nbs["level"] > entry:
+            tgt = float(nbs["level"])
+        elif pdz.get("range_high") and pdz["range_high"] > entry:
+            tgt = float(pdz["range_high"])
+        risk = max(entry - sl, 0.01)
+        if tgt is None or tgt <= entry:
+            tgt = round(entry + risk * 2, 2)     # fallback 2R
+        rr = round((tgt - entry) / risk, 2)
+
+        # Quality grade by confluence
+        confl = 0
+        if pdz.get("bias") == "Bullish": confl += 1
+        if buy_src == "Order Block":     confl += 1
+        if disp_dir == "Bullish" and disp_recent: confl += 1
+        if nbs:                          confl += 1
+        quality = "A+" if confl >= 4 else "A" if confl == 3 else "B"
+
+        reasons = [f"Buy at {buy_src} ₹{entry}"]
+        if zone_pct is not None: reasons.append(f"{pdz.get('zone')} zone ({zone_pct}%)")
+        if disp_dir == "Bullish" and disp_recent: reasons.append("bullish displacement")
+        if nbs: reasons.append(f"target buy-side liq ₹{tgt}")
+
+        # Only surface if RR is worthwhile
+        if rr >= 1.3:
+            out.update({
+                "smc_action": "BUY", "smc_entry": round(entry, 2),
+                "smc_target": round(tgt, 2), "smc_sl": sl, "smc_rr": rr,
+                "smc_setup_quality": quality,
+                "smc_setup_reason": " · ".join(reasons),
+            })
+
+    # ── Build SELL ─────────────────────────────────────────────────────────────
+    elif decision == "SELL" and sell_zone:
+        entry = float(sell_zone["bottom"])       # enter at supply bottom
+        ztop  = float(sell_zone["top"])
+        sl    = round(ztop + sl_buffer, 2)
+        tgt = None
+        nss = liq.get("nearest_sellside")
+        if nss and nss["level"] < entry:
+            tgt = float(nss["level"])
+        elif pdz.get("range_low") and pdz["range_low"] < entry:
+            tgt = float(pdz["range_low"])
+        risk = max(sl - entry, 0.01)
+        if tgt is None or tgt >= entry:
+            tgt = round(entry - risk * 2, 2)
+        rr = round((entry - tgt) / risk, 2)
+
+        confl = 0
+        if pdz.get("bias") == "Bearish": confl += 1
+        if sell_src == "Order Block":    confl += 1
+        if disp_dir == "Bearish" and disp_recent: confl += 1
+        if nss:                          confl += 1
+        quality = "A+" if confl >= 4 else "A" if confl == 3 else "B"
+
+        reasons = [f"Sell at {sell_src} ₹{entry}"]
+        if zone_pct is not None: reasons.append(f"{pdz.get('zone')} zone ({zone_pct}%)")
+        if disp_dir == "Bearish" and disp_recent: reasons.append("bearish displacement")
+        if nss: reasons.append(f"target sell-side liq ₹{tgt}")
+
+        if rr >= 1.3:
+            out.update({
+                "smc_action": "SELL", "smc_entry": round(entry, 2),
+                "smc_target": round(tgt, 2), "smc_sl": sl, "smc_rr": rr,
+                "smc_setup_quality": quality,
+                "smc_setup_reason": " · ".join(reasons),
+            })
+
+    return out
+
+
 def compute_smc(open_, high, low, close, vol, atr):
     """
     Master SMC aggregator — runs all five detectors and returns a flat dict
@@ -2353,6 +2511,10 @@ def compute_smc(open_, high, low, close, vol, atr):
     elif score <= -35: smc_label = "Bearish SMC"
     else:             smc_label = "Neutral SMC"
 
+    # Build the actionable trade setup from the structure
+    cmp = float(close.iloc[-1]) if len(close) else 0.0
+    setup = build_smc_setup(cmp, atr, fvg, obs, liq, pdz, disp, score)
+
     return {
         # Premium/Discount
         "smc_zone": pdz["zone"], "smc_zone_pct": pdz["pct_in_range"],
@@ -2376,4 +2538,91 @@ def compute_smc(open_, high, low, close, vol, atr):
         "smc_displacement_bars_ago": disp["bars_ago"],
         # Combined
         "smc_score": score, "smc_label": smc_label,
+        # Actionable trade setup
+        "smc_action": setup["smc_action"],
+        "smc_entry": setup["smc_entry"],
+        "smc_target": setup["smc_target"],
+        "smc_sl": setup["smc_sl"],
+        "smc_rr": setup["smc_rr"],
+        "smc_setup_quality": setup["smc_setup_quality"],
+        "smc_setup_reason": setup["smc_setup_reason"],
+    }
+
+
+# ==============================================================================
+# SMC SETUP SCANNER — sweeps universe for actionable SMC trade setups
+# ==============================================================================
+def scan_for_smc_setups(min_quality="B", action_filter="All"):
+    """
+    Sweeps the full universe for stocks with an actionable SMC trade setup
+    (BUY or SELL) with concrete Entry/Target/SL/RR.
+
+    Args:
+        min_quality   : 'A+', 'A', or 'B' — minimum setup grade to include
+        action_filter : 'All', 'BUY', or 'SELL'
+
+    Returns:
+        {
+          "buy_setups"  : list[dict] sorted by quality then RR,
+          "sell_setups" : list[dict],
+          "scanned": int, "liquid": int,
+          "buy_count": int, "sell_count": int,
+          "timestamp": str,
+        }
+    Each setup: stock, sector, cmp, action, entry, target, stop_loss,
+                risk_reward, quality, reason, smc_score, zone
+    """
+    quality_rank = {"A+": 3, "A": 2, "B": 1}
+    min_rank = quality_rank.get(min_quality, 1)
+
+    all_symbols = []
+    for stocks in SECTOR_STOCKS.values():
+        all_symbols.extend(stocks)
+
+    bulk = _bulk_fetch_history(all_symbols, period="6mo")
+
+    buy_setups, sell_setups = [], []
+    liquid = 0
+
+    for symbol in all_symbols:
+        df  = bulk.get(symbol)
+        ind = compute_indicators(symbol, period="6mo", prefetched_df=df)
+        if not ind:
+            continue
+        if not ind.get("liquidity_ok", True):
+            continue
+        liquid += 1
+
+        action  = ind.get("smc_action", "WAIT")
+        quality = ind.get("smc_setup_quality")
+        if action == "WAIT" or not quality:
+            continue
+        if quality_rank.get(quality, 0) < min_rank:
+            continue
+        if action_filter != "All" and action != action_filter:
+            continue
+
+        entry = {
+            "stock": symbol, "sector": get_sector(symbol),
+            "cmp": ind.get("cmp"), "action": action,
+            "entry": ind.get("smc_entry"), "target": ind.get("smc_target"),
+            "stop_loss": ind.get("smc_sl"), "risk_reward": ind.get("smc_rr"),
+            "quality": quality, "reason": ind.get("smc_setup_reason", ""),
+            "smc_score": ind.get("smc_score", 0), "zone": ind.get("smc_zone", ""),
+        }
+        if action == "BUY":
+            buy_setups.append(entry)
+        else:
+            sell_setups.append(entry)
+
+    def _sort_key(s):
+        return (quality_rank.get(s["quality"], 0), s.get("risk_reward") or 0)
+    buy_setups.sort(key=_sort_key, reverse=True)
+    sell_setups.sort(key=_sort_key, reverse=True)
+
+    return {
+        "buy_setups": buy_setups, "sell_setups": sell_setups,
+        "scanned": len(all_symbols), "liquid": liquid,
+        "buy_count": len(buy_setups), "sell_count": len(sell_setups),
+        "timestamp": datetime.now().strftime("%d %b %Y %H:%M"),
     }
