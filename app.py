@@ -192,6 +192,7 @@ for k, v in [("user_id", None), ("username", None), ("edit_id", None), ("close_i
              ("signals_cache", None), ("sector_cache", None), ("picks_cache", None),
              ("outlook_cache", None), ("scanner_cache", None), ("trap_scan_cache", None),
              ("corp_actions_cache", None), ("selected_scanner_sector", "All Sectors"),
+             ("custom_stocks_input", ""), ("active_page", "portfolio"),
              ("filter_status", "All"),
              ("filter_pnl", "All"), ("search", ""), ("theme", "Obsidian & Gold (Institutional)")]:
     if k not in st.session_state:
@@ -986,21 +987,22 @@ def render_news(news_list):
 # ── Score dashboard ────────────────────────────────────────────────────────────
 def render_score_dashboard():
     scores = [
-        ("RSI (Wilder's)",      9, "adjust=False + explicit 100/0 edge case — matches TradingView"),
-            ("MACD",                9, "Single-pass crossover, adjust=False, histogram + momentum flags"),
-            ("Bollinger Bands",     8, "bb_pos clamped [0,1], bandwidth + squeeze + breakout flags"),
-            ("ATR",                 9, "Wilder's EWM smoothing — stops now match Zerodha/TV"),
-            ("Supertrend",          9, "Numpy array loop, Wilder ATR(10), mult 2.5 for NSE swing"),
-            ("VWAP",                8, "20-day rolling VWAP + price_vs_vwap % deviation"),
-            ("EMA / Trend",         8, "Slope flags (rising/flattening), momentum-fading label, EMA200 back"),
-            ("Fibonacci",           8, "Swing-peak based via scipy with degenerate-swing fallback"),
-            ("Chart Patterns",      8, "Neckline + Cup&Handle + vol gates (carried from v11)"),
-            ("Candlesticks",        8, "3-candle patterns, range normalization (carried from v11)"),
-            ("Signal RR Engine",    9, "Unified _calc_risk_params with PICK mode — zero phantom RR"),
-            ("Sector Rotation",     8, "RRG quadrant + RS vs Nifty (carried from v11)"),
-            ("News Engine",         8, "yfinance v1.4 + RSS fallback (carried from v11)"),
-            ("Liquidity Gate",      8, "Soft gate: liquidity_ok flag, ⚠️ shown on signal, gated for new picks"),
-            ("Unified Risk Engine", 9, "Scanner, picks, and portfolio signals all use one engine"),
+        ("RSI (Wilder's)",          9, "adjust=False + explicit 100/0 edge case — matches TradingView"),
+        ("MACD",                    9, "Single-pass crossover, adjust=False, histogram + momentum flags"),
+        ("Bollinger Bands",         8, "bb_pos clamped [0,1], bandwidth + squeeze + breakout flags"),
+        ("ATR",                     9, "Wilder's EWM smoothing — stops now match Zerodha/TV"),
+        ("Supertrend",              9, "Numpy array loop, Wilder ATR(10), mult 2.5 for NSE swing"),
+        ("VWAP",                    8, "20-day rolling VWAP + price_vs_vwap % deviation"),
+        ("EMA / Trend",             8, "Slope flags (rising/flattening), momentum-fading label, EMA200 back"),
+        ("Fibonacci",               8, "Swing-peak based via scipy with degenerate-swing fallback"),
+        ("Chart Patterns",          8, "Neckline + Cup&Handle + vol gates"),
+        ("Candlesticks",            8, "3-candle patterns, range normalization"),
+        ("Signal RR Engine",        9, "Unified _calc_risk_params with PICK mode — zero phantom RR"),
+        ("Sector Rotation",         8, "RRG quadrant + RS vs Nifty"),
+        ("News Engine",             8, "yfinance v1.4 + RSS fallback"),
+        ("Liquidity Gate",          8, "Soft gate: liquidity_ok flag, ⚠️ shown on signal, gated for new picks"),
+        ("Unified Risk Engine",     9, "Scanner, picks, and portfolio signals all use one engine"),
+        ("Bull/Bear Trap Scanner",  9, "5-factor confluence: geometry · volume quality · RSI extreme · Supertrend · reversal candle. Proactive sweep of full Nifty 500."),
     ]
     avg = sum(s[1] for s in scores) / len(scores)
 
@@ -1126,6 +1128,59 @@ with st.sidebar:
         st.session_state.theme = new_theme
         st.rerun()
 
+    st.markdown("<hr style='margin:.8rem 0;border-color:var(--border)'>",
+                unsafe_allow_html=True)
+    st.markdown('<div style="font-size:.8rem;font-weight:800;letter-spacing:.05em;'
+                'margin-bottom:.5rem">🗺 NAVIGATION</div>', unsafe_allow_html=True)
+
+    NAV_GROUPS = {
+        "📊 Portfolio": [
+            ("📋 Overview",          "portfolio"),
+            ("📊 Charts",            "analytics"),
+            ("📐 Metrics",           "metrics"),
+            ("📤 Export",            "export"),
+        ],
+        "🔔 Signals & Alerts": [
+            ("🔔 Active Signals",    "signals"),
+            ("🪤 Trap Scanner",      "traps"),
+        ],
+        "🔄 Market Intelligence": [
+            ("🔄 Sector Rotation",   "sector"),
+            ("🌌 Universe Scanner",  "scanner"),
+            ("📅 Corporate Actions", "corp_actions"),
+        ],
+        "🛠 Tools": [
+            ("👁 Watchlist",         "watchlist"),
+            ("🎯 Signal Scores",     "scores"),
+        ],
+    }
+    # Flat list for radio
+    nav_labels = [label for group in NAV_GROUPS.values() for label, _ in group]
+    nav_keys   = [key   for group in NAV_GROUPS.values() for _, key   in group]
+
+    if "active_page" not in st.session_state:
+        st.session_state.active_page = "portfolio"
+
+    # Group headers + radio buttons styled with CSS
+    nav_html = ""
+    flat_idx = 0
+    for group_label, items in NAV_GROUPS.items():
+        nav_html += (f'<div style="font-size:.65rem;font-weight:800;color:var(--muted);'
+                     f'text-transform:uppercase;letter-spacing:.1em;margin:.6rem 0 .2rem;'
+                     f'padding-left:.3rem">{group_label}</div>')
+        flat_idx += len(items)
+
+    # Use radio for actual selection (CSS handles grouping visually)
+    cur_idx = nav_keys.index(st.session_state.active_page) \
+              if st.session_state.active_page in nav_keys else 0
+    sel_nav = st.radio(
+        "nav", nav_labels, index=cur_idx,
+        label_visibility="collapsed")
+    new_page = nav_keys[nav_labels.index(sel_nav)]
+    if new_page != st.session_state.active_page:
+        st.session_state.active_page = new_page
+        st.rerun()
+
     st.markdown("<br>", unsafe_allow_html=True)
     st.markdown('<div style="font-size:1.1rem;font-weight:800;color:var(--accent);'
                 'margin-bottom:.8rem">⚡ Trade Entry</div>', unsafe_allow_html=True)
@@ -1212,11 +1267,29 @@ with st.sidebar:
     st.markdown("<br>", unsafe_allow_html=True)
     st.markdown('<div style="font-size:.8rem;font-weight:800;letter-spacing:.05em">'
                 '📱 TELEGRAM</div>', unsafe_allow_html=True)
-    saved_tok, saved_cid = get_tg_config(UID)
+
+    # Load from DB first; fall back to st.secrets; cache in session_state
+    # so values survive within-session navigation without a DB re-read.
+    if "tg_tok_saved" not in st.session_state or "tg_cid_saved" not in st.session_state:
+        db_tok, db_cid = get_tg_config(UID)
+        if not db_tok:
+            try:
+                db_tok = st.secrets.get("telegram_bot_token", "")
+                db_cid = st.secrets.get("telegram_chat_id", "")
+            except Exception:
+                db_tok = db_cid = ""
+        st.session_state.tg_tok_saved = db_tok or ""
+        st.session_state.tg_cid_saved = db_cid or ""
+
+    saved_tok = st.session_state.tg_tok_saved
+    saved_cid = st.session_state.tg_cid_saved
+
     tg_tok = st.text_input("Bot Token", value=saved_tok, type="password")
-    tg_cid = st.text_input("Chat ID", value=saved_cid)
+    tg_cid = st.text_input("Chat ID",   value=saved_cid)
     if st.button("💾 Save Config", width="stretch"):
         save_tg_config(UID, tg_tok, tg_cid)
+        st.session_state.tg_tok_saved = tg_tok
+        st.session_state.tg_cid_saved = tg_cid
         st.success("Saved!")
 
 # ── Header ─────────────────────────────────────────────────────────────────────
@@ -1294,16 +1367,11 @@ st.markdown(
     unsafe_allow_html=True)
 
 # ── Tabs ────────────────────────────────────────────────────────────────────────
-(tab1, tab2, tab3, tab4,
- tab5, tab6, tab7, tab8, tab9, tab10, tab11) = st.tabs([
-    "📋 Portfolio", "📊 Analytics", "🔔 Active Signals",
-    "🔄 Sector Rotation", "🌌 Universe Scanner",
-    "📐 Metrics", "👁 Watchlist", "📤 Export",
-    "🎯 Signal Scores", "🪤 Trap Scanner", "📅 Corporate Actions"
-])
+# ── Page routing — driven by sidebar navigation ────────────────────────────────
+_page = st.session_state.get("active_page", "portfolio")
 
-# ── Tab 1: Portfolio ───────────────────────────────────────────────────────────
-with tab1:
+# ── Portfolio ────────────────────────────────────────────────────────────────
+if _page == 'portfolio':
     if df.empty:
         st.info("No trades yet. Use the sidebar to execute an entry.")
     else:
@@ -1438,8 +1506,8 @@ with tab1:
                     st.session_state.del_id = None
                     st.rerun()
 
-# ── Tab 2: Charts ──────────────────────────────────────────────────────────────
-with tab2:
+# ── Charts / Analytics ───────────────────────────────────────────────────────
+elif _page == 'analytics':
     if df.empty:
         st.info("Execute trades to populate visualization models.")
     else:
@@ -1453,8 +1521,8 @@ with tab2:
             chart_growth(get_history(UID), t_cur, t_inv),
             use_container_width=True)
 
-# ── Tab 3: Active Signals ──────────────────────────────────────────────────────
-with tab3:
+# ── Active Signals ───────────────────────────────────────────────────────────
+elif _page == 'signals':
     st.markdown(
         '<div class="sec">Active Portfolio Signals & Risk Management</div>',
         unsafe_allow_html=True)
@@ -1528,8 +1596,8 @@ with tab3:
 
         render_signals(st.session_state.signals_cache, theme_t)
 
-# ── Tab 4: Sector Rotation ─────────────────────────────────────────────────────
-with tab4:
+# ── Sector Rotation ──────────────────────────────────────────────────────────
+elif _page == 'sector':
     st.markdown('<div class="sec">Macro Sector Rotation & Capital Flow</div>',
                 unsafe_allow_html=True)
 
@@ -1570,22 +1638,51 @@ with tab4:
             unsafe_allow_html=True)
         render_picks(st.session_state.picks_cache, theme_t)
 
-# ── Tab 5: Universe Scanner ────────────────────────────────────────────────────
-with tab5:
+# ── Universe Scanner ─────────────────────────────────────────────────────────
+elif _page == 'scanner':
     total_loaded = len(SECTOR_MAP)
     st.markdown(
         f'<div class="sec">🌌 Universe Scanner ({total_loaded} Assets)</div>',
         unsafe_allow_html=True)
 
+    # ── Custom stock input ─────────────────────────────────────────────────────
+    with st.expander("➕ Add Custom Stocks to Scan", expanded=False):
+        st.caption("Enter NSE symbols (comma-separated). These are added to the scan universe temporarily.")
+        custom_raw = st.text_area(
+            "Custom symbols", value=st.session_state.get("custom_stocks_input",""),
+            placeholder="IRFC, CDSL, SNOWMAN, ZOMATO...",
+            label_visibility="collapsed", height=80)
+        if st.button("✅ Apply Custom List"):
+            # Store and inject into signals module
+            symbols = [s.strip().upper() for s in custom_raw.split(",") if s.strip()]
+            st.session_state.custom_stocks_input = custom_raw
+            if symbols:
+                import signals as _sg
+                if "Custom" not in _sg.SECTOR_STOCKS:
+                    _sg.SECTOR_STOCKS["Custom"] = []
+                _sg.SECTOR_STOCKS["Custom"] = symbols
+                for sym in symbols:
+                    _sg.SECTOR_MAP[sym] = "Custom"
+                st.success(f"✅ Added {len(symbols)} custom stocks to scan universe")
+            else:
+                import signals as _sg
+                _sg.SECTOR_STOCKS.pop("Custom", None)
+                st.info("Custom list cleared.")
+
     if st.button("⚡ Execute Global Scan", width="stretch"):
-        with st.spinner(f"Scanning {total_loaded} tickers..."):
+        with st.spinner(f"Scanning {len(SECTOR_MAP)} tickers..."):
             sd = generate_market_scanner()
             st.session_state.scanner_cache = sd if (sd is not None and not sd.empty) \
                 else pd.DataFrame()
             if (st.session_state.scanner_cache is not None and
                     not st.session_state.scanner_cache.empty):
+                liq_ok  = len(st.session_state.scanner_cache[
+                    st.session_state.scanner_cache["Liquid"]=="✅"])
+                liq_low = len(st.session_state.scanner_cache[
+                    st.session_state.scanner_cache["Liquid"]=="⚠️ Low"])
                 st.toast(
-                    f"✅ {len(st.session_state.scanner_cache)} setups extracted!",
+                    f"✅ {len(st.session_state.scanner_cache)} setups | "
+                    f"💧 {liq_ok} liquid · ⚠️ {liq_low} low-liq",
                     icon="🚀")
             st.rerun()
 
@@ -1593,19 +1690,19 @@ with tab5:
     if scan_df is None:
         st.info("💡 Initiate scan above or await automated background scan.")
     elif scan_df.empty:
-        st.warning("⚠️ Zero setups passed liquidity and pattern gates today.")
+        st.warning("⚠️ Zero setups passed pattern gates today.")
     else:
-        # ── Sector summary cards (always visible, never collapses) ─────────────
         all_sectors = sorted(scan_df["Sector"].unique().tolist())
+
+        # ── Sector summary cards ───────────────────────────────────────────────
         sector_stats = (
             scan_df.groupby("Sector")
             .agg(total=("Stock","count"),
                  strong=("Signal", lambda x: (x=="🔥 STRONG BUY").sum()),
                  buy=("Signal",    lambda x: (x=="🟢 BUY SETUP").sum()),
-                 avg_score=("Score","mean"))
+                 liq=("Liquid",    lambda x: (x=="✅").sum()))
             .reset_index()
         )
-
         cards_html = ""
         for _, sr in sector_stats.iterrows():
             hot = sr["strong"] + sr["buy"]
@@ -1613,95 +1710,95 @@ with tab5:
             bdr = theme_t["accent"] if hot > 0 else theme_t["border"]
             cards_html += (
                 f'<div style="background:var(--card);border:1px solid {bdr};'
-                f'border-radius:10px;padding:.8rem 1rem;cursor:pointer;'
-                f'transition:all .2s ease;min-width:150px;flex:1">'
-                f'<div style="font-size:.8rem;font-weight:800;color:var(--text);'
+                f'border-radius:10px;padding:.8rem 1rem;min-width:150px;flex:1">'
+                f'<div style="font-size:.78rem;font-weight:800;color:var(--text);'
                 f'white-space:nowrap;overflow:hidden;text-overflow:ellipsis">'
                 f'{sr["Sector"]}</div>'
-                f'<div style="font-size:1.2rem;font-weight:800;color:{clr};'
-                f'margin:.2rem 0">{int(sr["total"])}'
-                f'<span style="font-size:.7rem;color:var(--muted);font-weight:600">'
-                f' stocks</span></div>'
-                f'<div style="font-size:.72rem;color:var(--muted)">'
-                f'🔥{int(sr["strong"])} 🟢{int(sr["buy"])} · '
-                f'avg {sr["avg_score"]:.1f}</div></div>'
+                f'<div style="font-size:1.1rem;font-weight:800;color:{clr};margin:.2rem 0">'
+                f'{int(sr["total"])}<span style="font-size:.65rem;color:var(--muted)"> stocks</span></div>'
+                f'<div style="font-size:.68rem;color:var(--muted)">'
+                f'🔥{int(sr["strong"])} 🟢{int(sr["buy"])} '
+                f'· 💧{int(sr["liq"])} liquid</div></div>'
             )
         st.markdown(
-            f'<div style="display:flex;gap:.6rem;flex-wrap:wrap;'
-            f'margin-bottom:1.2rem">{cards_html}</div>',
+            f'<div style="display:flex;gap:.5rem;flex-wrap:wrap;'
+            f'margin-bottom:1rem">{cards_html}</div>',
             unsafe_allow_html=True)
 
-        # ── Stable filter controls (selectbox + multiselect — no expanders) ────
-        fc1, fc2, fc3, fc4 = st.columns([2, 1.5, 1.5, 1])
+        # ── Stable filter controls ──────────────────────────────────────────────
+        fc1, fc2, fc3, fc4, fc5 = st.columns([2, 1.5, 1.2, 1, 1])
         with fc1:
             sector_options = ["All Sectors"] + all_sectors
-            sel_sector = st.selectbox(
-                "Sector", sector_options,
+            sel_sector = st.selectbox("Sector", sector_options,
                 index=sector_options.index(st.session_state.selected_scanner_sector)
                 if st.session_state.selected_scanner_sector in sector_options else 0,
                 label_visibility="collapsed")
             if sel_sector != st.session_state.selected_scanner_sector:
                 st.session_state.selected_scanner_sector = sel_sector
         with fc2:
-            signal_opts = ["All Signals", "🔥 STRONG BUY", "🟢 BUY SETUP",
-                           "🟡 ACCUMULATE", "⚪ NEUTRAL", "🔴 AVOID"]
-            sel_signal = st.selectbox("Signal", signal_opts,
-                                      label_visibility="collapsed")
+            signal_opts = ["All Signals","🔥 STRONG BUY","🟢 BUY SETUP",
+                           "🟡 ACCUMULATE","⚪ NEUTRAL","🔴 AVOID"]
+            sel_signal = st.selectbox("Signal", signal_opts, label_visibility="collapsed")
         with fc3:
-            search_stock = st.text_input("Search symbol",
-                                         placeholder="e.g. RELIANCE",
-                                         label_visibility="collapsed")
+            liq_opts = ["All","✅ Liquid Only","⚠️ Low Liq Only"]
+            sel_liq = st.selectbox("Liquidity", liq_opts, label_visibility="collapsed")
         with fc4:
+            search_stock = st.text_input("Search", placeholder="Symbol",
+                                         label_visibility="collapsed")
+        with fc5:
             min_score_f = st.number_input("Min score", 0, 10, 0, 1,
                                           label_visibility="collapsed")
 
-        # ── Apply filters ──────────────────────────────────────────────────────
+        # ── Apply filters ───────────────────────────────────────────────────────
         fdf = scan_df.copy()
         if sel_sector != "All Sectors":
             fdf = fdf[fdf["Sector"] == sel_sector]
         if sel_signal != "All Signals":
             fdf = fdf[fdf["Signal"] == sel_signal]
+        if sel_liq == "✅ Liquid Only":
+            fdf = fdf[fdf["Liquid"] == "✅"]
+        elif sel_liq == "⚠️ Low Liq Only":
+            fdf = fdf[fdf["Liquid"] == "⚠️ Low"]
         if search_stock.strip():
             fdf = fdf[fdf["Stock"].str.upper().str.contains(
                 search_stock.strip().upper())]
         if min_score_f > 0:
             fdf = fdf[fdf["Score"] >= min_score_f]
 
-        # Drop sector col only when filtered to single sector
-        display_cols = fdf.drop(columns=["Sector"]) if sel_sector != "All Sectors" \
-            else fdf
+        display_df = fdf.drop(columns=["Sector"]) if sel_sector != "All Sectors" else fdf
 
+        liq_count = len(fdf[fdf["Liquid"]=="✅"]) if "Liquid" in fdf.columns else 0
         st.markdown(
-            f'<div style="font-size:.8rem;color:var(--muted);margin-bottom:.5rem;'
-            f'font-weight:600">Showing {len(fdf)} of {len(scan_df)} results</div>',
+            f'<div style="font-size:.78rem;color:var(--muted);margin-bottom:.4rem;'
+            f'font-weight:600">Showing {len(fdf)} of {len(scan_df)} results · '
+            f'💧 {liq_count} liquid</div>',
             unsafe_allow_html=True)
 
-        # ── Single stable dataframe with fixed height (own scroll bar) ─────────
-        # height=600 gives ~12 rows visible with internal scroll — no page scroll issues
+        # ── Single stable dataframe with fixed height ───────────────────────────
         st.dataframe(
-            display_cols.reset_index(drop=True),
-            hide_index=True,
-            height=600,
-            use_container_width=True,
+            display_df.reset_index(drop=True),
+            hide_index=True, height=600, use_container_width=True,
             column_config={
-                "Generated": st.column_config.TextColumn("Time",     width="small"),
-                "Sector":    st.column_config.TextColumn("Sector",   width="medium"),
-                "Stock":     st.column_config.TextColumn("Stock",    width="small"),
-                "Signal":    st.column_config.TextColumn("Signal",   width="medium"),
-                "Score":     st.column_config.NumberColumn("Score",  format="%d"),
-                "CMP":    st.column_config.NumberColumn("CMP",    format="₹%.2f"),
-                "Entry":  st.column_config.NumberColumn("Entry",  format="₹%.2f"),
-                "Target": st.column_config.NumberColumn("Target", format="₹%.2f"),
-                "SL":     st.column_config.NumberColumn("SL",     format="₹%.2f"),
-                "Support":st.column_config.NumberColumn("Support",format="₹%.2f"),
-                "Resist": st.column_config.NumberColumn("Resist", format="₹%.2f"),
-                "RSI":    st.column_config.NumberColumn("RSI",    format="%.1f"),
-                "Trend":  st.column_config.TextColumn("Trend",   width="medium"),
+                "Generated":    st.column_config.TextColumn("Time",     width="small"),
+                "Sector":       st.column_config.TextColumn("Sector",   width="medium"),
+                "Stock":        st.column_config.TextColumn("Stock",    width="small"),
+                "Signal":       st.column_config.TextColumn("Signal",   width="medium"),
+                "Liquid":       st.column_config.TextColumn("💧 Liq",   width="small"),
+                "Turnover_Cr":  st.column_config.NumberColumn("₹Cr/day",format="%.1f"),
+                "Score":        st.column_config.NumberColumn("Score",  format="%d"),
+                "CMP":     st.column_config.NumberColumn("CMP",    format="₹%.2f"),
+                "Entry":   st.column_config.NumberColumn("Entry",  format="₹%.2f"),
+                "Target":  st.column_config.NumberColumn("Target", format="₹%.2f"),
+                "SL":      st.column_config.NumberColumn("SL",     format="₹%.2f"),
+                "Support": st.column_config.NumberColumn("Support",format="₹%.2f"),
+                "Resist":  st.column_config.NumberColumn("Resist", format="₹%.2f"),
+                "RSI":     st.column_config.NumberColumn("RSI",    format="%.1f"),
+                "Trend":   st.column_config.TextColumn("Trend",   width="medium"),
                 "Patterns":st.column_config.TextColumn("Patterns",width="large"),
             })
 
-# ── Tab 6: Metrics ─────────────────────────────────────────────────────────────
-with tab6:
+# ── Metrics ──────────────────────────────────────────────────────────────────
+elif _page == 'metrics':
     a = calc_analytics(df)
     if not a or a.get("closed_trades", 0) == 0:
         st.info("Metrics require historical closed trades.")
@@ -1723,8 +1820,8 @@ with tab6:
             + '</div>',
             unsafe_allow_html=True)
 
-# ── Tab 7: Watchlist ───────────────────────────────────────────────────────────
-with tab7:
+# ── Watchlist ────────────────────────────────────────────────────────────────
+elif _page == 'watchlist':
     st.markdown('<div class="sec">👁 Target Watchlist</div>', unsafe_allow_html=True)
 
     def drop_watchlist_cb(w_id, s_name):
@@ -1798,8 +1895,8 @@ with tab7:
     else:
         st.info("Watchlist empty. Add a ticker above.")
 
-# ── Tab 8: Export ──────────────────────────────────────────────────────────────
-with tab8:
+# ── Export ───────────────────────────────────────────────────────────────────
+elif _page == 'export':
     if df.empty:
         st.info("No data available for export.")
     else:
@@ -1812,8 +1909,8 @@ with tab8:
             file_name=f"swing_portfolio_{datetime.now().strftime('%Y%m%d')}.csv",
             mime="text/csv")
 
-# ── Tab 9: Signal Scores ───────────────────────────────────────────────────────
-with tab9:
+# ── Signal Scores ────────────────────────────────────────────────────────────
+elif _page == 'scores':
     st.markdown('<div class="sec">🎯 signals.py v12 — Component Scorecard</div>',
                 unsafe_allow_html=True)
     render_score_dashboard()
@@ -1831,8 +1928,8 @@ with tab9:
 7. <b>Risk Engine</b> — unified across signals, picks, and scanner
 </div>""", unsafe_allow_html=True)
 
-# ── Tab 10: Trap Scanner ───────────────────────────────────────────────────────
-with tab10:
+# ── Trap Scanner ─────────────────────────────────────────────────────────────
+elif _page == 'traps':
     if not _TRAP_SCANNER_AVAILABLE:
         st.warning("🪤 Trap Scanner requires the updated **signals.py** (v12+). "
                    "Deploy the new signals.py from the project outputs to enable this tab.")
@@ -2024,8 +2121,8 @@ with tab10:
                         file_name=f"bear_traps_{datetime.now().strftime('%Y%m%d_%H%M')}.csv",
                         mime="text/csv", use_container_width=True)
 
-# ── Tab 11: Corporate Actions ──────────────────────────────────────────────────
-with tab11:
+# ── Corporate Actions ────────────────────────────────────────────────────────
+elif _page == 'corp_actions':
     if not _CORP_ACTIONS_AVAILABLE:
         st.warning("📅 Corporate Actions requires the updated **signals.py** (v12+). "
                    "Deploy the new signals.py from the project outputs to enable this tab.")
