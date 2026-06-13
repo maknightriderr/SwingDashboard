@@ -2068,7 +2068,7 @@ elif _page == 'traps':
     # ── Controls ────────────────────────────────────────────────────────────────
     ctrl1, ctrl2, ctrl3 = st.columns([2, 1, 1])
     with ctrl1:
-        st.caption("⚡ Sweeps all Nifty 500 liquid stocks for false breakout / breakdown patterns.")
+        st.caption("⚡ Sweeps all NSE liquid stocks for false breakout / breakdown patterns.")
     with ctrl2:
         min_conf = st.slider("Min Confidence %", 50, 90, 60, 5, label_visibility="collapsed")
     with ctrl3:
