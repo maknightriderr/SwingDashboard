@@ -1587,13 +1587,13 @@ elif _page == 'analytics':
     else:
         c1, c2 = st.columns(2)
         with c1:
-            st.plotly_chart(chart_alloc(df), use_container_width=True)
+            st.plotly_chart(chart_alloc(df), width=True)
         with c2:
-            st.plotly_chart(chart_donut(df), use_container_width=True)
-        st.plotly_chart(chart_pnl(df), use_container_width=True)
+            st.plotly_chart(chart_donut(df), width=True)
+        st.plotly_chart(chart_pnl(df), width=True)
         st.plotly_chart(
             chart_growth(get_history(UID), t_cur, t_inv),
-            use_container_width=True)
+            width=True)
 
 # ── Active Signals ───────────────────────────────────────────────────────────
 elif _page == 'signals':
@@ -1893,7 +1893,7 @@ elif _page == 'scanner':
         # ── Single stable dataframe with fixed height ───────────────────────────
         st.dataframe(
             display_df.reset_index(drop=True),
-            hide_index=True, height=600, use_container_width=True,
+            hide_index=True, height=600, width=True,
             column_config={
                 "Generated":    st.column_config.TextColumn("Time",     width="small"),
                 "Sector":       st.column_config.TextColumn("Sector",   width="medium"),
@@ -2228,14 +2228,14 @@ elif _page == 'traps':
                         "⬇️ Export Bull Traps CSV",
                         bull_df.to_csv(index=False).encode("utf-8"),
                         file_name=f"bull_traps_{datetime.now().strftime('%Y%m%d_%H%M')}.csv",
-                        mime="text/csv", use_container_width=True)
+                        mime="text/csv", width=True)
             with exp2:
                 if not bear_df.empty:
                     st.download_button(
                         "⬇️ Export Bear Traps CSV",
                         bear_df.to_csv(index=False).encode("utf-8"),
                         file_name=f"bear_traps_{datetime.now().strftime('%Y%m%d_%H%M')}.csv",
-                        mime="text/csv", use_container_width=True)
+                        mime="text/csv", width=True)
 
 # ── Corporate Actions ────────────────────────────────────────────────────────
 elif _page == 'corp_actions':
@@ -2770,7 +2770,7 @@ elif _page == 'smc':
                     })
                 setup_df = pd.DataFrame(rows)
                 st.dataframe(
-                    setup_df, hide_index=True, height=440, use_container_width=True,
+                    setup_df, hide_index=True, height=440, width=True,
                     column_config={
                         "Action": st.column_config.TextColumn("Action", width="small"),
                         "Grade":  st.column_config.TextColumn("Grade", width="small"),
