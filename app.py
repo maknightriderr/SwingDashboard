@@ -25,7 +25,9 @@ from signals import (
     find_sector_picks, send_telegram, build_telegram_message,
     get_sector, get_market_regime, generate_market_scanner,
     SECTOR_MAP, _bulk_fetch_history, compute_indicators,
-    fetch_portfolio_news, scan_for_traps
+    fetch_portfolio_news, scan_for_traps,
+    fetch_corporate_actions, fetch_bulk_corporate_actions,
+    scan_corporate_actions_universe
 )
 
 # ── Auto-refresh ───────────────────────────────────────────────────────────────
@@ -169,6 +171,7 @@ for k, v in [("user_id", None), ("username", None), ("edit_id", None), ("close_i
              ("last_refresh", None), ("last_auto_scan", 0.0), ("sort_col", "stock"), ("sort_asc", False),
              ("signals_cache", None), ("sector_cache", None), ("picks_cache", None),
              ("outlook_cache", None), ("scanner_cache", None), ("trap_scan_cache", None),
+             ("corp_actions_cache", None), ("selected_scanner_sector", "All Sectors"),
              ("filter_status", "All"),
              ("filter_pnl", "All"), ("search", ""), ("theme", "Obsidian & Gold (Institutional)")]:
     if k not in st.session_state:
@@ -1272,11 +1275,11 @@ st.markdown(
 
 # ── Tabs ────────────────────────────────────────────────────────────────────────
 (tab1, tab2, tab3, tab4,
- tab5, tab6, tab7, tab8, tab9, tab10) = st.tabs([
+ tab5, tab6, tab7, tab8, tab9, tab10, tab11) = st.tabs([
     "📋 Portfolio", "📊 Analytics", "🔔 Active Signals",
     "🔄 Sector Rotation", "🌌 Universe Scanner",
     "📐 Metrics", "👁 Watchlist", "📤 Export",
-    "🎯 Signal Scores", "🪤 Trap Scanner"
+    "🎯 Signal Scores", "🪤 Trap Scanner", "📅 Corporate Actions"
 ])
 
 # ── Tab 1: Portfolio ───────────────────────────────────────────────────────────
@@ -1559,8 +1562,8 @@ with tab5:
             sd = generate_market_scanner()
             st.session_state.scanner_cache = sd if (sd is not None and not sd.empty) \
                 else pd.DataFrame()
-            if st.session_state.scanner_cache is not None and \
-                    not st.session_state.scanner_cache.empty:
+            if (st.session_state.scanner_cache is not None and
+                    not st.session_state.scanner_cache.empty):
                 st.toast(
                     f"✅ {len(st.session_state.scanner_cache)} setups extracted!",
                     icon="🚀")
@@ -1572,23 +1575,110 @@ with tab5:
     elif scan_df.empty:
         st.warning("⚠️ Zero setups passed liquidity and pattern gates today.")
     else:
-        for sec in scan_df["Sector"].unique():
-            sec_df = scan_df[scan_df["Sector"] == sec].drop(columns=["Sector"])
-            bc = len(sec_df[sec_df["Score"] >= 5])
-            with st.expander(
-                    f"📁 {sec} — {len(sec_df)} Assets {'🔥' if bc > 0 else ''}"):
-                st.dataframe(
-                    sec_df, hide_index=True,
-                    column_config={
-                        "Generated": st.column_config.TextColumn("Time"),
-                        "CMP":    st.column_config.NumberColumn("CMP",      format="₹%.2f"),
-                        "Entry":  st.column_config.NumberColumn("Entry",    format="₹%.2f"),
-                        "Target": st.column_config.NumberColumn("Target",   format="₹%.2f"),
-                        "SL":     st.column_config.NumberColumn("StopLoss", format="₹%.2f"),
-                        "Support":st.column_config.NumberColumn("Support",  format="₹%.2f"),
-                        "Resist": st.column_config.NumberColumn("Resist",   format="₹%.2f"),
-                        "RSI":    st.column_config.NumberColumn("RSI",      format="%.1f"),
-                    })
+        # ── Sector summary cards (always visible, never collapses) ─────────────
+        all_sectors = sorted(scan_df["Sector"].unique().tolist())
+        sector_stats = (
+            scan_df.groupby("Sector")
+            .agg(total=("Stock","count"),
+                 strong=("Signal", lambda x: (x=="🔥 STRONG BUY").sum()),
+                 buy=("Signal",    lambda x: (x=="🟢 BUY SETUP").sum()),
+                 avg_score=("Score","mean"))
+            .reset_index()
+        )
+
+        cards_html = ""
+        for _, sr in sector_stats.iterrows():
+            hot = sr["strong"] + sr["buy"]
+            clr = theme_t["green"] if hot > 0 else theme_t["muted"]
+            bdr = theme_t["accent"] if hot > 0 else theme_t["border"]
+            cards_html += (
+                f'<div style="background:var(--card);border:1px solid {bdr};'
+                f'border-radius:10px;padding:.8rem 1rem;cursor:pointer;'
+                f'transition:all .2s ease;min-width:150px;flex:1">'
+                f'<div style="font-size:.8rem;font-weight:800;color:var(--text);'
+                f'white-space:nowrap;overflow:hidden;text-overflow:ellipsis">'
+                f'{sr["Sector"]}</div>'
+                f'<div style="font-size:1.2rem;font-weight:800;color:{clr};'
+                f'margin:.2rem 0">{int(sr["total"])}'
+                f'<span style="font-size:.7rem;color:var(--muted);font-weight:600">'
+                f' stocks</span></div>'
+                f'<div style="font-size:.72rem;color:var(--muted)">'
+                f'🔥{int(sr["strong"])} 🟢{int(sr["buy"])} · '
+                f'avg {sr["avg_score"]:.1f}</div></div>'
+            )
+        st.markdown(
+            f'<div style="display:flex;gap:.6rem;flex-wrap:wrap;'
+            f'margin-bottom:1.2rem">{cards_html}</div>',
+            unsafe_allow_html=True)
+
+        # ── Stable filter controls (selectbox + multiselect — no expanders) ────
+        fc1, fc2, fc3, fc4 = st.columns([2, 1.5, 1.5, 1])
+        with fc1:
+            sector_options = ["All Sectors"] + all_sectors
+            sel_sector = st.selectbox(
+                "Sector", sector_options,
+                index=sector_options.index(st.session_state.selected_scanner_sector)
+                if st.session_state.selected_scanner_sector in sector_options else 0,
+                label_visibility="collapsed")
+            if sel_sector != st.session_state.selected_scanner_sector:
+                st.session_state.selected_scanner_sector = sel_sector
+        with fc2:
+            signal_opts = ["All Signals", "🔥 STRONG BUY", "🟢 BUY SETUP",
+                           "🟡 ACCUMULATE", "⚪ NEUTRAL", "🔴 AVOID"]
+            sel_signal = st.selectbox("Signal", signal_opts,
+                                      label_visibility="collapsed")
+        with fc3:
+            search_stock = st.text_input("Search symbol",
+                                         placeholder="e.g. RELIANCE",
+                                         label_visibility="collapsed")
+        with fc4:
+            min_score_f = st.number_input("Min score", 0, 10, 0, 1,
+                                          label_visibility="collapsed")
+
+        # ── Apply filters ──────────────────────────────────────────────────────
+        fdf = scan_df.copy()
+        if sel_sector != "All Sectors":
+            fdf = fdf[fdf["Sector"] == sel_sector]
+        if sel_signal != "All Signals":
+            fdf = fdf[fdf["Signal"] == sel_signal]
+        if search_stock.strip():
+            fdf = fdf[fdf["Stock"].str.upper().str.contains(
+                search_stock.strip().upper())]
+        if min_score_f > 0:
+            fdf = fdf[fdf["Score"] >= min_score_f]
+
+        # Drop sector col only when filtered to single sector
+        display_cols = fdf.drop(columns=["Sector"]) if sel_sector != "All Sectors" \
+            else fdf
+
+        st.markdown(
+            f'<div style="font-size:.8rem;color:var(--muted);margin-bottom:.5rem;'
+            f'font-weight:600">Showing {len(fdf)} of {len(scan_df)} results</div>',
+            unsafe_allow_html=True)
+
+        # ── Single stable dataframe with fixed height (own scroll bar) ─────────
+        # height=600 gives ~12 rows visible with internal scroll — no page scroll issues
+        st.dataframe(
+            display_cols.reset_index(drop=True),
+            hide_index=True,
+            height=600,
+            use_container_width=True,
+            column_config={
+                "Generated": st.column_config.TextColumn("Time",     width="small"),
+                "Sector":    st.column_config.TextColumn("Sector",   width="medium"),
+                "Stock":     st.column_config.TextColumn("Stock",    width="small"),
+                "Signal":    st.column_config.TextColumn("Signal",   width="medium"),
+                "Score":     st.column_config.NumberColumn("Score",  format="%d"),
+                "CMP":    st.column_config.NumberColumn("CMP",    format="₹%.2f"),
+                "Entry":  st.column_config.NumberColumn("Entry",  format="₹%.2f"),
+                "Target": st.column_config.NumberColumn("Target", format="₹%.2f"),
+                "SL":     st.column_config.NumberColumn("SL",     format="₹%.2f"),
+                "Support":st.column_config.NumberColumn("Support",format="₹%.2f"),
+                "Resist": st.column_config.NumberColumn("Resist", format="₹%.2f"),
+                "RSI":    st.column_config.NumberColumn("RSI",    format="%.1f"),
+                "Trend":  st.column_config.TextColumn("Trend",   width="medium"),
+                "Patterns":st.column_config.TextColumn("Patterns",width="large"),
+            })
 
 # ── Tab 6: Metrics ─────────────────────────────────────────────────────────────
 with tab6:
@@ -1909,3 +1999,202 @@ with tab10:
                         bear_df.to_csv(index=False).encode("utf-8"),
                         file_name=f"bear_traps_{datetime.now().strftime('%Y%m%d_%H%M')}.csv",
                         mime="text/csv", use_container_width=True)
+
+# ── Tab 11: Corporate Actions ──────────────────────────────────────────────────
+with tab11:
+    st.markdown('<div class="sec">📅 Corporate Actions — Full Nifty 500</div>',
+                unsafe_allow_html=True)
+    st.caption("Dividends · Stock Splits · Bonus Issues — sourced from NSE via yfinance. 6-hour cache.")
+
+    # ── Portfolio holdings quick-view ──────────────────────────────────────────
+    open_syms = raw[raw["status"]=="Open"]["stock"].unique().tolist() if not raw.empty else []
+    if open_syms:
+        st.markdown('<div class="sec" style="margin-top:1rem">📌 Your Holdings</div>',
+                    unsafe_allow_html=True)
+        with st.spinner("Fetching corporate actions for your holdings..."):
+            port_actions = fetch_bulk_corporate_actions(open_syms, max_workers=5)
+
+        p_rows = ""
+        for sym in open_syms:
+            data = port_actions.get(sym, {})
+            div_str  = (f"₹{data['last_dividend']} on {data['last_div_date']}"
+                        if data.get("last_dividend") else "—")
+            exd_str  = (f'<b style="color:var(--yellow)">{data["upcoming_exdate"]}</b>'
+                        if data.get("upcoming_exdate") else "—")
+            spl_str  = (f"{data['splits'][-1]['ratio']}x on {data['splits'][-1]['date']}"
+                        if data.get("splits") else "—")
+            split_badge = ('<span style="background:rgba(59,130,246,.15);color:var(--blue);'
+                           'padding:.1rem .5rem;border-radius:4px;font-size:.7rem;'
+                           'font-weight:800">SPLIT/BONUS 1Y</span>'
+                           if data.get("has_split_1y") else "")
+            p_rows += (
+                f"<tr>"
+                f"<td style='text-align:left;font-weight:800'>{sym} {split_badge}</td>"
+                f"<td style='text-align:left;color:var(--muted);font-size:.8rem'>"
+                f"{get_sector(sym)}</td>"
+                f"<td>{div_str}</td>"
+                f"<td>{exd_str}</td>"
+                f"<td style='font-size:.78rem;color:var(--muted)'>{spl_str}</td>"
+                f"</tr>"
+            )
+        if p_rows:
+            st.markdown(
+                f'<div class="tbl-wrap"><table class="t">'
+                f'<thead><tr>'
+                f'<th class="l">Stock</th><th class="l">Sector</th>'
+                f'<th>Last Dividend</th><th>Ex-Date (upcoming)</th>'
+                f'<th>Last Split/Bonus</th>'
+                f'</tr></thead><tbody>{p_rows}</tbody></table></div>',
+                unsafe_allow_html=True)
+
+    st.markdown("<hr style='border-color:var(--border);margin:1.5rem 0'>",
+                unsafe_allow_html=True)
+
+    # ── Full universe scan controls ────────────────────────────────────────────
+    ca1, ca2 = st.columns([3, 1])
+    with ca1:
+        st.markdown(
+            '<div style="font-size:.85rem;font-weight:700;color:var(--text)">'
+            '🔍 Sweep full Nifty 500 for upcoming ex-dates, recent dividends '
+            'and bonus/split events</div>',
+            unsafe_allow_html=True)
+    with ca2:
+        run_ca_scan = st.button("📅 Scan Corporate Actions", width="stretch")
+
+    if run_ca_scan:
+        total_sym = sum(len(v) for v in __import__("signals").SECTOR_STOCKS.values())
+        with st.spinner(f"Fetching corporate actions for {total_sym} stocks… (may take 60–90s)"):
+            st.session_state.corp_actions_cache = scan_corporate_actions_universe()
+            ca = st.session_state.corp_actions_cache
+            st.toast(
+                f"✅ {len(ca['with_upcoming_exdate'])} upcoming ex-dates · "
+                f"{len(ca['recent_dividends'])} recent dividends · "
+                f"{len(ca['recent_splits'])} splits/bonus",
+                icon="📅")
+
+    ca_data = st.session_state.corp_actions_cache
+    if ca_data is None:
+        st.info("Click **📅 Scan Corporate Actions** to fetch the full Nifty 500 action calendar.")
+    else:
+        ts = ca_data.get("timestamp","—"); scanned = ca_data.get("scanned",0)
+        st.markdown(
+            f'<div style="font-size:.75rem;color:var(--muted);margin-bottom:1rem">'
+            f'Last scanned {scanned} stocks at {ts}</div>',
+            unsafe_allow_html=True)
+
+        ca_t1, ca_t2, ca_t3 = st.tabs([
+            f"📆 Upcoming Ex-Dates ({len(ca_data['with_upcoming_exdate'])})",
+            f"💰 Recent Dividends ({len(ca_data['recent_dividends'])})",
+            f"🔀 Splits & Bonus ({len(ca_data['recent_splits'])})",
+        ])
+
+        # ── Upcoming Ex-Dates ──────────────────────────────────────────────────
+        with ca_t1:
+            exd_list = ca_data["with_upcoming_exdate"]
+            if not exd_list:
+                st.info("No upcoming ex-dividend dates found.")
+            else:
+                rows = ""
+                for item in exd_list:
+                    days_away = (pd.Timestamp(item["ex_date"]) -
+                                 pd.Timestamp.now()).days
+                    urgency = (
+                        f'<span style="color:var(--red);font-weight:800">'
+                        f'⚡ {days_away}d away</span>'
+                        if days_away <= 7 else
+                        f'<span style="color:var(--yellow);font-weight:700">'
+                        f'{days_away}d</span>'
+                        if days_away <= 30 else
+                        f'<span style="color:var(--muted)">{days_away}d</span>'
+                    )
+                    div_amt = (f"₹{item['last_dividend']}"
+                               if item.get("last_dividend") else "—")
+                    rows += (
+                        f"<tr>"
+                        f"<td style='text-align:left;font-weight:800'>{item['stock']}</td>"
+                        f"<td style='text-align:left;color:var(--muted);font-size:.8rem'>"
+                        f"{item['sector']}</td>"
+                        f"<td><b>{item['ex_date']}</b></td>"
+                        f"<td>{urgency}</td>"
+                        f"<td>{div_amt}</td>"
+                        f"</tr>"
+                    )
+                st.markdown(
+                    f'<div class="tbl-wrap"><table class="t"><thead><tr>'
+                    f'<th class="l">Stock</th><th class="l">Sector</th>'
+                    f'<th>Ex-Date</th><th>Days Away</th><th>Last Div Amt</th>'
+                    f'</tr></thead><tbody>{rows}</tbody></table></div>',
+                    unsafe_allow_html=True)
+                # Export
+                ex_df = pd.DataFrame(exd_list)
+                st.download_button(
+                    "⬇️ Export Ex-Dates CSV",
+                    ex_df.to_csv(index=False).encode("utf-8"),
+                    file_name=f"upcoming_exdates_{datetime.now().strftime('%Y%m%d')}.csv",
+                    mime="text/csv")
+
+        # ── Recent Dividends ───────────────────────────────────────────────────
+        with ca_t2:
+            div_list = ca_data["recent_dividends"]
+            if not div_list:
+                st.info("No recent dividends found in the last 12 months.")
+            else:
+                rows = ""
+                for item in sorted(div_list, key=lambda x: x["amount"], reverse=True):
+                    rows += (
+                        f"<tr>"
+                        f"<td style='text-align:left;font-weight:800'>{item['stock']}</td>"
+                        f"<td style='text-align:left;color:var(--muted);font-size:.8rem'>"
+                        f"{item['sector']}</td>"
+                        f"<td><b style='color:var(--green)'>₹{item['amount']}</b></td>"
+                        f"<td>{item['ex_date']}</td>"
+                        f"</tr>"
+                    )
+                st.markdown(
+                    f'<div class="tbl-wrap"><table class="t"><thead><tr>'
+                    f'<th class="l">Stock</th><th class="l">Sector</th>'
+                    f'<th>Dividend ₹</th><th>Ex-Date</th>'
+                    f'</tr></thead><tbody>{rows}</tbody></table></div>',
+                    unsafe_allow_html=True)
+                div_df = pd.DataFrame(div_list)
+                st.download_button(
+                    "⬇️ Export Dividends CSV",
+                    div_df.to_csv(index=False).encode("utf-8"),
+                    file_name=f"recent_dividends_{datetime.now().strftime('%Y%m%d')}.csv",
+                    mime="text/csv")
+
+        # ── Splits & Bonus ─────────────────────────────────────────────────────
+        with ca_t3:
+            split_list = ca_data["recent_splits"]
+            if not split_list:
+                st.info("No stock splits or bonus issues found in the last 12 months.")
+            else:
+                rows = ""
+                for item in split_list:
+                    type_badge = (
+                        f'<span style="background:rgba(59,130,246,.15);color:var(--blue);'
+                        f'padding:.2rem .6rem;border-radius:5px;font-size:.72rem;'
+                        f'font-weight:800">{item["type"]}</span>'
+                    )
+                    rows += (
+                        f"<tr>"
+                        f"<td style='text-align:left;font-weight:800'>{item['stock']}</td>"
+                        f"<td style='text-align:left;color:var(--muted);font-size:.8rem'>"
+                        f"{item['sector']}</td>"
+                        f"<td>{type_badge}</td>"
+                        f"<td><b>{item['ratio']}:1</b></td>"
+                        f"<td>{item['date']}</td>"
+                        f"</tr>"
+                    )
+                st.markdown(
+                    f'<div class="tbl-wrap"><table class="t"><thead><tr>'
+                    f'<th class="l">Stock</th><th class="l">Sector</th>'
+                    f'<th>Type</th><th>Ratio</th><th>Date</th>'
+                    f'</tr></thead><tbody>{rows}</tbody></table></div>',
+                    unsafe_allow_html=True)
+                sp_df = pd.DataFrame(split_list)
+                st.download_button(
+                    "⬇️ Export Splits/Bonus CSV",
+                    sp_df.to_csv(index=False).encode("utf-8"),
+                    file_name=f"splits_bonus_{datetime.now().strftime('%Y%m%d')}.csv",
+                    mime="text/csv")
