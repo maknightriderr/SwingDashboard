@@ -1470,3 +1470,201 @@ def scan_for_traps(min_confidence=55):
         "bear_count":  len(bear_traps),
         "timestamp":   datetime.now().strftime("%d %b %Y %H:%M"),
     }
+
+
+# ==============================================================================
+# CORPORATE ACTIONS ENGINE
+# Fetches dividends, stock splits, and bonus issues for NSE stocks via yfinance.
+# Cached at module level with 6-hour TTL (actions don't change intraday).
+# ==============================================================================
+
+_CORP_CACHE    = {}
+_CORP_CACHE_TS = {}
+_CORP_TTL      = 21600   # 6 hours
+
+
+def fetch_corporate_actions(symbol):
+    """
+    Fetch recent + upcoming corporate actions for a single NSE stock.
+    Returns:
+        {
+          "symbol"         : str,
+          "dividends"      : list[{"date": str, "amount": float}],   # last 3
+          "splits"         : list[{"date": str, "ratio": float}],     # last 2
+          "upcoming_exdate": str | None,   # next ex-dividend date if known
+          "last_dividend"  : float | None, # most recent dividend amount
+          "last_div_date"  : str | None,
+          "has_split_1y"   : bool,         # any split/bonus in last 365 days
+        }
+    """
+    now = time.time()
+    clean = sanitize_ticker(symbol)
+    key   = f"corp_{clean}"
+
+    if key in _CORP_CACHE and (now - _CORP_CACHE_TS.get(key, 0)) < _CORP_TTL:
+        return _CORP_CACHE[key]
+
+    result = {
+        "symbol": clean, "dividends": [], "splits": [],
+        "upcoming_exdate": None, "last_dividend": None,
+        "last_div_date": None, "has_split_1y": False,
+    }
+    try:
+        t = yf.Ticker(f"{clean}.NS")
+
+        # ── Dividends ────────────────────────────────────────────────────────
+        try:
+            divs = t.dividends
+            if divs is not None and not divs.empty:
+                recent = divs.tail(3)
+                result["dividends"] = [
+                    {"date": str(d.date()), "amount": round(float(v), 2)}
+                    for d, v in zip(recent.index, recent.values)
+                ]
+                result["last_dividend"] = round(float(divs.iloc[-1]), 2)
+                result["last_div_date"] = str(divs.index[-1].date())
+        except Exception:
+            pass
+
+        # ── Splits / Bonus ────────────────────────────────────────────────────
+        try:
+            splits = t.splits
+            if splits is not None and not splits.empty:
+                recent = splits.tail(3)
+                result["splits"] = [
+                    {"date": str(d.date()), "ratio": round(float(v), 4)}
+                    for d, v in zip(recent.index, recent.values)
+                ]
+                # Check if any split happened in the last 365 days
+                cutoff = pd.Timestamp.now(tz="UTC") - pd.Timedelta(days=365)
+                recent_splits = splits[splits.index >= cutoff]
+                result["has_split_1y"] = not recent_splits.empty
+        except Exception:
+            pass
+
+        # ── Upcoming ex-dividend date ─────────────────────────────────────────
+        try:
+            info = t.fast_info
+            # fast_info doesn't have ex-date; try calendar
+            cal = t.calendar
+            if isinstance(cal, dict):
+                exd = cal.get("Ex-Dividend Date") or cal.get("exDividendDate")
+                if exd:
+                    result["upcoming_exdate"] = str(pd.Timestamp(exd).date())
+            elif isinstance(cal, pd.DataFrame) and not cal.empty:
+                for col in ["Ex-Dividend Date", "exDividendDate"]:
+                    if col in cal.columns:
+                        val = cal[col].iloc[0]
+                        if pd.notna(val):
+                            result["upcoming_exdate"] = str(pd.Timestamp(val).date())
+                        break
+        except Exception:
+            pass
+
+    except Exception:
+        pass
+
+    _CORP_CACHE[key]    = result
+    _CORP_CACHE_TS[key] = now
+    return result
+
+
+def fetch_bulk_corporate_actions(symbols, max_workers=8):
+    """
+    Batch-fetch corporate actions for a list of NSE symbols using a thread pool.
+    Returns dict: {symbol: action_dict}
+    Gracefully skips failures — never raises.
+    """
+    results = {}
+    with ThreadPoolExecutor(max_workers=max_workers) as executor:
+        future_map = {
+            executor.submit(fetch_corporate_actions, sym): sym
+            for sym in symbols
+        }
+        for future in as_completed(future_map):
+            sym = future_map[future]
+            try:
+                results[sym] = future.result()
+            except Exception:
+                results[sym] = {
+                    "symbol": sym, "dividends": [], "splits": [],
+                    "upcoming_exdate": None, "last_dividend": None,
+                    "last_div_date": None, "has_split_1y": False,
+                }
+    return results
+
+
+def scan_corporate_actions_universe(min_dividend=0.0):
+    """
+    Sweep the full Nifty 500 for stocks with:
+      - Recent dividends (last 12 months)
+      - Upcoming ex-dividend dates
+      - Recent stock splits or bonus issues (last 365 days)
+
+    Returns:
+        {
+          "with_upcoming_exdate" : list[dict],  # stocks with known future ex-date
+          "recent_dividends"     : list[dict],  # paid dividend in last year
+          "recent_splits"        : list[dict],  # split/bonus in last 365 days
+          "timestamp"            : str,
+          "scanned"              : int,
+        }
+    """
+    all_symbols = []
+    for stocks in SECTOR_STOCKS.values():
+        all_symbols.extend(stocks)
+
+    actions_map = fetch_bulk_corporate_actions(all_symbols)
+
+    upcoming_exdate  = []
+    recent_dividends = []
+    recent_splits    = []
+    today_str        = str(datetime.now().date())
+
+    for sym, data in actions_map.items():
+        sector = get_sector(sym)
+        base   = {"stock": sym, "sector": sector}
+
+        # Upcoming ex-date (future dates only)
+        if data["upcoming_exdate"] and data["upcoming_exdate"] >= today_str:
+            upcoming_exdate.append({
+                **base,
+                "ex_date":       data["upcoming_exdate"],
+                "last_dividend": data["last_dividend"],
+                "last_div_date": data["last_div_date"],
+            })
+
+        # Recent dividend (within last 365 days)
+        if data["last_div_date"]:
+            cutoff = str((datetime.now() - pd.Timedelta(days=365)).date())
+            if data["last_div_date"] >= cutoff:
+                if data["last_dividend"] and data["last_dividend"] >= min_dividend:
+                    recent_dividends.append({
+                        **base,
+                        "amount":   data["last_dividend"],
+                        "ex_date":  data["last_div_date"],
+                    })
+
+        # Recent splits / bonus
+        if data["has_split_1y"] and data["splits"]:
+            latest_split = data["splits"][-1]
+            upcoming_exdate_val = data["upcoming_exdate"]
+            recent_splits.append({
+                **base,
+                "date":  latest_split["date"],
+                "ratio": latest_split["ratio"],
+                "type":  "Bonus" if latest_split["ratio"] > 1 else "Split",
+            })
+
+    # Sort
+    upcoming_exdate.sort(key=lambda x: x["ex_date"])
+    recent_dividends.sort(key=lambda x: x["amount"], reverse=True)
+    recent_splits.sort(key=lambda x: x["date"], reverse=True)
+
+    return {
+        "with_upcoming_exdate": upcoming_exdate,
+        "recent_dividends":     recent_dividends,
+        "recent_splits":        recent_splits,
+        "scanned":              len(all_symbols),
+        "timestamp":            datetime.now().strftime("%d %b %Y %H:%M"),
+    }
