@@ -25,7 +25,8 @@ from signals import (
     find_sector_picks, send_telegram, build_telegram_message,
     get_sector, get_market_regime, generate_market_scanner,
     SECTOR_MAP, _bulk_fetch_history, compute_indicators,
-    fetch_portfolio_news, UNIVERSE_SOURCES, UNIVERSE_TOTAL
+    fetch_portfolio_news, UNIVERSE_SOURCES, UNIVERSE_TOTAL,
+    debug_universe_load
 )
 
 # New functions added in signals.py v12+ — imported separately so the app
@@ -1652,18 +1653,29 @@ elif _page == 'scanner':
 
     # ── Universe source breakdown ─────────────────────────────────────────────
     src_html = ""
-    for lbl, n, sk in UNIVERSE_SOURCES:
+    for lbl, n, sk, err in UNIVERSE_SOURCES:
+        clr = theme_t["green"] if n > 0 else theme_t["red"]
         src_html += (
             f'<span style="background:var(--card2);border:1px solid var(--border);'
             f'border-radius:6px;padding:.25rem .6rem;font-size:.72rem;'
             f'font-weight:700;color:var(--text)">'
-            f'📄 {lbl} <span style="color:var(--accent)">{n:,}</span></span> '
+            f'{"📄" if n > 0 else "❌"} {lbl} '
+            f'<span style="color:{clr}">{n:,}</span></span> '
         )
     st.markdown(
-        f'<div style="display:flex;gap:.4rem;flex-wrap:wrap;margin-bottom:1rem;'
+        f'<div style="display:flex;gap:.4rem;flex-wrap:wrap;margin-bottom:.8rem;'
         f'align-items:center">'
         f'<span style="font-size:.75rem;color:var(--muted);font-weight:600">'
-        f'Loaded from:</span> {src_html}</div>'
+        f'Sources loaded:</span> {src_html}</div>',
+        unsafe_allow_html=True)
+
+    # ── Diagnostic expander — shows exactly what loaded and why ───────────────
+    with st.expander("🔍 Universe Load Diagnostics", expanded=False):
+        st.code(debug_universe_load(), language=None)
+        st.caption("If a file shows '❌ not found', check it is committed to "
+                   "your repo root (same folder as signals.py and app.py).")
+
+    st.markdown(
         f'<div style="background:rgba(212,175,55,.06);border:1px solid rgba(212,175,55,.2);'
         f'border-radius:8px;padding:.7rem 1rem;font-size:.8rem;color:var(--muted);'
         f'margin-bottom:1rem;line-height:1.6">'
