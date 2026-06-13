@@ -602,6 +602,13 @@ def _compute_indicators_raw(symbol, period="1y", prefetched_df=None):
     except Exception:
         pass
 
+    # ── Bull / Bear Trap detection ────────────────────────────────────────────
+    traps = detect_trap_signals(
+        close, high, low, vol, vol_avg, rsi,
+        supertrend_bullish, resistance, support,
+        candlesticks, atr, window=15
+    )
+
     return {
         "symbol": symbol, "cmp": round(cmp, 2), "rsi": rsi,
 
@@ -636,6 +643,13 @@ def _compute_indicators_raw(symbol, period="1y", prefetched_df=None):
         "patterns": chart_patterns, "candlesticks": candlesticks,
         "avg_turnover": avg_turnover, "atr_pct": (atr / cmp) if cmp > 0 else 0,
         "liquidity_ok": liquidity_ok,   # FIX 10: visible flag, not silent None
+        # Trap signals
+        "bull_trap": traps["bull_trap"],
+        "bear_trap": traps["bear_trap"],
+        "bull_trap_conf": traps["bull_trap_conf"],
+        "bear_trap_conf": traps["bear_trap_conf"],
+        "bull_trap_detail": traps["bull_trap_detail"],
+        "bear_trap_detail": traps["bear_trap_detail"],
     }
 
 
@@ -735,6 +749,12 @@ def generate_signals(trades_df):
         candles     = ind.get("candlesticks", [])
         bb_squeeze  = ind.get("bb_squeeze", False)
         ema_fading  = ind.get("ema_flattening", False)
+        bull_trap   = ind.get("bull_trap", False)
+        bear_trap   = ind.get("bear_trap", False)
+        bt_conf     = ind.get("bull_trap_conf", 0)
+        bt_detail   = ind.get("bull_trap_detail", "")
+        brt_conf    = ind.get("bear_trap_conf", 0)
+        brt_detail  = ind.get("bear_trap_detail", "")
 
         pct      = round((cmp - buy_at) / buy_at * 100, 2)
         near52h  = cmp >= ind["high52"] * 0.97
@@ -762,6 +782,9 @@ def generate_signals(trades_df):
         # v12: momentum-fading early warning (histogram contracting + EMA flat + in profit)
         if hist_fading and ema_fading and pct > 8 and rsi and rsi > 60:
             sell.append("Momentum fading — book partial profits")
+        # Trap signals
+        if bull_trap:
+            sell.append(f"🪤 Bull Trap (conf {bt_conf}%) — {bt_detail}")
 
         # ── AVERAGE / BUY Triggers ─────────────────────────────────────────────
         avg = []
@@ -780,6 +803,9 @@ def generate_signals(trades_df):
             # v12: squeeze release entry
             if bb_squeeze and bb_breakout_up and pct < 0:
                 avg.append("BB Squeeze Release ↑")
+            # Bear trap = trapped sellers → reversal opportunity
+            if bear_trap:
+                avg.append(f"🪤 Bear Trap (conf {brt_conf}%) — {brt_detail}")
 
         # ── HOLD Triggers ──────────────────────────────────────────────────────
         hold = []
@@ -990,6 +1016,8 @@ def find_sector_picks(selected_sectors=None, max_per_sector=3):
             if ind["bb_pos"] < 0.3: score += 8; reasons.append("Lower BB bounce")
             if ind.get("bb_squeeze"): score += 8; reasons.append("BB squeeze (pre-breakout)")
             if ind["vol_ratio"] > 1.3: score += 8; reasons.append(f"Vol surge ({ind['vol_ratio']:.1f}x)")
+            if ind.get("bear_trap"): score += 20; reasons.append(f"🪤 Bear Trap (conf {ind.get('bear_trap_conf',0)}%)")
+            if ind.get("bull_trap"): score -= 25  # avoid buying into a bull trap
             if score < 45:
                 continue
 
@@ -1180,3 +1208,145 @@ def fetch_portfolio_news(open_trades_df):
             except Exception:
                 continue
     return news_alerts
+
+
+# ==============================================================================
+# BULL TRAP & BEAR TRAP DETECTION — v12 addition
+# ==============================================================================
+# Bull Trap: Price fakes a breakout above resistance → collapses back.
+#            Lures buyers into a losing long. Strong SELL signal.
+# Bear Trap: Price fakes a breakdown below support → snaps back up.
+#            Lures sellers into a losing short. Strong BUY/AVERAGE signal.
+#
+# Detection uses 5-factor confluence scoring (each factor adds confidence):
+#   1. False breakout/breakdown geometry (price action)
+#   2. Volume quality on the fake move (weak = not a real breakout)
+#   3. RSI extreme at the fake move (overbought/oversold confirmation)
+#   4. Supertrend direction alignment
+#   5. Candle confirmation on the reversal bar
+# ==============================================================================
+
+def detect_trap_signals(close, high, low, vol, vol_avg, rsi,
+                        supertrend_bullish, resistance, support,
+                        candles, atr, window=15):
+    """
+    Returns dict:
+      bull_trap       : bool
+      bear_trap       : bool
+      bull_trap_conf  : int  (0-100, confidence score)
+      bear_trap_conf  : int
+      bull_trap_detail: str  (human-readable reason)
+      bear_trap_detail: str
+
+    window=15 bars: catches fakeouts that take up to 3 trading weeks to fail,
+    which is realistic for NSE daily swing charts.
+    """
+    result = {
+        "bull_trap": False, "bear_trap": False,
+        "bull_trap_conf": 0, "bear_trap_conf": 0,
+        "bull_trap_detail": "", "bear_trap_detail": ""
+    }
+    if len(close) < window + 5:
+        return result
+
+    cmp = float(close.iloc[-1])
+    # ATR-based tolerance so minor noise doesn't trigger false positives
+    tol = max(atr * 0.3, resistance * 0.003)
+
+    # Use BOTH close and high/low so intraday wicks are captured
+    recent_high  = high.iloc[-(window + 1):-1]
+    recent_low   = low.iloc[-(window + 1):-1]
+    recent_close = close.iloc[-(window + 1):-1]
+    recent_vol   = vol.iloc[-(window + 1):-1]
+
+    # ── BULL TRAP ─────────────────────────────────────────────────────────────
+    # Step 1: any close in the window broke above resistance?
+    # Use close (not high) — a wick above resistance without a close is noise
+    breakout_bars = [(i, float(c), float(v))
+                     for i, (c, v) in enumerate(zip(recent_close, recent_vol))
+                     if float(c) > resistance + tol]
+    # Step 2: current bar has failed back below resistance
+    failed_up = cmp < resistance - tol
+
+    bull_conf = 0
+    bull_detail = []
+
+    if breakout_bars and failed_up:
+        bull_conf += 35
+        bull_detail.append("False breakout above resistance")
+
+        # Factor 2: volume on the breakout bar(s) — weak = fake
+        breakout_vols = [v for _, _, v in breakout_bars]
+        if all(v < vol_avg * 1.5 for v in breakout_vols):
+            bull_conf += 20
+            bull_detail.append("low-vol breakout")
+
+        # Factor 3: RSI overbought at the fake high
+        if rsi and rsi > 65:
+            bull_conf += 15
+            bull_detail.append(f"RSI overbought ({rsi})")
+
+        # Factor 4: supertrend turned bearish after the fake move
+        if supertrend_bullish is False:
+            bull_conf += 15
+            bull_detail.append("Supertrend bearish")
+
+        # Factor 5: reversal candle confirms rejection
+        reject_candles = ["🟥 Bearish Engulfing", "💫 Shooting Star",
+                          "🌆 Evening Star", "🦅 Three Black Crows"]
+        matched = [c for c in reject_candles if c in candles]
+        if matched:
+            bull_conf += 15
+            bull_detail.append(matched[0])
+
+    if bull_conf >= 50:
+        result["bull_trap"] = True
+        result["bull_trap_conf"] = min(bull_conf, 95)
+        result["bull_trap_detail"] = " | ".join(bull_detail)
+
+    # ── BEAR TRAP ─────────────────────────────────────────────────────────────
+    # Step 1: any bar in the window closed below support (real breakdown bar)?
+    breakdown_bars = [(i, float(c), float(v))
+                      for i, (c, v) in enumerate(zip(recent_close, recent_vol))
+                      if float(c) < support - tol]
+    # Step 2: current bar has snapped back above support
+    failed_dn = cmp > support + tol
+
+    bear_conf = 0
+    bear_detail = []
+
+    if breakdown_bars and failed_dn:
+        bear_conf += 35
+        bear_detail.append("False breakdown below support")
+
+        # Factor 2: volume on the breakdown bar — weak = fake
+        breakdown_vols = [v for _, _, v in breakdown_bars]
+        if all(v < vol_avg * 1.5 for v in breakdown_vols):
+            bear_conf += 20
+            bear_detail.append("low-vol breakdown")
+
+        # Factor 3: RSI oversold at the fake low
+        if rsi and rsi < 35:
+            bear_conf += 15
+            bear_detail.append(f"RSI oversold ({rsi})")
+
+        # Factor 4: supertrend has flipped back bullish
+        if supertrend_bullish is True:
+            bear_conf += 15
+            bear_detail.append("Supertrend bullish recovery")
+
+        # Factor 5: reversal candle confirms snap-back
+        recovery_candles = ["🟩 Bullish Engulfing", "🔨 Bullish Hammer",
+                            "🌅 Morning Star", "🪖 Three White Soldiers",
+                            "🛤️ Inverse H&S (Bottom)"]
+        matched = [c for c in recovery_candles if c in candles]
+        if matched:
+            bear_conf += 15
+            bear_detail.append(matched[0])
+
+    if bear_conf >= 50:
+        result["bear_trap"] = True
+        result["bear_trap_conf"] = min(bear_conf, 95)
+        result["bear_trap_detail"] = " | ".join(bear_detail)
+
+    return result
