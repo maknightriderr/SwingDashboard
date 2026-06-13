@@ -25,7 +25,7 @@ from signals import (
     find_sector_picks, send_telegram, build_telegram_message,
     get_sector, get_market_regime, generate_market_scanner,
     SECTOR_MAP, _bulk_fetch_history, compute_indicators,
-    fetch_portfolio_news
+    fetch_portfolio_news, UNIVERSE_SOURCES, UNIVERSE_TOTAL
 )
 
 # New functions added in signals.py v12+ — imported separately so the app
@@ -1646,9 +1646,36 @@ elif _page == 'sector':
 
 # ── Universe Scanner ─────────────────────────────────────────────────────────
 elif _page == 'scanner':
-    total_loaded = len(SECTOR_MAP)
     st.markdown(
-        f'<div class="sec">🌌 Universe Scanner ({total_loaded} Assets)</div>',
+        f'<div class="sec">🌌 Universe Scanner — {UNIVERSE_TOTAL:,} Assets</div>',
+        unsafe_allow_html=True)
+
+    # ── Universe source breakdown ─────────────────────────────────────────────
+    src_html = ""
+    for lbl, n, sk in UNIVERSE_SOURCES:
+        src_html += (
+            f'<span style="background:var(--card2);border:1px solid var(--border);'
+            f'border-radius:6px;padding:.25rem .6rem;font-size:.72rem;'
+            f'font-weight:700;color:var(--text)">'
+            f'📄 {lbl} <span style="color:var(--accent)">{n:,}</span></span> '
+        )
+    st.markdown(
+        f'<div style="display:flex;gap:.4rem;flex-wrap:wrap;margin-bottom:1rem;'
+        f'align-items:center">'
+        f'<span style="font-size:.75rem;color:var(--muted);font-weight:600">'
+        f'Loaded from:</span> {src_html}</div>'
+        f'<div style="background:rgba(212,175,55,.06);border:1px solid rgba(212,175,55,.2);'
+        f'border-radius:8px;padding:.7rem 1rem;font-size:.8rem;color:var(--muted);'
+        f'margin-bottom:1rem;line-height:1.6">'
+        f'💡 <b style="color:var(--text)">Add more stocks:</b> Download CSVs from '
+        f'<a href="https://www.nseindia.com" target="_blank" '
+        f'style="color:var(--accent)">nseindia.com</a> and commit to your repo root.<br>'
+        f'Supported: <code>ind_nifty1000list.csv</code> · '
+        f'<code>ind_niftymidcap150list.csv</code> · '
+        f'<code>ind_niftysmallcap250list.csv</code> · '
+        f'<code>ind_niftymicrocap250list.csv</code> · '
+        f'<code>EQUITY_L.csv</code> (all ~2,000 NSE equities)'
+        f'</div>',
         unsafe_allow_html=True)
 
     # ── Custom stock input ─────────────────────────────────────────────────────
