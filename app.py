@@ -2233,7 +2233,7 @@ elif _page == 'corp_actions':
         st.warning("📅 Corporate Actions requires the updated **signals.py** (v12+). "
                    "Deploy the new signals.py from the project outputs to enable this tab.",
                    icon="⚠️")
-    st.markdown('<div class="sec">📅 Corporate Actions — Full Nifty 500</div>',
+    st.markdown('<div class="sec">📅 Corporate Actions</div>',
                 unsafe_allow_html=True)
     st.caption("Dividends · Stock Splits · Bonus Issues — sourced from NSE via yfinance. 6-hour cache.")
 
@@ -2286,7 +2286,7 @@ elif _page == 'corp_actions':
     with ca1:
         st.markdown(
             '<div style="font-size:.85rem;font-weight:700;color:var(--text)">'
-            '🔍 Sweep full Nifty 500 for upcoming ex-dates, recent dividends '
+            '🔍 Sweep NSE for upcoming ex-dates, recent dividends '
             'and bonus/split events</div>',
             unsafe_allow_html=True)
     with ca2:
