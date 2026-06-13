@@ -1390,68 +1390,86 @@ def detect_trap_signals(close, high, low, vol, vol_avg, rsi,
                         supertrend_bullish, resistance, support,
                         candles, atr, window=15):
     """
-    Returns dict:
-      bull_trap       : bool
-      bear_trap       : bool
-      bull_trap_conf  : int  (0-100, confidence score)
-      bear_trap_conf  : int
-      bull_trap_detail: str  (human-readable reason)
-      bear_trap_detail: str
+    Detects bull traps (false breakouts above resistance) and bear traps
+    (false breakdowns below support).
 
-    window=15 bars: catches fakeouts that take up to 3 trading weeks to fail,
-    which is realistic for NSE daily swing charts.
+    FIX v2 — pre-window S/R:
+    ─────────────────────────────────────────────────────────────────────────
+    Previous bug: resistance = today's rolling 20-day HIGH. Since this max
+    includes the recent breakout bar, no bar in the window can mathematically
+    exceed it → zero traps detected across 2000+ stocks.
+
+    Fix: compute pre_resistance as the 20-day close high at bar -(window+1),
+    i.e. the resistance level that existed BEFORE the trap window started.
+    The breakout in the window can then legitimately exceed this older level.
+
+    Geometry:
+       [pre-period: bars -60..-16] → establishes pre_resistance / pre_support
+       [window:     bars -15..-1 ] → breakout detected here
+       [current:    bar  0       ] → failure confirmed here
+    ─────────────────────────────────────────────────────────────────────────
+    Returns dict with keys:
+      bull_trap, bear_trap         : bool
+      bull_trap_conf, bear_trap_conf: int (0-100)
+      bull_trap_detail, bear_trap_detail: str
     """
     result = {
         "bull_trap": False, "bear_trap": False,
         "bull_trap_conf": 0, "bear_trap_conf": 0,
         "bull_trap_detail": "", "bear_trap_detail": ""
     }
-    if len(close) < window + 5:
+
+    # Need enough bars for rolling S/R computation + trap window
+    if len(close) < window + 25:
         return result
 
-    cmp = float(close.iloc[-1])
-    # ATR-based tolerance so minor noise doesn't trigger false positives
-    tol = max(atr * 0.3, resistance * 0.003)
+    cmp    = float(close.iloc[-1])
+    pre_idx = -(window + 1)          # bar just before the window starts
 
-    # Use BOTH close and high/low so intraday wicks are captured
-    recent_high  = high.iloc[-(window + 1):-1]
-    recent_low   = low.iloc[-(window + 1):-1]
-    recent_close = close.iloc[-(window + 1):-1]
-    recent_vol   = vol.iloc[-(window + 1):-1]
+    # ── Pre-window S/R (close-based for clean comparison against closes) ──────
+    if len(close) >= window + 21:
+        pre_resistance = float(close.rolling(20).max().iloc[pre_idx])
+        pre_support    = float(close.rolling(20).min().iloc[pre_idx])
+    else:
+        # Shorter history: use simple max/min of available pre-window bars
+        pre_resistance = float(close.iloc[:pre_idx].tail(20).max())
+        pre_support    = float(close.iloc[:pre_idx].tail(20).min())
+
+    # ATR-based tolerance (0.3× ATR avoids noise, larger than 0 avoids rounding)
+    tol = max(atr * 0.3, pre_resistance * 0.003)
+
+    # Window: the 15 bars where the trap action plays out
+    recent_close = close.iloc[-window:]
+    recent_vol   = vol.iloc[-window:]
 
     # ── BULL TRAP ─────────────────────────────────────────────────────────────
-    # Step 1: any close in the window broke above resistance?
-    # Use close (not high) — a wick above resistance without a close is noise
+    # 1. Any close in window broke above pre-window resistance?
     breakout_bars = [(i, float(c), float(v))
                      for i, (c, v) in enumerate(zip(recent_close, recent_vol))
-                     if float(c) > resistance + tol]
-    # Step 2: current bar has failed back below resistance
-    failed_up = cmp < resistance - tol
+                     if float(c) > pre_resistance + tol]
+    # 2. Current bar has failed back below pre-window resistance?
+    failed_up = cmp < pre_resistance - tol
 
     bull_conf = 0
     bull_detail = []
 
     if breakout_bars and failed_up:
         bull_conf += 35
-        bull_detail.append("False breakout above resistance")
+        bull_detail.append(f"False breakout above ₹{pre_resistance:.1f}")
 
-        # Factor 2: volume on the breakout bar(s) — weak = fake
         breakout_vols = [v for _, _, v in breakout_bars]
         if all(v < vol_avg * 1.5 for v in breakout_vols):
             bull_conf += 20
-            bull_detail.append("low-vol breakout")
+            bull_detail.append("weak breakout volume")
 
-        # Factor 3: RSI overbought at the fake high
         if rsi and rsi > 65:
             bull_conf += 15
             bull_detail.append(f"RSI overbought ({rsi})")
 
-        # Factor 4: supertrend turned bearish after the fake move
         if supertrend_bullish is False:
             bull_conf += 15
             bull_detail.append("Supertrend bearish")
 
-        # Factor 5: reversal candle confirms rejection
         reject_candles = ["🟥 Bearish Engulfing", "💫 Shooting Star",
                           "🌆 Evening Star", "🦅 Three Black Crows"]
         matched = [c for c in reject_candles if c in candles]
@@ -1465,37 +1483,33 @@ def detect_trap_signals(close, high, low, vol, vol_avg, rsi,
         result["bull_trap_detail"] = " | ".join(bull_detail)
 
     # ── BEAR TRAP ─────────────────────────────────────────────────────────────
-    # Step 1: any bar in the window closed below support (real breakdown bar)?
+    # 1. Any close in window broke below pre-window support?
     breakdown_bars = [(i, float(c), float(v))
                       for i, (c, v) in enumerate(zip(recent_close, recent_vol))
-                      if float(c) < support - tol]
-    # Step 2: current bar has snapped back above support
-    failed_dn = cmp > support + tol
+                      if float(c) < pre_support - tol]
+    # 2. Current bar has recovered back above pre-window support?
+    failed_dn = cmp > pre_support + tol
 
     bear_conf = 0
     bear_detail = []
 
     if breakdown_bars and failed_dn:
         bear_conf += 35
-        bear_detail.append("False breakdown below support")
+        bear_detail.append(f"False breakdown below ₹{pre_support:.1f}")
 
-        # Factor 2: volume on the breakdown bar — weak = fake
         breakdown_vols = [v for _, _, v in breakdown_bars]
         if all(v < vol_avg * 1.5 for v in breakdown_vols):
             bear_conf += 20
-            bear_detail.append("low-vol breakdown")
+            bear_detail.append("weak breakdown volume")
 
-        # Factor 3: RSI oversold at the fake low
         if rsi and rsi < 35:
             bear_conf += 15
             bear_detail.append(f"RSI oversold ({rsi})")
 
-        # Factor 4: supertrend has flipped back bullish
         if supertrend_bullish is True:
             bear_conf += 15
             bear_detail.append("Supertrend bullish recovery")
 
-        # Factor 5: reversal candle confirms snap-back
         recovery_candles = ["🟩 Bullish Engulfing", "🔨 Bullish Hammer",
                             "🌅 Morning Star", "🪖 Three White Soldiers",
                             "🛤️ Inverse H&S (Bottom)"]
