@@ -51,6 +51,39 @@ except ImportError:
 _TRAP_SCANNER_AVAILABLE = scan_for_traps is not None
 _CORP_ACTIONS_AVAILABLE = fetch_corporate_actions is not None
 
+# ── Performance: @st.cache_data wrappers ──────────────────────────────────────
+# market_regime is global (same for all users) — safe to cache across sessions.
+# TTL 600s = 10 min. This renders the header banner in <100ms on reruns.
+@st.cache_data(ttl=600, show_spinner=False)
+def _cached_market_regime():
+    return get_market_regime()
+
+# Price cache: 5-min TTL so KPI cards don't block on every sidebar interaction.
+@st.cache_data(ttl=300, show_spinner=False)
+def _cached_prices(symbols_tuple):
+    """Fetch live prices for a tuple of symbols. Tuple is hashable → cacheable."""
+    import yfinance as _yf
+    prices = {}
+    for sym in symbols_tuple:
+        clean = str(sym).upper().strip()
+        for sfx in [".NS", ".BO", ".NSE", ".BSE"]:
+            if clean.endswith(sfx):
+                clean = clean[:-len(sfx)]
+        for sfx in [".NS", ".BO"]:
+            try:
+                t = _yf.Ticker(clean + sfx)
+                val = t.fast_info.get("last_price")
+                if val is not None and not __import__("pandas").isna(val):
+                    prices[sym] = round(float(val), 2)
+                    break
+                h = t.history(period="1d", interval="1d", auto_adjust=True)
+                if h is not None and not h.empty and "Close" in h.columns:
+                    prices[sym] = round(float(h["Close"].iloc[-1]), 2)
+                    break
+            except Exception:
+                continue
+    return prices
+
 # ── Auto-refresh ───────────────────────────────────────────────────────────────
 REFRESH_SEC = 300
 try:
@@ -189,7 +222,8 @@ init_db()
 
 # Ensure session state variables exist
 for k, v in [("user_id", None), ("username", None), ("edit_id", None), ("close_id", None), ("del_id", None),
-             ("last_refresh", None), ("last_auto_scan", 0.0), ("sort_col", "stock"), ("sort_asc", False),
+             ("last_refresh", None), ("last_auto_scan", 0.0), ("last_slow_scan", 0.0),
+             ("_trade_hash", -1), ("sort_col", "stock"), ("sort_asc", False),
              ("signals_cache", None), ("sector_cache", None), ("picks_cache", None),
              ("outlook_cache", None), ("scanner_cache", None), ("trap_scan_cache", None),
              ("corp_actions_cache", None), ("selected_scanner_sector", "All Sectors"),
@@ -645,17 +679,19 @@ def fetch_price(symbol):
 def enrich(df):
     if df.empty:
         return df
-    prices = {s: fetch_price(s) for s in df["stock"].unique()}
+    # Use cached price fetcher — avoids re-fetching on every Streamlit rerun
+    symbols = tuple(sorted(df["stock"].unique().tolist()))
+    prices  = _cached_prices(symbols)
     df = df.copy()
     df["cmp"] = df["stock"].map(prices)
     df["nse_label"] = "NSE:" + df["stock"]
     df["invested"] = df["quantity"] * df["buy_at"]
-    df["current_amt"] = np.where(
+    df["current_amt"] = __import__("numpy").where(
         df["status"] == "Open",
         df["quantity"] * df["cmp"].fillna(df["buy_at"]),
         df["quantity"] * df["sell_at"].fillna(df["buy_at"])
     )
-    df["total_amt"] = np.where(
+    df["total_amt"] = __import__("numpy").where(
         df["sell_at"].notna(),
         df["quantity"] * df["sell_at"],
         df["current_amt"]
@@ -1053,41 +1089,57 @@ if (st.session_state.last_refresh is None or
         (datetime.now() - st.session_state.last_refresh).seconds >= _TTL):
     st.session_state.last_refresh = datetime.now()
 
-# ── Background scan ────────────────────────────────────────────────────────────
-if (st.session_state.last_auto_scan == 0.0 or
-        (time.time() - st.session_state.last_auto_scan) >= 900):
-    with st.spinner("🤖 Running Deep Quantitative Market Scan..."):
+# ── Tiered background scan ─────────────────────────────────────────────────────
+# FAST TIER  (every 15 min): portfolio signals + news  → ~20-40s
+# SLOW TIER  (every 60 min): sector rotation + picks   → ~45-60s
+# MANUAL ONLY: Universe scanner — never auto-runs (too slow for 500-2000 stocks)
+_now = time.time()
+_fast_due = (st.session_state.last_auto_scan == 0.0 or
+             (_now - st.session_state.last_auto_scan) >= 900)
+_slow_due = (st.session_state.last_slow_scan == 0.0 or
+             (_now - st.session_state.last_slow_scan) >= 3600)
+
+open_raw = raw[raw["status"] == "Open"] if not raw.empty else pd.DataFrame()
+
+# Trade hash: skip signal re-fetch if open trades haven't changed
+_trade_hash = (hash(tuple(sorted(open_raw["id"].tolist())))
+               if not open_raw.empty else 0)
+_trades_changed = (_trade_hash != st.session_state._trade_hash)
+
+if _fast_due:
+    n_open = len(open_raw)
+    _spinner_msg = (f"🔔 Refreshing {n_open} signal{'s' if n_open!=1 else ''}…"
+                    if n_open > 0 else "🔔 Refreshing market data…")
+    with st.spinner(_spinner_msg):
         try:
-            open_raw = raw[raw["status"] == "Open"] if not raw.empty else pd.DataFrame()
+            if _trades_changed or st.session_state.signals_cache is None:
+                st.session_state.signals_cache = (
+                    generate_signals(open_raw) if not open_raw.empty else [])
+                st.session_state.news_cache = (
+                    fetch_portfolio_news(open_raw) if not open_raw.empty else [])
+                st.session_state._trade_hash = _trade_hash
+            st.session_state.last_auto_scan = _now
+        except Exception as _e:
+            st.session_state.last_auto_scan = _now
+            st.toast(f"⚠️ Signal refresh error: {_e}", icon="⚠️")
 
-            st.session_state.signals_cache = (
-                generate_signals(open_raw) if not open_raw.empty else []
-            )
-            st.session_state.sector_cache = sector_rotation()
-
+if _slow_due:
+    with st.spinner("🔄 Refreshing sector rotation…"):
+        try:
+            st.session_state.sector_cache  = sector_rotation()
             if (st.session_state.sector_cache is not None and
                     not st.session_state.sector_cache.empty):
                 st.session_state.outlook_cache = predict_sector_outlook(
                     st.session_state.sector_cache)
-                st.session_state.picks_cache = find_sector_picks(
+                st.session_state.picks_cache   = find_sector_picks(
                     st.session_state.sector_cache.head(5)["sector"].tolist(), 3)
             else:
                 st.session_state.outlook_cache = pd.DataFrame()
                 st.session_state.picks_cache   = []
-
-            st.session_state.scanner_cache = generate_market_scanner()
-
-            if not open_raw.empty:
-                st.session_state.news_cache = fetch_portfolio_news(open_raw)
-            else:
-                st.session_state.news_cache = []
-
-            st.session_state.last_auto_scan = time.time()
-
-        except Exception as _scan_err:
-            # Never let a background scan failure crash the dashboard
-            st.session_state.last_auto_scan = time.time()
-            st.toast(f"⚠️ Background scan error: {_scan_err}", icon="⚠️")
+            st.session_state.last_slow_scan = _now
+        except Exception as _e:
+            st.session_state.last_slow_scan = _now
+            st.toast(f"⚠️ Sector refresh error: {_e}", icon="⚠️")
 
 # ── Portfolio metrics ──────────────────────────────────────────────────────────
 if not df.empty:
@@ -1259,16 +1311,21 @@ with st.sidebar:
     c1, c2 = st.columns(2)
     with c1:
         if st.button("🔄 Force Scan", width="stretch"):
-            _CACHE.clear()
-            st.session_state.last_refresh   = datetime.now()
+            _cached_market_regime.clear()
+            _cached_prices.clear()
             st.session_state.last_auto_scan = 0.0
+            st.session_state.last_slow_scan = 0.0
+            st.session_state._trade_hash    = -1
             st.rerun()
     with c2:
-        elapsed = time.time() - st.session_state.last_auto_scan
-        nxt = max(0, int((900 - elapsed) // 60))
+        _elapsed_fast = time.time() - st.session_state.last_auto_scan
+        _elapsed_slow = time.time() - st.session_state.last_slow_scan
+        _nxt_fast = max(0, int((900 - _elapsed_fast) // 60))
+        _nxt_slow = max(0, int((3600 - _elapsed_slow) // 60))
         st.markdown(
-            f'<div style="font-size:.75rem;color:var(--muted);padding-top:.5rem;'
-            f'font-weight:600">Next: {nxt}m</div>',
+            f'<div style="font-size:.7rem;color:var(--muted);padding-top:.5rem;'
+            f'font-weight:600;line-height:1.6">'
+            f'⚡ {_nxt_fast}m · 🔄 {_nxt_slow}m</div>',
             unsafe_allow_html=True)
 
     st.markdown("<br>", unsafe_allow_html=True)
@@ -1303,11 +1360,11 @@ with st.sidebar:
 st.markdown(
     '<div class="dash-title">'
     '<div class="dash-title-text">📈 Quantitative <span class="hl">Swing Dashboard</span></div>'
-    '<span class="refresh-badge">AUTO SCAN ACTIVE</span>'
+    '<span class="refresh-badge">⚡ SIGNALS LIVE · 🔄 SECTOR LIVE</span>'
     '</div>',
     unsafe_allow_html=True)
 
-market = get_market_regime()
+market = _cached_market_regime()
 regime = market["regime"]
 
 rc_map = {
