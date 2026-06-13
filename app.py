@@ -25,7 +25,7 @@ from signals import (
     find_sector_picks, send_telegram, build_telegram_message,
     get_sector, get_market_regime, generate_market_scanner,
     SECTOR_MAP, _bulk_fetch_history, compute_indicators,
-    fetch_portfolio_news
+    fetch_portfolio_news, scan_for_traps
 )
 
 # ── Auto-refresh ───────────────────────────────────────────────────────────────
@@ -168,7 +168,8 @@ init_db()
 for k, v in [("user_id", None), ("username", None), ("edit_id", None), ("close_id", None), ("del_id", None),
              ("last_refresh", None), ("last_auto_scan", 0.0), ("sort_col", "stock"), ("sort_asc", False),
              ("signals_cache", None), ("sector_cache", None), ("picks_cache", None),
-             ("outlook_cache", None), ("scanner_cache", None), ("filter_status", "All"),
+             ("outlook_cache", None), ("scanner_cache", None), ("trap_scan_cache", None),
+             ("filter_status", "All"),
              ("filter_pnl", "All"), ("search", ""), ("theme", "Obsidian & Gold (Institutional)")]:
     if k not in st.session_state:
         st.session_state[k] = v
@@ -1271,10 +1272,11 @@ st.markdown(
 
 # ── Tabs ────────────────────────────────────────────────────────────────────────
 (tab1, tab2, tab3, tab4,
- tab5, tab6, tab7, tab8, tab9) = st.tabs([
+ tab5, tab6, tab7, tab8, tab9, tab10) = st.tabs([
     "📋 Portfolio", "📊 Analytics", "🔔 Active Signals",
     "🔄 Sector Rotation", "🌌 Universe Scanner",
-    "📐 Metrics", "👁 Watchlist", "📤 Export", "🎯 Signal Scores"
+    "📐 Metrics", "👁 Watchlist", "📤 Export",
+    "🎯 Signal Scores", "🪤 Trap Scanner"
 ])
 
 # ── Tab 1: Portfolio ───────────────────────────────────────────────────────────
@@ -1718,3 +1720,192 @@ with tab9:
 6. <b>Fibonacci</b> — scipy swing-peak detection, not fixed window<br>
 7. <b>Risk Engine</b> — unified across signals, picks, and scanner
 </div>""", unsafe_allow_html=True)
+
+# ── Tab 10: Trap Scanner ───────────────────────────────────────────────────────
+with tab10:
+    st.markdown('<div class="sec">🪤 Bull & Bear Trap Scanner — Full Nifty 500</div>',
+                unsafe_allow_html=True)
+
+    # ── Summary banner ─────────────────────────────────────────────────────────
+    trap_data = st.session_state.trap_scan_cache
+    if trap_data:
+        bull_n = trap_data.get("bull_count", 0)
+        bear_n = trap_data.get("bear_count", 0)
+        scanned = trap_data.get("scanned", 0)
+        liquid  = trap_data.get("liquid", 0)
+        ts      = trap_data.get("timestamp", "—")
+        st.markdown(
+            f'<div style="display:flex;gap:1rem;flex-wrap:wrap;margin-bottom:1.5rem">'
+            f'<div style="background:rgba(239,68,68,.1);border:1px solid rgba(239,68,68,.3);'
+            f'border-radius:10px;padding:.7rem 1.2rem;font-weight:800;font-size:.9rem">'
+            f'🔴 Bull Traps: <span style="color:var(--red)">{bull_n}</span></div>'
+            f'<div style="background:rgba(16,185,129,.1);border:1px solid rgba(16,185,129,.3);'
+            f'border-radius:10px;padding:.7rem 1.2rem;font-weight:800;font-size:.9rem">'
+            f'🟢 Bear Traps: <span style="color:var(--green)">{bear_n}</span></div>'
+            f'<div style="background:var(--card);border:1px solid var(--border);'
+            f'border-radius:10px;padding:.7rem 1.2rem;font-size:.8rem;color:var(--muted);font-weight:600">'
+            f'🔍 Scanned: {scanned} | Liquid: {liquid} | Updated: {ts}</div>'
+            f'</div>',
+            unsafe_allow_html=True)
+
+    # ── Controls ────────────────────────────────────────────────────────────────
+    ctrl1, ctrl2, ctrl3 = st.columns([2, 1, 1])
+    with ctrl1:
+        st.caption("⚡ Sweeps all Nifty 500 liquid stocks for false breakout / breakdown patterns.")
+    with ctrl2:
+        min_conf = st.slider("Min Confidence %", 50, 90, 60, 5, label_visibility="collapsed")
+    with ctrl3:
+        run_trap_scan = st.button("🪤 Run Trap Scan", width="stretch")
+
+    if run_trap_scan:
+        total_sym = sum(len(v) for v in __import__("signals").SECTOR_STOCKS.values())
+        with st.spinner(f"🔍 Scanning {total_sym} stocks for trap patterns…"):
+            st.session_state.trap_scan_cache = scan_for_traps(min_confidence=min_conf)
+            trap_data = st.session_state.trap_scan_cache
+            st.toast(
+                f"✅ Found {trap_data['bull_count']} bull traps, "
+                f"{trap_data['bear_count']} bear traps across {trap_data['liquid']} liquid stocks",
+                icon="🪤")
+
+    if not trap_data:
+        st.info("💡 Click **🪤 Run Trap Scan** to sweep the full Nifty 500 for active trap patterns.")
+    else:
+        bull_traps = trap_data.get("bull_traps", [])
+        bear_traps = trap_data.get("bear_traps", [])
+
+        # ── Filter by confidence slider ─────────────────────────────────────────
+        bull_traps = [x for x in bull_traps if x["confidence"] >= min_conf]
+        bear_traps = [x for x in bear_traps if x["confidence"] >= min_conf]
+
+        col_bull, col_bear = st.columns(2)
+
+        # ── BULL TRAPS ──────────────────────────────────────────────────────────
+        with col_bull:
+            st.markdown(
+                f'<div style="font-size:.85rem;font-weight:800;color:var(--red);'
+                f'text-transform:uppercase;letter-spacing:.1em;margin-bottom:.8rem;'
+                f'padding:.5rem .8rem;background:rgba(239,68,68,.08);'
+                f'border-left:4px solid var(--red);border-radius:0 8px 8px 0">'
+                f'🔴 Bull Traps — Exit / Avoid ({len(bull_traps)})</div>',
+                unsafe_allow_html=True)
+
+            if not bull_traps:
+                st.success("✅ No bull traps found at this confidence level.")
+            else:
+                for bt in bull_traps:
+                    conf = bt["confidence"]
+                    conf_clr = "#ef4444" if conf >= 80 else "#f59e0b"
+                    st.markdown(f"""
+<div style="background:var(--card);border:1px solid rgba(239,68,68,.25);
+     border-left:4px solid var(--red);border-radius:10px;
+     padding:1rem 1.2rem;margin-bottom:.8rem;
+     box-shadow:0 4px 12px -4px rgba(239,68,68,.15)">
+  <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:.4rem">
+    <span style="font-weight:800;font-size:.95rem">{bt['stock']}</span>
+    <span style="background:rgba(239,68,68,.12);color:{conf_clr};
+          padding:.2rem .6rem;border-radius:6px;font-size:.75rem;font-weight:800">
+      {conf}% CONF
+    </span>
+  </div>
+  <div style="font-size:.75rem;color:var(--muted);margin-bottom:.5rem">
+    {bt['sector']} · CMP ₹{bt['cmp']} · RSI {bt['rsi'] if bt['rsi'] else '—'}
+  </div>
+  <div style="font-size:.8rem;color:var(--red);font-weight:600;margin-bottom:.5rem">
+    ⚠️ {bt['detail']}
+  </div>
+  <div style="height:4px;background:var(--input);border-radius:2px;margin-bottom:.6rem">
+    <div style="height:4px;border-radius:2px;background:var(--red);width:{min(conf,100)}%"></div>
+  </div>
+  <div style="font-size:.78rem;color:var(--muted);display:grid;grid-template-columns:1fr 1fr;gap:.2rem">
+    <span>📊 Trend: {bt['trend']}</span>
+    <span>📦 Vol: {bt['vol_ratio']:.1f}x avg</span>
+    <span>🛡 Support: ₹{bt['support']}</span>
+    <span>🚧 Resist: ₹{bt['resistance']}</span>
+    <span>🔁 Re-entry SL: ₹{bt['re_entry_sl']}</span>
+    <span>ST: {'🟢 Bull' if bt.get('supertrend_bullish') else '🔴 Bear'}</span>
+  </div>
+  {('<div style="font-size:.72rem;color:var(--muted);margin-top:.4rem">📐 ' + bt['patterns'] + '</div>') if bt.get('patterns') else ''}
+</div>""", unsafe_allow_html=True)
+
+        # ── BEAR TRAPS ──────────────────────────────────────────────────────────
+        with col_bear:
+            st.markdown(
+                f'<div style="font-size:.85rem;font-weight:800;color:var(--green);'
+                f'text-transform:uppercase;letter-spacing:.1em;margin-bottom:.8rem;'
+                f'padding:.5rem .8rem;background:rgba(16,185,129,.08);'
+                f'border-left:4px solid var(--green);border-radius:0 8px 8px 0">'
+                f'🟢 Bear Traps — Buy Opportunity ({len(bear_traps)})</div>',
+                unsafe_allow_html=True)
+
+            if not bear_traps:
+                st.info("No bear traps found at this confidence level.")
+            else:
+                for brt in bear_traps:
+                    conf = brt["confidence"]
+                    conf_clr = "#10b981" if conf >= 80 else "#f59e0b"
+                    rr = brt.get("risk_reward")
+                    rr_str = f"R:R {rr}" if rr else "—"
+                    st.markdown(f"""
+<div style="background:var(--card);border:1px solid rgba(16,185,129,.25);
+     border-left:4px solid var(--green);border-radius:10px;
+     padding:1rem 1.2rem;margin-bottom:.8rem;
+     box-shadow:0 4px 12px -4px rgba(16,185,129,.15)">
+  <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:.4rem">
+    <span style="font-weight:800;font-size:.95rem">{brt['stock']}</span>
+    <span style="background:rgba(16,185,129,.12);color:{conf_clr};
+          padding:.2rem .6rem;border-radius:6px;font-size:.75rem;font-weight:800">
+      {conf}% CONF
+    </span>
+  </div>
+  <div style="font-size:.75rem;color:var(--muted);margin-bottom:.5rem">
+    {brt['sector']} · CMP ₹{brt['cmp']} · RSI {brt['rsi'] if brt['rsi'] else '—'}
+  </div>
+  <div style="font-size:.8rem;color:var(--green);font-weight:600;margin-bottom:.5rem">
+    🪤 {brt['detail']}
+  </div>
+  <div style="height:4px;background:var(--input);border-radius:2px;margin-bottom:.6rem">
+    <div style="height:4px;border-radius:2px;background:var(--green);width:{min(conf,100)}%"></div>
+  </div>
+  <div style="background:rgba(16,185,129,.06);border-radius:6px;
+       padding:.6rem .8rem;margin-bottom:.5rem;
+       display:grid;grid-template-columns:1fr 1fr 1fr;gap:.3rem;font-size:.8rem;font-weight:700">
+    <span>🎯 Entry<br><b>₹{brt['entry']}</b></span>
+    <span>🚀 Target<br><b style="color:var(--green)">₹{brt['target']}</b></span>
+    <span>🛑 SL<br><b style="color:var(--red)">₹{brt['stop_loss']}</b></span>
+  </div>
+  <div style="font-size:.78rem;color:var(--muted);display:grid;grid-template-columns:1fr 1fr;gap:.2rem">
+    <span>📊 {rr_str}</span>
+    <span>📦 Vol: {brt['vol_ratio']:.1f}x avg</span>
+    <span>🛡 Support: ₹{brt['support']}</span>
+    <span>🚧 Resist: ₹{brt['resistance']}</span>
+    <span>📈 Trend: {brt['trend']}</span>
+    <span>ST: {'🟢 Bull' if brt.get('supertrend_bullish') else '🔴 Bear'}</span>
+  </div>
+  {('<div style="font-size:.72rem;color:var(--muted);margin-top:.4rem">📐 ' + brt['patterns'] + '</div>') if brt.get('patterns') else ''}
+</div>""", unsafe_allow_html=True)
+
+        # ── Export trap results ─────────────────────────────────────────────────
+        st.markdown("<br>", unsafe_allow_html=True)
+        if bull_traps or bear_traps:
+            bull_df = pd.DataFrame(bull_traps)[
+                ["stock","sector","cmp","rsi","confidence","detail","support","resistance","trend"]
+            ] if bull_traps else pd.DataFrame()
+            bear_df = pd.DataFrame(bear_traps)[
+                ["stock","sector","cmp","rsi","confidence","detail","entry","target","stop_loss","risk_reward","trend"]
+            ] if bear_traps else pd.DataFrame()
+
+            exp1, exp2 = st.columns(2)
+            with exp1:
+                if not bull_df.empty:
+                    st.download_button(
+                        "⬇️ Export Bull Traps CSV",
+                        bull_df.to_csv(index=False).encode("utf-8"),
+                        file_name=f"bull_traps_{datetime.now().strftime('%Y%m%d_%H%M')}.csv",
+                        mime="text/csv", use_container_width=True)
+            with exp2:
+                if not bear_df.empty:
+                    st.download_button(
+                        "⬇️ Export Bear Traps CSV",
+                        bear_df.to_csv(index=False).encode("utf-8"),
+                        file_name=f"bear_traps_{datetime.now().strftime('%Y%m%d_%H%M')}.csv",
+                        mime="text/csv", use_container_width=True)
