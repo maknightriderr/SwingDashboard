@@ -267,11 +267,9 @@ def init_db():
     if _USE_PG:
         conn = _pg_conn(); cur = conn.cursor()
         
-        # Ensure the schema exists
-        cur.execute("CREATE SCHEMA IF NOT EXISTS public")
-        
-        # CRITICAL: Force the postgres role to always use the public schema
-        cur.execute("ALTER ROLE postgres SET search_path TO public;")
+        # Removed "CREATE SCHEMA" and "ALTER ROLE" to prevent 
+        # "tuple concurrently updated" errors on concurrent loads.
+        # The `options="-c search_path=public"` in _PG_PARAMS handles the schema.
         
         cur.execute("""CREATE TABLE IF NOT EXISTS users(
             id SERIAL PRIMARY KEY,
