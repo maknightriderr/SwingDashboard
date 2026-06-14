@@ -1460,7 +1460,8 @@ st.markdown(theme_css(theme_t), unsafe_allow_html=True)
 with st.sidebar:
     st.markdown(
         f'<div style="font-size:.85rem;font-weight:800;color:var(--accent);'
-        f'margin-bottom:1rem">👤 {st.session_state.username.upper()}</div>',
+        f'margin-bottom:1rem">👤 {(st.session_state.username or "USER").upper()}</div>',
+
         unsafe_allow_html=True)
 
     if st.button("🚪 Logout", width="stretch"):
