@@ -165,22 +165,20 @@ DB = "trades_v2.db"   # SQLite fallback (used if psycopg2 unavailable)
 
 # ── SUPABASE DIRECT CONNECTION (no pooler) ─────────────────────────────────────
 # project ref = ktgajqymvuaqeyiropmt  (from the pooler username)
+import os
+
 _PG_PARAMS = dict(
-    host            = "db.ktgajqymvuaqeyiropmt.supabase.co",
-    port            = 5432,
-    dbname          = "postgres",
-    user            = "postgres",
-    password        = "MYfOKRcopF8tH2S1",
-    sslmode         = "require",
+    host     = "db.ktgajqymvuaqeyiropmt.supabase.co",
+    **({"hostaddr": _PG_IPV4} if _PG_IPV4 else {}),
+    port     = 5432,
+    dbname   = "postgres",
+    user     = "postgres",
+    password = os.environ.get("SUPABASE_DB_PASSWORD", ""),
+    sslmode  = "require",
     connect_timeout = 15,
 )
-_USE_PG = True
 
-try:
-    import psycopg2
-    import psycopg2.extras
-except ImportError:
-    _USE_PG = False
+_USE_PG = bool(os.environ.get("SUPABASE_DB_PASSWORD"))  # auto-disable if missing
 
 
 def _pg_conn():
