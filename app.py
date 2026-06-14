@@ -8,7 +8,6 @@ Fixes vs v13:
   - signals.py v12 already deployed: unified risk engine, Wilder ATR/RSI,
     numpy Supertrend, 20-day VWAP, swing-peak Fibonacci, MACD histogram
 """
-import socket
 import streamlit as st
 import streamlit.components.v1 as components
 import pandas as pd
@@ -178,14 +177,20 @@ try:
 except Exception:
     pass  # Will fall back to default resolution if this fails
 
+# ── SUPABASE POOLER CONNECTION (IPv4 Compatible) ─────────────────────────────
+# Supabase's direct connection (db.xxxx.supabase.co:5432) is IPv6-only, which
+# fails on Streamlit Cloud ("Cannot assign requested address"). The Pooler 
+# provides an IPv4 address. We explicitly set search_path=public to prevent the
+# "InvalidSchemaName" errors that PgBouncer otherwise causes.
+
 _PG_PARAMS = dict(
-    host            = "db.ktgajqymvuaqeyiropmt.supabase.co",   # Kept for SSL cert verification
-    **({"hostaddr": _PG_IPV4} if _PG_IPV4 else {}),            # Forces IPv4 TCP connection
-    port            = 5432,
+    host            = "aws-0-ap-northeast-2.pooler.supabase.com", # Pooler URL (Check Supabase Dashboard!)
+    port            = 6543,                                      # Transaction pooler port
     dbname          = "postgres",
-    user            = "postgres",
+    user            = "postgres.ktgajqymvuaqeyiropmt",           # Pooler requires project ref in username
     password        = "MYfOKRcopF8tH2S1",
     sslmode         = "require",
+    options         = "-c search_path=public",                   # Fixes InvalidSchemaName!
     connect_timeout = 15,
 )
 _USE_PG = True
@@ -267,7 +272,6 @@ def db(sql, params=(), fetch=False):
 def init_db():
     if _USE_PG:
         conn = _pg_conn(); cur = conn.cursor()
-        cur.execute("CREATE SCHEMA IF NOT EXISTS public")
         cur.execute("""CREATE TABLE IF NOT EXISTS public.users(
             id SERIAL PRIMARY KEY,
             username TEXT UNIQUE NOT NULL,
