@@ -154,42 +154,50 @@ def verify_hash(password, hashed_pw):
     return make_hash(password) == hashed_pw
 
 # ── Database ───────────────────────────────────────────────────────────────────
-# Uses Supabase DIRECT connection (db.xxxx.supabase.co port 5432) instead of
-# the session pooler. The pooler (aws-1-ap-northeast-2.pooler.supabase.com)
-# applies schema restrictions that cause InvalidSchemaName regardless of how
-# the SQL is qualified. The direct connection bypasses the pooler entirely and
-# works with standard psycopg2. Fine for a personal dashboard (1-2 users).
+# PERSISTENCE STRATEGY:
+#   Streamlit Cloud has an EPHEMERAL filesystem — a local SQLite .db file is
+#   wiped on every restart/redeploy/sleep, which flushes all your trades & logins.
+#   Fix: use a hosted Postgres DB when a connection string is provided in
+#   st.secrets (key: DATABASE_URL or [postgres].url), which PERSISTS across
+#   restarts. Falls back to local SQLite when no Postgres is configured (so it
+#   still runs locally / in dev).
+#
+#   To make your data persist on Streamlit Cloud, add to your app secrets:
+#       DATABASE_URL = "postgresql://user:pass@host:5432/dbname"
+#   (Free Postgres: Supabase or Neon. Copy their connection string.)
 # ==============================================================================
 
-DB = "trades_v2.db"   # SQLite fallback (used if psycopg2 unavailable)
+DB = "trades_v2.db"   # SQLite fallback path
 
-# ── SUPABASE DIRECT CONNECTION (no pooler) ─────────────────────────────────────
-# project ref = ktgajqymvuaqeyiropmt  (from the pooler username)
-_PG_PARAMS = dict(
-    host            = "db.ktgajqymvuaqeyiropmt.supabase.co",
-    port            = 5432,
-    dbname          = "postgres",
-    user            = "postgres",
-    password        = "MYfOKRcopF8tH2S1",
-    sslmode         = "require",
-    connect_timeout = 15,
-)
-_USE_PG = True
+def _get_pg_url():
+    """Return a Postgres connection URL from secrets, or None for SQLite mode."""
+    try:
+        if "DATABASE_URL" in st.secrets:
+            return st.secrets["DATABASE_URL"]
+        if "postgres" in st.secrets and "url" in st.secrets["postgres"]:
+            return st.secrets["postgres"]["url"]
+    except Exception:
+        pass
+    return None
 
-try:
-    import psycopg2
-    import psycopg2.extras
-except ImportError:
-    _USE_PG = False
+_PG_URL = _get_pg_url()
+_USE_PG = _PG_URL is not None
 
+# Lazy import psycopg2 only if Postgres is configured
+if _USE_PG:
+    try:
+        import psycopg2
+        import psycopg2.extras
+    except ImportError:
+        _USE_PG = False   # psycopg2 not installed → fall back to SQLite
 
 def _pg_conn():
-    """Open a Supabase Postgres connection using explicit keyword params.
-    Never passes a URL string so libpq never mis-parses the dotted username."""
+    """Open a Postgres connection (Supabase session pooler compatible).
+    Retries once on transient failures. sslmode=require is mandatory for Supabase."""
     last_err = None
     for _attempt in range(2):
         try:
-            conn = psycopg2.connect(**_PG_PARAMS)
+            conn = psycopg2.connect(_PG_URL, sslmode="require", connect_timeout=10)
             conn.autocommit = False
             return conn
         except Exception as e:
@@ -198,78 +206,30 @@ def _pg_conn():
     raise last_err
 
 def _q(sql):
-    """Translate SQLite SQL → Postgres '%s' placeholders and 'INSERT OR REPLACE'.
-    Schema qualification is handled directly in db() below."""
-    if not _USE_PG:
-        return sql
-    s = sql.replace("?", "%s")
-    s = s.replace("INSERT OR REPLACE INTO", "INSERT INTO")
-    return s
-
-
-_PG_SCHEMA_PREFIX = "public."
-_PG_TABLES = ("users", "trades", "portfolio_history", "tg_config", "watchlist")
-
-
-def _pg_qualify(sql):
-    """Hardcode public. prefix into every table name in the SQL string.
-    This runs BEFORE psycopg2 sees the query so it's guaranteed to work
-    regardless of search_path, pooler behaviour, or connection options."""
-    s = sql
-    for tbl in _PG_TABLES:
-        # Replace bare table name with public.table — cover all SQL contexts.
-        # We replace the longer patterns first to avoid partial matches.
-        for kw in ("TABLE IF NOT EXISTS ", "DELETE FROM ", "UPDATE ",
-                   "INSERT INTO ", "FROM ", "JOIN "):
-            bare = kw + tbl
-            qualified = kw + _PG_SCHEMA_PREFIX + tbl
-            if bare in s:
-                s = s.replace(bare, qualified)
-    return s
-
-
-def db(sql, params=(), fetch=False):
+    """Translate SQLite '?' placeholders to Postgres '%s' when in PG mode."""
     if _USE_PG:
-        conn = _pg_conn()
-        cur  = conn.cursor()
-        # Step 1: _q converts placeholders and SQLite-only syntax (INSERT OR REPLACE→INSERT)
-        # Step 2: _pg_qualify adds public. to every table name
-        # Order matters: _q must run first so INSERT OR REPLACE → INSERT INTO
-        # before _pg_qualify looks for "INSERT INTO tg_config" etc.
-        pg_sql = _pg_qualify(_q(sql))
-        cur.execute(pg_sql, params)
-        conn.commit()
-        result = cur.fetchall() if fetch else None
-        cur.close(); conn.close()
-        return result
-    else:
-        conn = sqlite3.connect(DB)
-        cur = conn.execute(sql, params)
-        conn.commit()
-        result = cur.fetchall() if fetch else None
-        conn.close()
-        return result
+        return sql.replace("?", "%s")
+    return sql
 
 def init_db():
     if _USE_PG:
         conn = _pg_conn(); cur = conn.cursor()
-        cur.execute("CREATE SCHEMA IF NOT EXISTS public")
-        cur.execute("""CREATE TABLE IF NOT EXISTS public.users(
+        cur.execute("""CREATE TABLE IF NOT EXISTS users(
             id SERIAL PRIMARY KEY,
             username TEXT UNIQUE NOT NULL,
             password_hash TEXT NOT NULL)""")
-        cur.execute("""CREATE TABLE IF NOT EXISTS public.trades(
+        cur.execute("""CREATE TABLE IF NOT EXISTS trades(
             id SERIAL PRIMARY KEY, user_id INTEGER, stock TEXT NOT NULL,
             quantity REAL NOT NULL, buy_at REAL NOT NULL, sell_at REAL,
             status TEXT DEFAULT 'Open',
             added_date TEXT DEFAULT to_char(CURRENT_DATE,'YYYY-MM-DD'),
             closed_date TEXT)""")
-        cur.execute("""CREATE TABLE IF NOT EXISTS public.portfolio_history(
+        cur.execute("""CREATE TABLE IF NOT EXISTS portfolio_history(
             id SERIAL PRIMARY KEY, user_id INTEGER, snapshot_date TEXT,
             total_invested REAL, current_value REAL)""")
-        cur.execute("""CREATE TABLE IF NOT EXISTS public.tg_config(
+        cur.execute("""CREATE TABLE IF NOT EXISTS tg_config(
             user_id INTEGER PRIMARY KEY, bot_token TEXT, chat_id TEXT)""")
-        cur.execute("""CREATE TABLE IF NOT EXISTS public.watchlist(
+        cur.execute("""CREATE TABLE IF NOT EXISTS watchlist(
             id SERIAL PRIMARY KEY, user_id INTEGER, stock TEXT NOT NULL,
             target_price REAL, notes TEXT,
             added_date TEXT DEFAULT to_char(CURRENT_DATE,'YYYY-MM-DD'))""")
@@ -295,6 +255,22 @@ def init_db():
             target_price REAL, notes TEXT, added_date TEXT DEFAULT(date('now')))""")
         c.commit(); c.close()
 
+def db(sql, params=(), fetch=False):
+    if _USE_PG:
+        conn = _pg_conn(); cur = conn.cursor()
+        cur.execute(_q(sql), params)
+        conn.commit()
+        result = cur.fetchall() if fetch else None
+        cur.close(); conn.close()
+        return result
+    else:
+        conn = sqlite3.connect(DB)
+        cur = conn.execute(sql, params)
+        conn.commit()
+        result = cur.fetchall() if fetch else None
+        conn.close()
+        return result
+
 def register_user(username, password):
     try:
         db("INSERT INTO users(username, password_hash) VALUES(?,?)",
@@ -314,7 +290,7 @@ def get_trades(user_id):
     if _USE_PG:
         conn = _pg_conn()
         df = pd.read_sql_query(
-            "SELECT * FROM public.trades WHERE user_id=%s ORDER BY id DESC",
+            "SELECT * FROM trades WHERE user_id=%s ORDER BY id DESC",
             conn, params=(user_id,))
         conn.close()
         return df
@@ -329,7 +305,7 @@ def get_history(user_id):
     if _USE_PG:
         conn = _pg_conn()
         df = pd.read_sql_query(
-            "SELECT * FROM public.portfolio_history WHERE user_id=%s ORDER BY snapshot_date",
+            "SELECT * FROM portfolio_history WHERE user_id=%s ORDER BY snapshot_date",
             conn, params=(user_id,))
         conn.close()
         return df
@@ -340,35 +316,14 @@ def get_history(user_id):
     conn.close()
     return df
 
-def get_watchlist(user_id):
-    if _USE_PG:
-        conn = _pg_conn()
-        df = pd.read_sql_query(
-            "SELECT * FROM public.watchlist WHERE user_id=%s ORDER BY id DESC",
-            conn, params=(user_id,))
-        conn.close()
-        return df
-    conn = sqlite3.connect(DB)
-    df = pd.read_sql_query(
-        "SELECT * FROM watchlist WHERE user_id=? ORDER BY id DESC",
-        conn, params=(user_id,))
-    conn.close()
-    return df
-
 def get_tg_config(user_id):
     rows = db("SELECT bot_token,chat_id FROM tg_config WHERE user_id=?",
               (user_id,), fetch=True)
     return rows[0] if rows else ("", "")
 
 def save_tg_config(user_id, token, chat):
-    if _USE_PG:
-        db("INSERT INTO tg_config(user_id,bot_token,chat_id) VALUES(?,?,?) "
-           "ON CONFLICT(user_id) DO UPDATE SET bot_token=EXCLUDED.bot_token, "
-           "chat_id=EXCLUDED.chat_id",
-           (user_id, token, chat))
-    else:
-        db("INSERT OR REPLACE INTO tg_config(user_id,bot_token,chat_id) VALUES(?,?,?)",
-           (user_id, token, chat))
+    db("INSERT OR REPLACE INTO tg_config(user_id,bot_token,chat_id) VALUES(?,?,?)",
+       (user_id, token, chat))
 
 def add_trade(user_id, stock, qty, buy, sell=None):
     status = "Closed" if sell else "Open"
@@ -397,6 +352,21 @@ def save_snapshot(user_id, invested, value):
 def add_watchlist(user_id, stock, target=None, notes=""):
     db("INSERT INTO watchlist(user_id,stock,target_price,notes) VALUES(?,?,?,?)",
        (user_id, stock.upper().strip(), target, notes))
+
+def get_watchlist(user_id):
+    if _USE_PG:
+        conn = _pg_conn()
+        df = pd.read_sql_query(
+            "SELECT * FROM watchlist WHERE user_id=%s ORDER BY id DESC",
+            conn, params=(user_id,))
+        conn.close()
+        return df
+    conn = sqlite3.connect(DB)
+    df = pd.read_sql_query(
+        "SELECT * FROM watchlist WHERE user_id=? ORDER BY id DESC",
+        conn, params=(user_id,))
+    conn.close()
+    return df
 
 def delete_watchlist_item(wid, user_id):
     db("DELETE FROM watchlist WHERE id=? AND user_id=?", (wid, user_id))
@@ -436,7 +406,6 @@ for k, v in [("user_id", None), ("username", None), ("edit_id", None), ("close_i
              ("_scan_stage", "done"), ("_deep_stage", "sector"),
              ("_deep_running", False), ("_manual_deep_request", False),
              ("_manual_fast_request", False),
-             ("_run_deep_now", False), ("_deep_progress", "done"),
              ("fast_interval_sec", 300), ("deep_interval_sec", 900),
              ("auto_fast", True), ("auto_deep", True),
              ("filter_status", "All"),
@@ -1440,6 +1409,10 @@ _deep_interval = st.session_state.get("deep_interval_sec", 900)   # default 15 m
 _auto_fast = st.session_state.get("auto_fast", True)
 _auto_deep = st.session_state.get("auto_deep", True)
 
+# Is a sequential deep scan currently in progress? (stage != idle)
+_deep_in_progress = st.session_state.get("_deep_stage", "sector") != "idle" and \
+                    st.session_state.get("_deep_running", False)
+
 if not st.session_state.get("first_render_done", False):
     # PASS 1 — first paint after login: render immediately, defer ALL scanning.
     st.session_state.first_render_done = True
@@ -1448,37 +1421,38 @@ if not st.session_state.get("first_render_done", False):
     st.session_state._kickoff_scan = True
     st.session_state._scan_stage = "fast"
 elif st.session_state.get("_scan_stage") == "fast":
-    # PASS 2 — fast scan only (signals + news). Then kick off the deep sequence.
+    # PASS 2 — fast scan only (signals + news). Deep scan still deferred.
     _fast_due = True
+    _deep_due = False
+    st.session_state._scan_stage = "deep_start"
+    st.session_state._kickoff_scan = True
+elif st.session_state.get("_scan_stage") == "deep_start":
+    # PASS 3 — begin the sequential deep scan (runs section by section).
+    _fast_due = False
     _deep_due = True
     st.session_state._deep_running = True
-    st.session_state._deep_stage = "sector"
-    st.session_state._scan_stage = "done"
-elif st.session_state.get("_deep_running", False):
-    # Deep scan mid-sequence — keep advancing (handled in post-render block).
+    st.session_state._scan_stage = "running"
+elif st.session_state.get("_scan_stage") == "running" and _deep_in_progress:
+    # Deep scan mid-sequence — keep going until all 3 stages done.
     _fast_due = False
     _deep_due = True
 else:
     # Steady state — scans fire only on their configured schedules (if auto on).
     st.session_state._scan_stage = "done"
+    st.session_state._deep_running = False
     _fast_due = (_auto_fast and
                  (st.session_state.last_auto_scan == 0.0 or
                   (_now - st.session_state.last_auto_scan) >= _fast_interval))
-    # Deep auto-trigger: start a fresh sequence when interval elapses
-    _deep_elapsed = (st.session_state.last_slow_scan == 0.0 or
-                     (_now - st.session_state.last_slow_scan) >= _deep_interval)
-    _deep_due = False
-    if _auto_deep and _deep_elapsed:
-        st.session_state._deep_running = True
-        st.session_state._deep_stage = "sector"
-        _deep_due = True
-    # Manual deep-scan request starts the sequence too
+    _deep_due = (_auto_deep and
+                 (st.session_state.last_slow_scan == 0.0 or
+                  (_now - st.session_state.last_slow_scan) >= _deep_interval))
+    # A manual deep-scan request starts the sequence too
     if st.session_state.get("_manual_deep_request", False):
         st.session_state._manual_deep_request = False
         st.session_state._deep_running = True
         st.session_state._deep_stage = "sector"
         _deep_due = True
-    # Manual fast-scan request
+    # A manual fast-scan request
     if st.session_state.get("_manual_fast_request", False):
         st.session_state._manual_fast_request = False
         _fast_due = True
@@ -1501,12 +1475,63 @@ if _fast_due:
             st.toast(f"⚠️ Signal refresh error: {_e}", icon="⚠️")
 
 if _deep_due:
-    # Deep scan is due — but we DEFER its execution to the very END of the script
-    # (after the whole page renders) so it never blocks or interrupts your view.
-    # The actual stage execution happens in the post-render block at the bottom.
-    st.session_state._run_deep_now = True
-else:
-    st.session_state._run_deep_now = False
+    # SEQUENTIAL DEEP SCAN — runs ONE section per rerun so each completes and
+    # the UI updates before the next begins. This makes the dashboard feel fast:
+    # sector rotation finishes → shows → universe starts → shows → SMC starts.
+    # The stage is tracked in _deep_stage; each pass advances it and reruns.
+    _stage = st.session_state.get("_deep_stage", "sector")
+
+    if _stage == "sector":
+        with st.spinner("🔄 Step 1/4: Sector rotation…"):
+            try:
+                st.session_state.sector_cache = sector_rotation()
+                if (st.session_state.sector_cache is not None and
+                        not st.session_state.sector_cache.empty):
+                    st.session_state.outlook_cache = predict_sector_outlook(
+                        st.session_state.sector_cache)
+                    st.session_state.picks_cache = find_sector_picks(
+                        st.session_state.sector_cache.head(5)["sector"].tolist(), 3)
+                else:
+                    st.session_state.outlook_cache = pd.DataFrame()
+                    st.session_state.picks_cache   = []
+            except Exception as _e:
+                st.toast(f"⚠️ Sector scan error: {_e}", icon="⚠️")
+        st.session_state._deep_stage = "universe"
+        st.session_state._kickoff_scan = True
+
+    elif _stage == "universe":
+        with st.spinner("🔄 Step 2/4: Universe scanner…"):
+            try:
+                _usd = generate_market_scanner()
+                st.session_state.scanner_cache = (
+                    _usd if (_usd is not None and not _usd.empty) else pd.DataFrame())
+            except Exception as _e:
+                st.toast(f"⚠️ Universe scan error: {_e}", icon="⚠️")
+        st.session_state._deep_stage = "smc"
+        st.session_state._kickoff_scan = True
+
+    elif _stage == "smc":
+        with st.spinner("🔄 Step 3/4: SMC setups…"):
+            try:
+                if scan_for_smc_setups is not None:
+                    st.session_state.smc_scan_cache = scan_for_smc_setups(
+                        min_quality="B", action_filter="All")
+            except Exception as _e:
+                st.toast(f"⚠️ SMC scan error: {_e}", icon="⚠️")
+        st.session_state._deep_stage = "traps"
+        st.session_state._kickoff_scan = True
+
+    elif _stage == "traps":
+        with st.spinner("🔄 Step 4/4: Trap scanner…"):
+            try:
+                if scan_for_traps is not None:
+                    st.session_state.trap_scan_cache = scan_for_traps(min_confidence=55)
+            except Exception as _e:
+                st.toast(f"⚠️ Trap scan error: {_e}", icon="⚠️")
+        st.session_state._deep_stage = "sector"   # reset for next cycle
+        st.session_state._deep_running = False     # sequence complete
+        st.session_state.last_slow_scan = _now      # mark deep scan complete
+        st.toast("✅ Deep scan complete", icon="✅")
 
 
 # ── Portfolio metrics ──────────────────────────────────────────────────────────
@@ -1755,11 +1780,8 @@ with st.sidebar:
     _elapsed_slow = time.time() - st.session_state.last_slow_scan
     _nxt_fast = max(0, int((st.session_state.fast_interval_sec - _elapsed_fast) // 60))
     _nxt_slow = max(0, int((st.session_state.deep_interval_sec - _elapsed_slow) // 60))
-    _stage_names = {"sector": "Sector rotation", "universe": "Universe scan",
-                    "smc": "SMC setups", "traps": "Trap scan"}
     if st.session_state.get("_deep_running", False):
-        _cur = st.session_state.get("_deep_stage", "sector")
-        _deep_status = f'⏳ {_stage_names.get(_cur, _cur)}…'
+        _deep_status = f'running: {st.session_state.get("_deep_stage","")}'
     else:
         _deep_status = f'{_nxt_slow}m' if st.session_state.auto_deep else 'manual'
     _fast_status = f'{_nxt_fast}m' if st.session_state.auto_fast else 'manual'
@@ -3242,69 +3264,10 @@ elif _page == 'smc':
         else:
             st.info("Click **🎯 Scan Setups** to find SMC trade setups across the universe.")
 
-# ── Post-render background deep scan ───────────────────────────────────────────
-# The ENTIRE page has now rendered — you can see and interact with everything.
-# Only NOW do we run one deep-scan stage (silently, in the background), then
-# trigger a gentle rerun to advance to the next stage. Because this happens AFTER
-# render, your current page/scroll/inputs are never interrupted mid-view.
-if st.session_state.get("_run_deep_now", False):
-    st.session_state._run_deep_now = False
-    _stage = st.session_state.get("_deep_stage", "sector")
-    st.session_state._deep_progress = _stage
-
-    if _stage == "sector":
-        try:
-            st.session_state.sector_cache = sector_rotation()
-            if (st.session_state.sector_cache is not None and
-                    not st.session_state.sector_cache.empty):
-                st.session_state.outlook_cache = predict_sector_outlook(
-                    st.session_state.sector_cache)
-                st.session_state.picks_cache = find_sector_picks(
-                    st.session_state.sector_cache.head(5)["sector"].tolist(), 3)
-            else:
-                st.session_state.outlook_cache = pd.DataFrame()
-                st.session_state.picks_cache   = []
-        except Exception:
-            pass
-        st.session_state._deep_stage = "universe"
-
-    elif _stage == "universe":
-        try:
-            _usd = generate_market_scanner()
-            st.session_state.scanner_cache = (
-                _usd if (_usd is not None and not _usd.empty) else pd.DataFrame())
-        except Exception:
-            pass
-        st.session_state._deep_stage = "smc"
-
-    elif _stage == "smc":
-        try:
-            if scan_for_smc_setups is not None:
-                st.session_state.smc_scan_cache = scan_for_smc_setups(
-                    min_quality="B", action_filter="All")
-        except Exception:
-            pass
-        st.session_state._deep_stage = "traps"
-
-    elif _stage == "traps":
-        try:
-            if scan_for_traps is not None:
-                st.session_state.trap_scan_cache = scan_for_traps(min_confidence=55)
-        except Exception:
-            pass
-        st.session_state._deep_stage = "sector"        # reset for next cycle
-        st.session_state._deep_running = False          # whole sequence complete
-        st.session_state._deep_progress = "done"
-        st.session_state.last_slow_scan = time.time()   # mark deep scan complete
-
-    # Advance to the next stage on the next pass. If the sequence is still
-    # running, gently rerun; otherwise stop (no more forced reruns).
-    if st.session_state.get("_deep_running", False):
-        time.sleep(0.05)
-        st.rerun()
-
-# ── First-paint kickoff (login) ────────────────────────────────────────────────
-# On first login, trigger one rerun so the deferred fast/deep scans begin.
+# ── Post-render scan kickoff ───────────────────────────────────────────────────
+# The dashboard has now fully rendered. If this was the first paint after login,
+# trigger ONE immediate rerun so the deferred scans begin on the next pass —
+# the user sees a complete dashboard instantly, then data fills in moments later.
 if st.session_state.get("_kickoff_scan", False):
     st.session_state._kickoff_scan = False
     time.sleep(0.1)
