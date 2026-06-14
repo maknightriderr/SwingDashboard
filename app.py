@@ -415,15 +415,20 @@ if st.session_state.user_id is None:
     if cookies and cookies.get("swing_user_id"):
         try:
             cookie_uid = int(cookies.get("swing_user_id"))
-            st.session_state.user_id = cookie_uid
             user_row = db("SELECT username FROM users WHERE id=?",
                           (cookie_uid,), fetch=True)
             if user_row:
+                st.session_state.user_id = cookie_uid
                 st.session_state.username = user_row[0][0]
                 st.session_state.first_render_done = False  # defer scans
                 st.rerun()
+            else:
+                # Cookie points to a user that doesn't exist in THIS database
+                # (e.g. Postgres→SQLite fallback). Clear the stale cookie.
+                controller.set("swing_user_id", "", max_age=0)
         except Exception:
-            pass
+      pass
+
 
     st.markdown(
         "<h1 style='text-align:center;margin-top:5rem'>🔐 Quantitative Swing Dashboard</h1>",
