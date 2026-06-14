@@ -165,20 +165,36 @@ DB = "trades_v2.db"   # SQLite fallback (used if psycopg2 unavailable)
 
 # ── SUPABASE DIRECT CONNECTION (no pooler) ─────────────────────────────────────
 # project ref = ktgajqymvuaqeyiropmt  (from the pooler username)
-import os
+import socket
+
+# Force IPv4 resolution to avoid IPv6 "Cannot assign requested address" errors
+_PG_IPV4 = None
+try:
+    _PG_IPV4 = socket.getaddrinfo(
+        "db.ktgajqymvuaqeyiropmt.supabase.co", 5432,
+        family=socket.AF_INET,          # Force IPv4 only
+        type=socket.SOCK_STREAM,
+    )[0][4][0]
+except Exception:
+    pass  # Will fall back to default resolution if this fails
 
 _PG_PARAMS = dict(
-    host     = "db.ktgajqymvuaqeyiropmt.supabase.co",
-    **({"hostaddr": _PG_IPV4} if _PG_IPV4 else {}),
-    port     = 5432,
-    dbname   = "postgres",
-    user     = "postgres",
-    password = os.environ.get("SUPABASE_DB_PASSWORD", ""),
-    sslmode  = "require",
+    host            = "db.ktgajqymvuaqeyiropmt.supabase.co",   # Kept for SSL cert verification
+    **({"hostaddr": _PG_IPV4} if _PG_IPV4 else {}),            # Forces IPv4 TCP connection
+    port            = 5432,
+    dbname          = "postgres",
+    user            = "postgres",
+    password        = "MYfOKRcopF8tH2S1",
+    sslmode         = "require",
     connect_timeout = 15,
 )
+_USE_PG = True
 
-_USE_PG = bool(os.environ.get("SUPABASE_DB_PASSWORD"))  # auto-disable if missing
+try:
+    import psycopg2
+    import psycopg2.extras
+except ImportError:
+    _USE_PG = False
 
 
 def _pg_conn():
