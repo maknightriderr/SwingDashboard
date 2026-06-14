@@ -277,11 +277,12 @@ def login_user(username, password):
 
 def get_trades(user_id):
     if _USE_PG:
-        conn = _pg_conn()
+        from sqlalchemy import create_engine
+        engine = create_engine(_PG_URL)
         df = pd.read_sql_query(
             "SELECT * FROM trades WHERE user_id=%s ORDER BY id DESC",
-            conn, params=(user_id,))
-        conn.close()
+            engine, params=(user_id,))
+        engine.dispose()
         return df
     conn = sqlite3.connect(DB)
     df = pd.read_sql_query(
@@ -290,13 +291,15 @@ def get_trades(user_id):
     conn.close()
     return df
 
+# REPLACE get_history with this:
 def get_history(user_id):
     if _USE_PG:
-        conn = _pg_conn()
+        from sqlalchemy import create_engine
+        engine = create_engine(_PG_URL)
         df = pd.read_sql_query(
             "SELECT * FROM portfolio_history WHERE user_id=%s ORDER BY snapshot_date",
-            conn, params=(user_id,))
-        conn.close()
+            engine, params=(user_id,))
+        engine.dispose()
         return df
     conn = sqlite3.connect(DB)
     df = pd.read_sql_query(
@@ -344,11 +347,12 @@ def add_watchlist(user_id, stock, target=None, notes=""):
 
 def get_watchlist(user_id):
     if _USE_PG:
-        conn = _pg_conn()
+        from sqlalchemy import create_engine
+        engine = create_engine(_PG_URL)
         df = pd.read_sql_query(
             "SELECT * FROM watchlist WHERE user_id=%s ORDER BY id DESC",
-            conn, params=(user_id,))
-        conn.close()
+            engine, params=(user_id,))
+        engine.dispose()
         return df
     conn = sqlite3.connect(DB)
     df = pd.read_sql_query(
