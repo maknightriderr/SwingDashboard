@@ -108,13 +108,31 @@ def _cached_prices(symbols_tuple):
                 pass
         return None
 
+        # Map common names to their Yahoo Finance index tickers
+    INDEX_ALIASES = {
+        "NIFTY": "^NSEI", "NIFTY50": "^NSEI", "NIFTY 50": "^NSEI",
+        "SENSEX": "^BSESN", "BSE SENSEX": "^BSESN",
+        "BANKNIFTY": "^NSEBANK", "BANK NIFTY": "^NSEBANK",
+    }
+
     for sym in symbols_tuple:
         clean = str(sym).upper().strip()
-        for sfx in [".NS", ".BO", ".NSE", ".BSE"]:
-            if clean.endswith(sfx):
-                clean = clean[:-len(sfx)]
+        
+        # Apply alias if it's an index name
+        clean = INDEX_ALIASES.get(clean, clean)
+        is_index = clean.startswith("^")
+
+        # Strip suffixes only for regular stocks
+        if not is_index:
+            for sfx in [".NS", ".BO", ".NSE", ".BSE"]:
+                if clean.endswith(sfx):
+                    clean = clean[:-len(sfx)]
+        
         got = False
-        for sfx in [".NS", ".BO"]:
+        # Indices don't need suffixes, stocks need .NS or .BO
+        suffixes_to_try = [""] if is_index else [".NS", ".BO"]
+        
+        for sfx in suffixes_to_try:
             try:
                 t = _yf.Ticker(clean + sfx)
                 # 1) fast_info
@@ -130,8 +148,6 @@ def _cached_prices(symbols_tuple):
                         got = True; break
             except Exception:
                 continue
-        # leave missing if both suffixes failed
-    return prices
 
 # ── Auto-refresh ───────────────────────────────────────────────────────────────
 REFRESH_SEC = 300
@@ -951,11 +967,18 @@ _CACHE = {}
 _TTL = 300
 
 
+    # Map common names to their Yahoo Finance index tickers
+    INDEX_ALIASES = {
+        "NIFTY": "^NSEI", "NIFTY50": "^NSEI", "NIFTY 50": "^NSEI",
+        "SENSEX": "^BSESN", "BSE SENSEX": "^BSESN",
+        "BANKNIFTY": "^NSEBANK", "BANK NIFTY": "^NSEBANK",
+    }
+
 def fetch_price(symbol):
     clean = str(symbol).upper().strip()
-    for sfx in [".NS", ".BO", ".NSE", ".BSE"]:
-        if clean.endswith(sfx):
-            clean = clean[:-len(sfx)]
+    clean = INDEX_ALIASES.get(clean, clean)
+    is_index = clean.startswith("^")
+
     if clean in _CACHE and time.time() - _CACHE[clean][1] < _TTL:
         return _CACHE[clean][0]
 
@@ -976,7 +999,15 @@ def fetch_price(symbol):
                     pass
         return None
 
-    for sfx in [".NS", ".BO"]:
+    # Strip suffixes only for regular stocks
+    if not is_index:
+        for sfx in [".NS", ".BO", ".NSE", ".BSE"]:
+            if clean.endswith(sfx):
+                clean = clean[:-len(sfx)]
+
+    suffixes_to_try = [""] if is_index else [".NS", ".BO"]
+    
+    for sfx in suffixes_to_try:
         try:
             t = yf.Ticker(clean + sfx)
             v = _fast(t)
