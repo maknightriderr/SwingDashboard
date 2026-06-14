@@ -145,6 +145,45 @@ st.set_page_config(
     layout="wide", initial_sidebar_state="expanded"
 )
 
+import streamlit.components.v1 as components
+
+# Keep an always-visible "open sidebar" affordance, version-independent.
+components.html(
+    """
+    <script>
+    const doc = window.parent.document;
+    function ensureSidebarButton() {
+        // If the sidebar is collapsed, Streamlit hides/relocates its control.
+        // Add our own floating button that clicks whatever expand control exists.
+        if (doc.getElementById('force-open-sb')) return;
+        const btn = doc.createElement('button');
+        btn.id = 'force-open-sb';
+        btn.innerText = '☰';
+        btn.style.cssText = 'position:fixed;top:8px;left:8px;z-index:999999;'
+            + 'background:#d4af37;color:#000;border:none;border-radius:8px;'
+            + 'font-size:20px;padding:4px 10px;cursor:pointer;'
+            + 'box-shadow:0 2px 10px rgba(0,0,0,.5)';
+        btn.onclick = function() {
+            const sel = [
+                '[data-testid="stSidebarCollapsedControl"] button',
+                '[data-testid="collapsedControl"] button',
+                '[data-testid="stExpandSidebarButton"]',
+                '[data-testid="stSidebarCollapsedControl"]',
+                '[data-testid="collapsedControl"]'
+            ];
+            for (const s of sel) {
+                const el = doc.querySelector(s);
+                if (el) { el.click(); return; }
+            }
+        };
+        doc.body.appendChild(btn);
+    }
+    setInterval(ensureSidebarButton, 500);
+    </script>
+    """,
+    height=0,
+)
+
 
 # ── Auth helpers ───────────────────────────────────────────────────────────────
 def make_hash(password):
