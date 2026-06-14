@@ -154,72 +154,39 @@ def verify_hash(password, hashed_pw):
     return make_hash(password) == hashed_pw
 
 # ── Database ───────────────────────────────────────────────────────────────────
-# PERSISTENCE STRATEGY:
-#   Streamlit Cloud has an EPHEMERAL filesystem — a local SQLite .db file is
-#   wiped on every restart/redeploy/sleep, which flushes all your trades & logins.
-#   Fix: use a hosted Postgres DB when a connection string is provided in
-#   st.secrets (key: DATABASE_URL or [postgres].url), which PERSISTS across
-#   restarts. Falls back to local SQLite when no Postgres is configured (so it
-#   still runs locally / in dev).
-#
-#   To make your data persist on Streamlit Cloud, add to your app secrets:
-#       DATABASE_URL = "postgresql://user:pass@host:5432/dbname"
-#   (Free Postgres: Supabase or Neon. Copy their connection string.)
+# Supabase Postgres — hardcoded connection params (no URL string, no secrets lookup).
+# Passing params as explicit keyword args bypasses libpq URL parsing which
+# misinterprets the dot in 'postgres.xxxx' usernames as schema.user notation.
 # ==============================================================================
 
-DB = "trades_v2.db"   # SQLite fallback path
+DB = "trades_v2.db"   # SQLite fallback (used locally without Postgres)
 
-def _get_pg_url():
-    """Return a Postgres connection URL from secrets, or None for SQLite mode."""
-    try:
-        if "DATABASE_URL" in st.secrets:
-            return st.secrets["DATABASE_URL"]
-        if "postgres" in st.secrets and "url" in st.secrets["postgres"]:
-            return st.secrets["postgres"]["url"]
-    except Exception:
-        pass
-    return None
+# ── HARDCODED SUPABASE CONNECTION ──────────────────────────────────────────────
+_PG_PARAMS = dict(
+    host     = "aws-1-ap-northeast-2.pooler.supabase.com",
+    port     = 5432,
+    dbname   = "postgres",
+    user     = "postgres.ktgajqymvuaqeyiropmt",
+    password = "MYfOKRcopF8tH2S1",
+    sslmode  = "require",
+    connect_timeout = 10,
+)
+_USE_PG = True
 
-_PG_URL = _get_pg_url()
-_USE_PG = _PG_URL is not None
-
-# Lazy import psycopg2 only if Postgres is configured
-if _USE_PG:
-    try:
-        import psycopg2
-        import psycopg2.extras
-    except ImportError:
-        _USE_PG = False   # psycopg2 not installed → fall back to SQLite
-
-def _parse_pg_url(url):
-    """Parse a Postgres URL into explicit keyword args for psycopg2.connect().
-    Passing params explicitly avoids libpq misinterpreting dots in the username
-    (e.g. Supabase pooler uses 'postgres.xxxx' which gets parsed as schema.user
-    when passed as a URL string, causing InvalidSchemaName)."""
-    import urllib.parse as _up
-    r = _up.urlparse(url)
-    params = dict(
-        host=r.hostname,
-        port=r.port or 5432,
-        dbname=r.path.lstrip("/") or "postgres",
-        user=_up.unquote(r.username or ""),
-        password=_up.unquote(r.password or ""),
-        sslmode="require",
-        connect_timeout=10,
-    )
-    return params
+try:
+    import psycopg2
+    import psycopg2.extras
+except ImportError:
+    _USE_PG = False
 
 
 def _pg_conn():
-    """Open a Postgres connection using EXPLICIT keyword params (not URL string).
-    This is the correct way to handle Supabase session-pooler usernames that
-    contain a dot (postgres.xxxx) — passing as a URL string causes libpq to
-    misinterpret the dot as schema.user notation → InvalidSchemaName."""
-    params = _parse_pg_url(_PG_URL)
+    """Open a Supabase Postgres connection using explicit keyword params.
+    Never passes a URL string so libpq never mis-parses the dotted username."""
     last_err = None
     for _attempt in range(2):
         try:
-            conn = psycopg2.connect(**params)
+            conn = psycopg2.connect(**_PG_PARAMS)
             conn.autocommit = False
             return conn
         except Exception as e:
