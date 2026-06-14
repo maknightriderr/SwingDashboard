@@ -963,19 +963,6 @@ ul[role="listbox"] li[aria-selected="true"] {{
 # ── Price Fetcher & Logic ───────────────────────────────────────────────────────
 _CACHE = {}
 _TTL = 300
-
-
-    # Map common names to their Yahoo Finance index tickers
-    INDEX_ALIASES = {
-        "NIFTY": "^NSEI", "NIFTY50": "^NSEI", "NIFTY 50": "^NSEI",
-        "SENSEX": "^BSESN", "BSE SENSEX": "^BSESN",
-        "BANKNIFTY": "^NSEBANK", "BANK NIFTY": "^NSEBANK",
-    }
-
-_CACHE = {}
-_TTL = 300
-
-# Map common names to their Yahoo Finance index tickers
 INDEX_ALIASES_GLOBAL = {
     "NIFTY": "^NSEI", "NIFTY50": "^NSEI", "NIFTY 50": "^NSEI",
     "SENSEX": "^BSESN", "BSE SENSEX": "^BSESN",
@@ -986,7 +973,6 @@ def fetch_price(symbol):
     clean = str(symbol).upper().strip()
     clean = INDEX_ALIASES_GLOBAL.get(clean, clean)
     is_index = clean.startswith("^")
-
     if clean in _CACHE and time.time() - _CACHE[clean][1] < _TTL:
         return _CACHE[clean][0]
 
@@ -1007,14 +993,12 @@ def fetch_price(symbol):
                     pass
         return None
 
-    # Strip suffixes only for regular stocks
     if not is_index:
         for sfx in [".NS", ".BO", ".NSE", ".BSE"]:
             if clean.endswith(sfx):
                 clean = clean[:-len(sfx)]
 
     suffixes_to_try = [""] if is_index else [".NS", ".BO"]
-    
     for sfx in suffixes_to_try:
         try:
             t = yf.Ticker(clean + sfx)
