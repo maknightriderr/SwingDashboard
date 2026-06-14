@@ -70,11 +70,18 @@ def _cached_market_regime():
 @st.cache_data(ttl=300, show_spinner=False)
 def _cached_prices(symbols_tuple):
     """Fetch live prices for a tuple of symbols. Tuple is hashable → cacheable.
-    Robust across yfinance versions: tries fast_info (dict OR attribute style),
-    then history() as a fallback. Never raises — missing prices just stay absent."""
+    Robust across yfinance versions: tries fast_info, then history() as fallback.
+    Handles Nifty/Sensex indices properly."""
     import yfinance as _yf
     import pandas as _pd
     prices = {}
+
+    # Map common names to their Yahoo Finance index tickers
+    INDEX_ALIASES = {
+        "NIFTY": "^NSEI", "NIFTY50": "^NSEI", "NIFTY 50": "^NSEI",
+        "SENSEX": "^BSESN", "BSE SENSEX": "^BSESN",
+        "BANKNIFTY": "^NSEBANK", "BANK NIFTY": "^NSEBANK",
+    }
 
     def _extract_fast_price(t):
         """Get last price from fast_info regardless of yfinance API shape."""
@@ -83,23 +90,19 @@ def _cached_prices(symbols_tuple):
             fi = t.fast_info
         except Exception:
             return None
-        # Try several access styles — yfinance changed this API across versions
         for key in ("last_price", "lastPrice", "regularMarketPrice"):
-            # dict-style .get
             try:
                 v = fi.get(key) if hasattr(fi, "get") else None
                 if v is not None and not _pd.isna(v):
                     return float(v)
             except Exception:
                 pass
-            # attribute-style
             try:
                 v = getattr(fi, key, None)
                 if v is not None and not _pd.isna(v):
                     return float(v)
             except Exception:
                 pass
-            # key-index style
             try:
                 v = fi[key]
                 if v is not None and not _pd.isna(v):
@@ -107,13 +110,6 @@ def _cached_prices(symbols_tuple):
             except Exception:
                 pass
         return None
-
-        # Map common names to their Yahoo Finance index tickers
-    INDEX_ALIASES = {
-        "NIFTY": "^NSEI", "NIFTY50": "^NSEI", "NIFTY 50": "^NSEI",
-        "SENSEX": "^BSESN", "BSE SENSEX": "^BSESN",
-        "BANKNIFTY": "^NSEBANK", "BANK NIFTY": "^NSEBANK",
-    }
 
     for sym in symbols_tuple:
         clean = str(sym).upper().strip()
@@ -148,6 +144,8 @@ def _cached_prices(symbols_tuple):
                         got = True; break
             except Exception:
                 continue
+        # leave missing if both suffixes failed
+    return prices
 
 # ── Auto-refresh ───────────────────────────────────────────────────────────────
 REFRESH_SEC = 300
@@ -974,9 +972,19 @@ _TTL = 300
         "BANKNIFTY": "^NSEBANK", "BANK NIFTY": "^NSEBANK",
     }
 
+_CACHE = {}
+_TTL = 300
+
+# Map common names to their Yahoo Finance index tickers
+INDEX_ALIASES_GLOBAL = {
+    "NIFTY": "^NSEI", "NIFTY50": "^NSEI", "NIFTY 50": "^NSEI",
+    "SENSEX": "^BSESN", "BSE SENSEX": "^BSESN",
+    "BANKNIFTY": "^NSEBANK", "BANK NIFTY": "^NSEBANK",
+}
+
 def fetch_price(symbol):
     clean = str(symbol).upper().strip()
-    clean = INDEX_ALIASES.get(clean, clean)
+    clean = INDEX_ALIASES_GLOBAL.get(clean, clean)
     is_index = clean.startswith("^")
 
     if clean in _CACHE and time.time() - _CACHE[clean][1] < _TTL:
