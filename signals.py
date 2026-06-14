@@ -266,7 +266,7 @@ def sanitize_ticker(sym):
 
 def _bulk_fetch_history(symbols, period="1y"):
     results = {}
-    with ThreadPoolExecutor(max_workers=20) as executor:
+    with ThreadPoolExecutor(max_workers=5) as executor:
         def fetch_single(sym):
             if sym.startswith("^"):
                 return sym, _fetch_history(sym, period)
@@ -287,7 +287,7 @@ def _bulk_fetch_history(symbols, period="1y"):
 # ─── Indicator Cache ──────────────────────────────────────────────────────────
 _IND_CACHE = {}
 _IND_CACHE_TS = {}
-_CACHE_TTL = 1800
+_CACHE_TTL = 900
 
 # ==============================================================================
 # FIX 1+4: Wilder's RSI and ATR with adjust=False and edge-case handling
