@@ -193,12 +193,24 @@ if _USE_PG:
 
 def _pg_conn():
     """Open a Postgres connection (Supabase session pooler compatible).
-    Retries once on transient failures. sslmode=require is mandatory for Supabase."""
+    Retries once on transient failures. sslmode=require is mandatory for Supabase.
+    Forces search_path=public because the Supabase pooler does not always set a
+    default schema, which causes InvalidSchemaName errors on unqualified tables."""
     last_err = None
     for _attempt in range(2):
         try:
-            conn = psycopg2.connect(_PG_URL, sslmode="require", connect_timeout=10)
+            conn = psycopg2.connect(
+                _PG_URL, sslmode="require", connect_timeout=10,
+                options="-c search_path=public")
             conn.autocommit = False
+            # Belt-and-suspenders: set it again on the session in case `options`
+            # is stripped by the pooler.
+            try:
+                with conn.cursor() as _c:
+                    _c.execute("SET search_path TO public")
+                conn.commit()
+            except Exception:
+                conn.rollback()
             return conn
         except Exception as e:
             last_err = e
@@ -214,22 +226,23 @@ def _q(sql):
 def init_db():
     if _USE_PG:
         conn = _pg_conn(); cur = conn.cursor()
-        cur.execute("""CREATE TABLE IF NOT EXISTS users(
+        cur.execute("CREATE SCHEMA IF NOT EXISTS public")
+        cur.execute("""CREATE TABLE IF NOT EXISTS public.users(
             id SERIAL PRIMARY KEY,
             username TEXT UNIQUE NOT NULL,
             password_hash TEXT NOT NULL)""")
-        cur.execute("""CREATE TABLE IF NOT EXISTS trades(
+        cur.execute("""CREATE TABLE IF NOT EXISTS public.trades(
             id SERIAL PRIMARY KEY, user_id INTEGER, stock TEXT NOT NULL,
             quantity REAL NOT NULL, buy_at REAL NOT NULL, sell_at REAL,
             status TEXT DEFAULT 'Open',
             added_date TEXT DEFAULT to_char(CURRENT_DATE,'YYYY-MM-DD'),
             closed_date TEXT)""")
-        cur.execute("""CREATE TABLE IF NOT EXISTS portfolio_history(
+        cur.execute("""CREATE TABLE IF NOT EXISTS public.portfolio_history(
             id SERIAL PRIMARY KEY, user_id INTEGER, snapshot_date TEXT,
             total_invested REAL, current_value REAL)""")
-        cur.execute("""CREATE TABLE IF NOT EXISTS tg_config(
+        cur.execute("""CREATE TABLE IF NOT EXISTS public.tg_config(
             user_id INTEGER PRIMARY KEY, bot_token TEXT, chat_id TEXT)""")
-        cur.execute("""CREATE TABLE IF NOT EXISTS watchlist(
+        cur.execute("""CREATE TABLE IF NOT EXISTS public.watchlist(
             id SERIAL PRIMARY KEY, user_id INTEGER, stock TEXT NOT NULL,
             target_price REAL, notes TEXT,
             added_date TEXT DEFAULT to_char(CURRENT_DATE,'YYYY-MM-DD'))""")
@@ -406,6 +419,7 @@ for k, v in [("user_id", None), ("username", None), ("edit_id", None), ("close_i
              ("_scan_stage", "done"), ("_deep_stage", "sector"),
              ("_deep_running", False), ("_manual_deep_request", False),
              ("_manual_fast_request", False),
+             ("_run_deep_now", False), ("_deep_progress", "done"),
              ("fast_interval_sec", 300), ("deep_interval_sec", 900),
              ("auto_fast", True), ("auto_deep", True),
              ("filter_status", "All"),
@@ -1409,10 +1423,6 @@ _deep_interval = st.session_state.get("deep_interval_sec", 900)   # default 15 m
 _auto_fast = st.session_state.get("auto_fast", True)
 _auto_deep = st.session_state.get("auto_deep", True)
 
-# Is a sequential deep scan currently in progress? (stage != idle)
-_deep_in_progress = st.session_state.get("_deep_stage", "sector") != "idle" and \
-                    st.session_state.get("_deep_running", False)
-
 if not st.session_state.get("first_render_done", False):
     # PASS 1 — first paint after login: render immediately, defer ALL scanning.
     st.session_state.first_render_done = True
@@ -1421,38 +1431,37 @@ if not st.session_state.get("first_render_done", False):
     st.session_state._kickoff_scan = True
     st.session_state._scan_stage = "fast"
 elif st.session_state.get("_scan_stage") == "fast":
-    # PASS 2 — fast scan only (signals + news). Deep scan still deferred.
+    # PASS 2 — fast scan only (signals + news). Then kick off the deep sequence.
     _fast_due = True
-    _deep_due = False
-    st.session_state._scan_stage = "deep_start"
-    st.session_state._kickoff_scan = True
-elif st.session_state.get("_scan_stage") == "deep_start":
-    # PASS 3 — begin the sequential deep scan (runs section by section).
-    _fast_due = False
     _deep_due = True
     st.session_state._deep_running = True
-    st.session_state._scan_stage = "running"
-elif st.session_state.get("_scan_stage") == "running" and _deep_in_progress:
-    # Deep scan mid-sequence — keep going until all 3 stages done.
+    st.session_state._deep_stage = "sector"
+    st.session_state._scan_stage = "done"
+elif st.session_state.get("_deep_running", False):
+    # Deep scan mid-sequence — keep advancing (handled in post-render block).
     _fast_due = False
     _deep_due = True
 else:
     # Steady state — scans fire only on their configured schedules (if auto on).
     st.session_state._scan_stage = "done"
-    st.session_state._deep_running = False
     _fast_due = (_auto_fast and
                  (st.session_state.last_auto_scan == 0.0 or
                   (_now - st.session_state.last_auto_scan) >= _fast_interval))
-    _deep_due = (_auto_deep and
-                 (st.session_state.last_slow_scan == 0.0 or
-                  (_now - st.session_state.last_slow_scan) >= _deep_interval))
-    # A manual deep-scan request starts the sequence too
+    # Deep auto-trigger: start a fresh sequence when interval elapses
+    _deep_elapsed = (st.session_state.last_slow_scan == 0.0 or
+                     (_now - st.session_state.last_slow_scan) >= _deep_interval)
+    _deep_due = False
+    if _auto_deep and _deep_elapsed:
+        st.session_state._deep_running = True
+        st.session_state._deep_stage = "sector"
+        _deep_due = True
+    # Manual deep-scan request starts the sequence too
     if st.session_state.get("_manual_deep_request", False):
         st.session_state._manual_deep_request = False
         st.session_state._deep_running = True
         st.session_state._deep_stage = "sector"
         _deep_due = True
-    # A manual fast-scan request
+    # Manual fast-scan request
     if st.session_state.get("_manual_fast_request", False):
         st.session_state._manual_fast_request = False
         _fast_due = True
@@ -1475,63 +1484,12 @@ if _fast_due:
             st.toast(f"⚠️ Signal refresh error: {_e}", icon="⚠️")
 
 if _deep_due:
-    # SEQUENTIAL DEEP SCAN — runs ONE section per rerun so each completes and
-    # the UI updates before the next begins. This makes the dashboard feel fast:
-    # sector rotation finishes → shows → universe starts → shows → SMC starts.
-    # The stage is tracked in _deep_stage; each pass advances it and reruns.
-    _stage = st.session_state.get("_deep_stage", "sector")
-
-    if _stage == "sector":
-        with st.spinner("🔄 Step 1/4: Sector rotation…"):
-            try:
-                st.session_state.sector_cache = sector_rotation()
-                if (st.session_state.sector_cache is not None and
-                        not st.session_state.sector_cache.empty):
-                    st.session_state.outlook_cache = predict_sector_outlook(
-                        st.session_state.sector_cache)
-                    st.session_state.picks_cache = find_sector_picks(
-                        st.session_state.sector_cache.head(5)["sector"].tolist(), 3)
-                else:
-                    st.session_state.outlook_cache = pd.DataFrame()
-                    st.session_state.picks_cache   = []
-            except Exception as _e:
-                st.toast(f"⚠️ Sector scan error: {_e}", icon="⚠️")
-        st.session_state._deep_stage = "universe"
-        st.session_state._kickoff_scan = True
-
-    elif _stage == "universe":
-        with st.spinner("🔄 Step 2/4: Universe scanner…"):
-            try:
-                _usd = generate_market_scanner()
-                st.session_state.scanner_cache = (
-                    _usd if (_usd is not None and not _usd.empty) else pd.DataFrame())
-            except Exception as _e:
-                st.toast(f"⚠️ Universe scan error: {_e}", icon="⚠️")
-        st.session_state._deep_stage = "smc"
-        st.session_state._kickoff_scan = True
-
-    elif _stage == "smc":
-        with st.spinner("🔄 Step 3/4: SMC setups…"):
-            try:
-                if scan_for_smc_setups is not None:
-                    st.session_state.smc_scan_cache = scan_for_smc_setups(
-                        min_quality="B", action_filter="All")
-            except Exception as _e:
-                st.toast(f"⚠️ SMC scan error: {_e}", icon="⚠️")
-        st.session_state._deep_stage = "traps"
-        st.session_state._kickoff_scan = True
-
-    elif _stage == "traps":
-        with st.spinner("🔄 Step 4/4: Trap scanner…"):
-            try:
-                if scan_for_traps is not None:
-                    st.session_state.trap_scan_cache = scan_for_traps(min_confidence=55)
-            except Exception as _e:
-                st.toast(f"⚠️ Trap scan error: {_e}", icon="⚠️")
-        st.session_state._deep_stage = "sector"   # reset for next cycle
-        st.session_state._deep_running = False     # sequence complete
-        st.session_state.last_slow_scan = _now      # mark deep scan complete
-        st.toast("✅ Deep scan complete", icon="✅")
+    # Deep scan is due — but we DEFER its execution to the very END of the script
+    # (after the whole page renders) so it never blocks or interrupts your view.
+    # The actual stage execution happens in the post-render block at the bottom.
+    st.session_state._run_deep_now = True
+else:
+    st.session_state._run_deep_now = False
 
 
 # ── Portfolio metrics ──────────────────────────────────────────────────────────
@@ -1780,8 +1738,11 @@ with st.sidebar:
     _elapsed_slow = time.time() - st.session_state.last_slow_scan
     _nxt_fast = max(0, int((st.session_state.fast_interval_sec - _elapsed_fast) // 60))
     _nxt_slow = max(0, int((st.session_state.deep_interval_sec - _elapsed_slow) // 60))
+    _stage_names = {"sector": "Sector rotation", "universe": "Universe scan",
+                    "smc": "SMC setups", "traps": "Trap scan"}
     if st.session_state.get("_deep_running", False):
-        _deep_status = f'running: {st.session_state.get("_deep_stage","")}'
+        _cur = st.session_state.get("_deep_stage", "sector")
+        _deep_status = f'⏳ {_stage_names.get(_cur, _cur)}…'
     else:
         _deep_status = f'{_nxt_slow}m' if st.session_state.auto_deep else 'manual'
     _fast_status = f'{_nxt_fast}m' if st.session_state.auto_fast else 'manual'
@@ -3264,10 +3225,69 @@ elif _page == 'smc':
         else:
             st.info("Click **🎯 Scan Setups** to find SMC trade setups across the universe.")
 
-# ── Post-render scan kickoff ───────────────────────────────────────────────────
-# The dashboard has now fully rendered. If this was the first paint after login,
-# trigger ONE immediate rerun so the deferred scans begin on the next pass —
-# the user sees a complete dashboard instantly, then data fills in moments later.
+# ── Post-render background deep scan ───────────────────────────────────────────
+# The ENTIRE page has now rendered — you can see and interact with everything.
+# Only NOW do we run one deep-scan stage (silently, in the background), then
+# trigger a gentle rerun to advance to the next stage. Because this happens AFTER
+# render, your current page/scroll/inputs are never interrupted mid-view.
+if st.session_state.get("_run_deep_now", False):
+    st.session_state._run_deep_now = False
+    _stage = st.session_state.get("_deep_stage", "sector")
+    st.session_state._deep_progress = _stage
+
+    if _stage == "sector":
+        try:
+            st.session_state.sector_cache = sector_rotation()
+            if (st.session_state.sector_cache is not None and
+                    not st.session_state.sector_cache.empty):
+                st.session_state.outlook_cache = predict_sector_outlook(
+                    st.session_state.sector_cache)
+                st.session_state.picks_cache = find_sector_picks(
+                    st.session_state.sector_cache.head(5)["sector"].tolist(), 3)
+            else:
+                st.session_state.outlook_cache = pd.DataFrame()
+                st.session_state.picks_cache   = []
+        except Exception:
+            pass
+        st.session_state._deep_stage = "universe"
+
+    elif _stage == "universe":
+        try:
+            _usd = generate_market_scanner()
+            st.session_state.scanner_cache = (
+                _usd if (_usd is not None and not _usd.empty) else pd.DataFrame())
+        except Exception:
+            pass
+        st.session_state._deep_stage = "smc"
+
+    elif _stage == "smc":
+        try:
+            if scan_for_smc_setups is not None:
+                st.session_state.smc_scan_cache = scan_for_smc_setups(
+                    min_quality="B", action_filter="All")
+        except Exception:
+            pass
+        st.session_state._deep_stage = "traps"
+
+    elif _stage == "traps":
+        try:
+            if scan_for_traps is not None:
+                st.session_state.trap_scan_cache = scan_for_traps(min_confidence=55)
+        except Exception:
+            pass
+        st.session_state._deep_stage = "sector"        # reset for next cycle
+        st.session_state._deep_running = False          # whole sequence complete
+        st.session_state._deep_progress = "done"
+        st.session_state.last_slow_scan = time.time()   # mark deep scan complete
+
+    # Advance to the next stage on the next pass. If the sequence is still
+    # running, gently rerun; otherwise stop (no more forced reruns).
+    if st.session_state.get("_deep_running", False):
+        time.sleep(0.05)
+        st.rerun()
+
+# ── First-paint kickoff (login) ────────────────────────────────────────────────
+# On first login, trigger one rerun so the deferred fast/deep scans begin.
 if st.session_state.get("_kickoff_scan", False):
     st.session_state._kickoff_scan = False
     time.sleep(0.1)
