@@ -68,27 +68,68 @@ def _cached_market_regime():
 # Price cache: 5-min TTL so KPI cards don't block on every sidebar interaction.
 @st.cache_data(ttl=300, show_spinner=False)
 def _cached_prices(symbols_tuple):
-    """Fetch live prices for a tuple of symbols. Tuple is hashable → cacheable."""
+    """Fetch live prices for a tuple of symbols. Tuple is hashable → cacheable.
+    Robust across yfinance versions: tries fast_info (dict OR attribute style),
+    then history() as a fallback. Never raises — missing prices just stay absent."""
     import yfinance as _yf
+    import pandas as _pd
     prices = {}
+
+    def _extract_fast_price(t):
+        """Get last price from fast_info regardless of yfinance API shape."""
+        fi = None
+        try:
+            fi = t.fast_info
+        except Exception:
+            return None
+        # Try several access styles — yfinance changed this API across versions
+        for key in ("last_price", "lastPrice", "regularMarketPrice"):
+            # dict-style .get
+            try:
+                v = fi.get(key) if hasattr(fi, "get") else None
+                if v is not None and not _pd.isna(v):
+                    return float(v)
+            except Exception:
+                pass
+            # attribute-style
+            try:
+                v = getattr(fi, key, None)
+                if v is not None and not _pd.isna(v):
+                    return float(v)
+            except Exception:
+                pass
+            # key-index style
+            try:
+                v = fi[key]
+                if v is not None and not _pd.isna(v):
+                    return float(v)
+            except Exception:
+                pass
+        return None
+
     for sym in symbols_tuple:
         clean = str(sym).upper().strip()
         for sfx in [".NS", ".BO", ".NSE", ".BSE"]:
             if clean.endswith(sfx):
                 clean = clean[:-len(sfx)]
+        got = False
         for sfx in [".NS", ".BO"]:
             try:
                 t = _yf.Ticker(clean + sfx)
-                val = t.fast_info.get("last_price")
-                if val is not None and not __import__("pandas").isna(val):
-                    prices[sym] = round(float(val), 2)
-                    break
-                h = t.history(period="1d", interval="1d", auto_adjust=True)
+                # 1) fast_info
+                v = _extract_fast_price(t)
+                if v is not None and v > 0:
+                    prices[sym] = round(v, 2); got = True; break
+                # 2) recent history (5d covers weekends/holidays)
+                h = t.history(period="5d", interval="1d", auto_adjust=True)
                 if h is not None and not h.empty and "Close" in h.columns:
-                    prices[sym] = round(float(h["Close"].iloc[-1]), 2)
-                    break
+                    last_valid = h["Close"].dropna()
+                    if not last_valid.empty:
+                        prices[sym] = round(float(last_valid.iloc[-1]), 2)
+                        got = True; break
             except Exception:
                 continue
+        # leave missing if both suffixes failed
     return prices
 
 # ── Auto-refresh ───────────────────────────────────────────────────────────────
@@ -101,7 +142,7 @@ except ImportError:
 
 st.set_page_config(
     page_title="Swing Dashboard", page_icon="📈",
-    layout="wide", initial_sidebar_state="expanded"
+    layout="wide", initial_sidebar_state="auto"
 )
 
 # ── Auth helpers ───────────────────────────────────────────────────────────────
@@ -112,43 +153,119 @@ def verify_hash(password, hashed_pw):
     return make_hash(password) == hashed_pw
 
 # ── Database ───────────────────────────────────────────────────────────────────
-DB = "trades_v2.db"
+# PERSISTENCE STRATEGY:
+#   Streamlit Cloud has an EPHEMERAL filesystem — a local SQLite .db file is
+#   wiped on every restart/redeploy/sleep, which flushes all your trades & logins.
+#   Fix: use a hosted Postgres DB when a connection string is provided in
+#   st.secrets (key: DATABASE_URL or [postgres].url), which PERSISTS across
+#   restarts. Falls back to local SQLite when no Postgres is configured (so it
+#   still runs locally / in dev).
+#
+#   To make your data persist on Streamlit Cloud, add to your app secrets:
+#       DATABASE_URL = "postgresql://user:pass@host:5432/dbname"
+#   (Free Postgres: Supabase or Neon. Copy their connection string.)
+# ==============================================================================
+
+DB = "trades_v2.db"   # SQLite fallback path
+
+def _get_pg_url():
+    """Return a Postgres connection URL from secrets, or None for SQLite mode."""
+    try:
+        if "DATABASE_URL" in st.secrets:
+            return st.secrets["DATABASE_URL"]
+        if "postgres" in st.secrets and "url" in st.secrets["postgres"]:
+            return st.secrets["postgres"]["url"]
+    except Exception:
+        pass
+    return None
+
+_PG_URL = _get_pg_url()
+_USE_PG = _PG_URL is not None
+
+# Lazy import psycopg2 only if Postgres is configured
+if _USE_PG:
+    try:
+        import psycopg2
+        import psycopg2.extras
+    except ImportError:
+        _USE_PG = False   # psycopg2 not installed → fall back to SQLite
+
+def _pg_conn():
+    """Open a Postgres connection."""
+    return psycopg2.connect(_PG_URL, sslmode="require")
+
+def _q(sql):
+    """Translate SQLite '?' placeholders to Postgres '%s' when in PG mode."""
+    if _USE_PG:
+        return sql.replace("?", "%s")
+    return sql
 
 def init_db():
-    c = sqlite3.connect(DB)
-    c.execute("""CREATE TABLE IF NOT EXISTS users(
-        id INTEGER PRIMARY KEY AUTOINCREMENT,
-        username TEXT UNIQUE NOT NULL,
-        password_hash TEXT NOT NULL)""")
-    c.execute("""CREATE TABLE IF NOT EXISTS trades(
-        id INTEGER PRIMARY KEY AUTOINCREMENT, user_id INTEGER, stock TEXT NOT NULL,
-        quantity REAL NOT NULL, buy_at REAL NOT NULL, sell_at REAL,
-        status TEXT DEFAULT 'Open', added_date TEXT DEFAULT(date('now')),
-        closed_date TEXT)""")
-    c.execute("""CREATE TABLE IF NOT EXISTS portfolio_history(
-        id INTEGER PRIMARY KEY AUTOINCREMENT, user_id INTEGER, snapshot_date TEXT,
-        total_invested REAL, current_value REAL)""")
-    c.execute("""CREATE TABLE IF NOT EXISTS tg_config(
-        user_id INTEGER PRIMARY KEY, bot_token TEXT, chat_id TEXT)""")
-    c.execute("""CREATE TABLE IF NOT EXISTS watchlist(
-        id INTEGER PRIMARY KEY AUTOINCREMENT, user_id INTEGER, stock TEXT NOT NULL,
-        target_price REAL, notes TEXT, added_date TEXT DEFAULT(date('now')))""")
-    c.commit(); c.close()
+    if _USE_PG:
+        conn = _pg_conn(); cur = conn.cursor()
+        cur.execute("""CREATE TABLE IF NOT EXISTS users(
+            id SERIAL PRIMARY KEY,
+            username TEXT UNIQUE NOT NULL,
+            password_hash TEXT NOT NULL)""")
+        cur.execute("""CREATE TABLE IF NOT EXISTS trades(
+            id SERIAL PRIMARY KEY, user_id INTEGER, stock TEXT NOT NULL,
+            quantity REAL NOT NULL, buy_at REAL NOT NULL, sell_at REAL,
+            status TEXT DEFAULT 'Open',
+            added_date TEXT DEFAULT to_char(CURRENT_DATE,'YYYY-MM-DD'),
+            closed_date TEXT)""")
+        cur.execute("""CREATE TABLE IF NOT EXISTS portfolio_history(
+            id SERIAL PRIMARY KEY, user_id INTEGER, snapshot_date TEXT,
+            total_invested REAL, current_value REAL)""")
+        cur.execute("""CREATE TABLE IF NOT EXISTS tg_config(
+            user_id INTEGER PRIMARY KEY, bot_token TEXT, chat_id TEXT)""")
+        cur.execute("""CREATE TABLE IF NOT EXISTS watchlist(
+            id SERIAL PRIMARY KEY, user_id INTEGER, stock TEXT NOT NULL,
+            target_price REAL, notes TEXT,
+            added_date TEXT DEFAULT to_char(CURRENT_DATE,'YYYY-MM-DD'))""")
+        conn.commit(); cur.close(); conn.close()
+    else:
+        c = sqlite3.connect(DB)
+        c.execute("""CREATE TABLE IF NOT EXISTS users(
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            username TEXT UNIQUE NOT NULL,
+            password_hash TEXT NOT NULL)""")
+        c.execute("""CREATE TABLE IF NOT EXISTS trades(
+            id INTEGER PRIMARY KEY AUTOINCREMENT, user_id INTEGER, stock TEXT NOT NULL,
+            quantity REAL NOT NULL, buy_at REAL NOT NULL, sell_at REAL,
+            status TEXT DEFAULT 'Open', added_date TEXT DEFAULT(date('now')),
+            closed_date TEXT)""")
+        c.execute("""CREATE TABLE IF NOT EXISTS portfolio_history(
+            id INTEGER PRIMARY KEY AUTOINCREMENT, user_id INTEGER, snapshot_date TEXT,
+            total_invested REAL, current_value REAL)""")
+        c.execute("""CREATE TABLE IF NOT EXISTS tg_config(
+            user_id INTEGER PRIMARY KEY, bot_token TEXT, chat_id TEXT)""")
+        c.execute("""CREATE TABLE IF NOT EXISTS watchlist(
+            id INTEGER PRIMARY KEY AUTOINCREMENT, user_id INTEGER, stock TEXT NOT NULL,
+            target_price REAL, notes TEXT, added_date TEXT DEFAULT(date('now')))""")
+        c.commit(); c.close()
 
 def db(sql, params=(), fetch=False):
-    conn = sqlite3.connect(DB)
-    cur = conn.execute(sql, params)
-    conn.commit()
-    result = cur.fetchall() if fetch else None
-    conn.close()
-    return result
+    if _USE_PG:
+        conn = _pg_conn(); cur = conn.cursor()
+        cur.execute(_q(sql), params)
+        conn.commit()
+        result = cur.fetchall() if fetch else None
+        cur.close(); conn.close()
+        return result
+    else:
+        conn = sqlite3.connect(DB)
+        cur = conn.execute(sql, params)
+        conn.commit()
+        result = cur.fetchall() if fetch else None
+        conn.close()
+        return result
 
 def register_user(username, password):
     try:
         db("INSERT INTO users(username, password_hash) VALUES(?,?)",
            (username.lower(), make_hash(password)))
         return True
-    except sqlite3.IntegrityError:
+    except Exception:
         return False
 
 def login_user(username, password):
@@ -159,6 +276,13 @@ def login_user(username, password):
     return None
 
 def get_trades(user_id):
+    if _USE_PG:
+        conn = _pg_conn()
+        df = pd.read_sql_query(
+            "SELECT * FROM trades WHERE user_id=%s ORDER BY id DESC",
+            conn, params=(user_id,))
+        conn.close()
+        return df
     conn = sqlite3.connect(DB)
     df = pd.read_sql_query(
         "SELECT * FROM trades WHERE user_id=? ORDER BY id DESC",
@@ -167,6 +291,13 @@ def get_trades(user_id):
     return df
 
 def get_history(user_id):
+    if _USE_PG:
+        conn = _pg_conn()
+        df = pd.read_sql_query(
+            "SELECT * FROM portfolio_history WHERE user_id=%s ORDER BY snapshot_date",
+            conn, params=(user_id,))
+        conn.close()
+        return df
     conn = sqlite3.connect(DB)
     df = pd.read_sql_query(
         "SELECT * FROM portfolio_history WHERE user_id=? ORDER BY snapshot_date",
@@ -212,6 +343,13 @@ def add_watchlist(user_id, stock, target=None, notes=""):
        (user_id, stock.upper().strip(), target, notes))
 
 def get_watchlist(user_id):
+    if _USE_PG:
+        conn = _pg_conn()
+        df = pd.read_sql_query(
+            "SELECT * FROM watchlist WHERE user_id=%s ORDER BY id DESC",
+            conn, params=(user_id,))
+        conn.close()
+        return df
     conn = sqlite3.connect(DB)
     df = pd.read_sql_query(
         "SELECT * FROM watchlist WHERE user_id=? ORDER BY id DESC",
@@ -236,6 +374,8 @@ for k, v in [("user_id", None), ("username", None), ("edit_id", None), ("close_i
              ("corp_actions_cache", None), ("selected_scanner_sector", "All Sectors"),
              ("custom_stocks_input", ""), ("active_page", "portfolio"),
              ("smc_scan_cache", None),
+             ("first_render_done", False), ("_kickoff_scan", False),
+             ("_scan_stage", "done"),
              ("filter_status", "All"),
              ("filter_pnl", "All"), ("search", ""), ("theme", "Obsidian & Gold (Institutional)")]:
     if k not in st.session_state:
@@ -254,12 +394,11 @@ if st.session_state.user_id is None:
         try:
             cookie_uid = int(cookies.get("swing_user_id"))
             st.session_state.user_id = cookie_uid
-            conn = sqlite3.connect(DB)
-            user_row = conn.execute(
-                "SELECT username FROM users WHERE id=?", (cookie_uid,)).fetchone()
-            conn.close()
+            user_row = db("SELECT username FROM users WHERE id=?",
+                          (cookie_uid,), fetch=True)
             if user_row:
-                st.session_state.username = user_row[0]
+                st.session_state.username = user_row[0][0]
+                st.session_state.first_render_done = False  # defer scans
                 st.rerun()
         except Exception:
             pass
@@ -284,6 +423,7 @@ if st.session_state.user_id is None:
                     if uid:
                         st.session_state.user_id = uid
                         st.session_state.username = l_user
+                        st.session_state.first_render_done = False  # defer scans
                         controller.set("swing_user_id", str(uid), max_age=604800)
                         st.success("Authenticated. Booting Engine...")
                         time.sleep(1)
@@ -567,7 +707,48 @@ table.t tr.row-loss td   {{ box-shadow: inset 3px 0 0 var(--red); }}
 /* ═══ Sidebar, inputs, buttons ═══ */
 [data-testid="stSidebar"] {{
     background: var(--card) !important; border-right: 1px solid var(--border);
-    padding-top: 2rem; backdrop-filter: blur(20px);
+    padding-top: 1rem;
+}}
+/* CRITICAL FIX — keep the sidebar expand ("maximize") control ALWAYS visible.
+   Streamlit changed this test-id across versions, so we target every known
+   variant. The backdrop-filter was removed from the sidebar above because it
+   created a stacking context that hid this button after collapsing. */
+[data-testid="stSidebarCollapsedControl"],
+[data-testid="collapsedControl"],
+[data-testid="stSidebarCollapseButton"],
+button[kind="headerNoPadding"][data-testid="baseButton-headerNoPadding"] {{
+    display: flex !important; visibility: visible !important; opacity: 1 !important;
+    z-index: 1000000 !important;
+}}
+/* The floating expand control when sidebar is collapsed */
+[data-testid="stSidebarCollapsedControl"],
+[data-testid="collapsedControl"] {{
+    position: fixed !important; top: .55rem !important; left: .55rem !important;
+    background: var(--accent) !important; border-radius: 8px !important;
+    padding: .3rem !important; box-shadow: 0 2px 12px rgba(0,0,0,.5) !important;
+}}
+[data-testid="stSidebarCollapsedControl"] svg,
+[data-testid="collapsedControl"] svg {{
+    color: #000 !important; fill: #000 !important; width: 1.5rem; height: 1.5rem;
+}}
+[data-testid="stSidebarCollapseButton"] svg {{ color: var(--text) !important; }}
+/* The Streamlit top header bar can overlap the control — keep it transparent
+   and non-blocking so the expand button is always clickable. */
+[data-testid="stHeader"] {{
+    background: transparent !important; z-index: 1 !important;
+}}
+/* Ensure dataframes scroll internally (both axes) and never clip results */
+[data-testid="stDataFrame"] {{ overflow: auto !important; }}
+[data-testid="stDataFrame"] > div {{ overflow: auto !important; max-width: 100% !important; }}
+.stDataFrame [data-testid="stDataFrameResizable"] {{ overflow: auto !important; }}
+/* Mobile: bigger tap target, sidebar takes most of the screen when open */
+@media (max-width: 768px) {{
+    [data-testid="stSidebarCollapsedControl"],
+    [data-testid="collapsedControl"] {{
+        top: .5rem !important; left: .5rem !important;
+        padding: .45rem !important; transform: scale(1.2);
+    }}
+    [data-testid="stSidebar"] {{ min-width: 82vw !important; }}
 }}
 div[data-baseweb="input"], div[data-baseweb="select"],
 [data-testid="stNumberInputContainer"] {{
@@ -666,19 +847,39 @@ def fetch_price(symbol):
             clean = clean[:-len(sfx)]
     if clean in _CACHE and time.time() - _CACHE[clean][1] < _TTL:
         return _CACHE[clean][0]
+
+    def _fast(t):
+        try:
+            fi = t.fast_info
+        except Exception:
+            return None
+        for key in ("last_price", "lastPrice", "regularMarketPrice"):
+            for getter in (lambda: fi.get(key) if hasattr(fi, "get") else None,
+                           lambda: getattr(fi, key, None),
+                           lambda: fi[key]):
+                try:
+                    v = getter()
+                    if v is not None and not pd.isna(v) and float(v) > 0:
+                        return float(v)
+                except Exception:
+                    pass
+        return None
+
     for sfx in [".NS", ".BO"]:
         try:
             t = yf.Ticker(clean + sfx)
-            val = t.fast_info.get("last_price")
-            if val is not None and not pd.isna(val):
-                p = round(float(val), 2)
+            v = _fast(t)
+            if v is not None:
+                p = round(v, 2)
                 _CACHE[clean] = (p, time.time())
                 return p
-            h = t.history(period="1d", interval="1d", auto_adjust=True)
+            h = t.history(period="5d", interval="1d", auto_adjust=True)
             if h is not None and not h.empty and "Close" in h.columns:
-                p = round(float(h["Close"].iloc[-1]), 2)
-                _CACHE[clean] = (p, time.time())
-                return p
+                lv = h["Close"].dropna()
+                if not lv.empty:
+                    p = round(float(lv.iloc[-1]), 2)
+                    _CACHE[clean] = (p, time.time())
+                    return p
         except Exception:
             continue
     return None
@@ -1099,21 +1300,47 @@ if (st.session_state.last_refresh is None or
     st.session_state.last_refresh = datetime.now()
 
 # ── Tiered background scan ─────────────────────────────────────────────────────
-# FAST TIER  (every 15 min): portfolio signals + news  → ~20-40s
-# SLOW TIER  (every 60 min): sector rotation + picks   → ~45-60s
-# MANUAL ONLY: Universe scanner — never auto-runs (too slow for 500-2000 stocks)
+# FAST TIER (every 5 min):  portfolio signals + news (the core dashboard)
+# DEEP TIER (every 15 min): sector rotation + picks + universe scanner + SMC scan
+#
+# CRITICAL LOAD-ORDER FIX:
+# On first login the dashboard must RENDER FIRST, then scan. Otherwise the page
+# blocks on the full deep scan (can be minutes) before login even completes.
+# We use a `first_render_done` flag: the very first run after login skips all
+# scanning, renders the dashboard immediately, and schedules a rerun. From the
+# 2nd run onward the scans fire normally in the background.
 _now = time.time()
-_fast_due = (st.session_state.last_auto_scan == 0.0 or
-             (_now - st.session_state.last_auto_scan) >= 900)
-_slow_due = (st.session_state.last_slow_scan == 0.0 or
-             (_now - st.session_state.last_slow_scan) >= 3600)
 
 open_raw = raw[raw["status"] == "Open"] if not raw.empty else pd.DataFrame()
-
-# Trade hash: skip signal re-fetch if open trades haven't changed
 _trade_hash = (hash(tuple(sorted(open_raw["id"].tolist())))
                if not open_raw.empty else 0)
 _trades_changed = (_trade_hash != st.session_state._trade_hash)
+
+if not st.session_state.get("first_render_done", False):
+    # PASS 1 — first paint after login: render immediately, defer ALL scanning.
+    st.session_state.first_render_done = True
+    _fast_due = False
+    _deep_due = False
+    st.session_state._kickoff_scan = True
+    st.session_state._scan_stage = "fast"   # next pass does the fast scan
+elif st.session_state.get("_scan_stage") == "fast":
+    # PASS 2 — fast scan only (signals + news, ~20-40s). Deep scan still deferred
+    # so the core dashboard becomes usable before the heavy universe sweep.
+    _fast_due = True
+    _deep_due = False
+    st.session_state._scan_stage = "deep"
+    st.session_state._kickoff_scan = True   # one more rerun to start deep scan
+elif st.session_state.get("_scan_stage") == "deep":
+    # PASS 3 — deep scan (sector + universe + SMC). After this, normal timers.
+    _fast_due = False
+    _deep_due = True
+    st.session_state._scan_stage = "done"
+else:
+    # Steady state — scans fire only on their 5-min / 15-min schedules.
+    _fast_due = (st.session_state.last_auto_scan == 0.0 or
+                 (_now - st.session_state.last_auto_scan) >= 300)   # 5 min
+    _deep_due = (st.session_state.last_slow_scan == 0.0 or
+                 (_now - st.session_state.last_slow_scan) >= 900)    # 15 min
 
 if _fast_due:
     n_open = len(open_raw)
@@ -1132,8 +1359,9 @@ if _fast_due:
             st.session_state.last_auto_scan = _now
             st.toast(f"⚠️ Signal refresh error: {_e}", icon="⚠️")
 
-if _slow_due:
-    with st.spinner("🔄 Refreshing sector rotation…"):
+if _deep_due:
+    with st.spinner("🔄 Deep scan: sector rotation · universe · SMC setups…"):
+        # Sector rotation + picks
         try:
             st.session_state.sector_cache  = sector_rotation()
             if (st.session_state.sector_cache is not None and
@@ -1145,10 +1373,23 @@ if _slow_due:
             else:
                 st.session_state.outlook_cache = pd.DataFrame()
                 st.session_state.picks_cache   = []
-            st.session_state.last_slow_scan = _now
         except Exception as _e:
-            st.session_state.last_slow_scan = _now
             st.toast(f"⚠️ Sector refresh error: {_e}", icon="⚠️")
+        # Universe scanner
+        try:
+            _usd = generate_market_scanner()
+            st.session_state.scanner_cache = (_usd if (_usd is not None and not _usd.empty)
+                                              else pd.DataFrame())
+        except Exception as _e:
+            st.toast(f"⚠️ Universe scan error: {_e}", icon="⚠️")
+        # SMC setup scan (if available)
+        try:
+            if scan_for_smc_setups is not None:
+                st.session_state.smc_scan_cache = scan_for_smc_setups(
+                    min_quality="B", action_filter="All")
+        except Exception as _e:
+            st.toast(f"⚠️ SMC scan error: {_e}", icon="⚠️")
+        st.session_state.last_slow_scan = _now
 
 # ── Portfolio metrics ──────────────────────────────────────────────────────────
 if not df.empty:
@@ -1330,12 +1571,12 @@ with st.sidebar:
     with c2:
         _elapsed_fast = time.time() - st.session_state.last_auto_scan
         _elapsed_slow = time.time() - st.session_state.last_slow_scan
-        _nxt_fast = max(0, int((900 - _elapsed_fast) // 60))
-        _nxt_slow = max(0, int((3600 - _elapsed_slow) // 60))
+        _nxt_fast = max(0, int((300 - _elapsed_fast) // 60))
+        _nxt_slow = max(0, int((900 - _elapsed_slow) // 60))
         st.markdown(
             f'<div style="font-size:.7rem;color:var(--muted);padding-top:.5rem;'
             f'font-weight:600;line-height:1.6">'
-            f'⚡ {_nxt_fast}m · 🔄 {_nxt_slow}m</div>',
+            f'⚡ {_nxt_fast}m core · 🔄 {_nxt_slow}m deep</div>',
             unsafe_allow_html=True)
 
     st.markdown("<br>", unsafe_allow_html=True)
@@ -2769,9 +3010,13 @@ elif _page == 'smc':
                         "SMC": s["smc_score"],
                     })
                 setup_df = pd.DataFrame(rows)
+                # Dynamic height: ~35px per row + header, capped so it scrolls
+                _dyn_h = min(max(len(setup_df) * 36 + 40, 200), 600)
                 st.dataframe(
-                    setup_df, hide_index=True, height=440, use_container_width=True,
+                    setup_df, hide_index=True, height=_dyn_h,
+                    use_container_width=True, row_height=35,
                     column_config={
+                        "Stock":  st.column_config.TextColumn("Stock", width="small", pinned=True),
                         "Action": st.column_config.TextColumn("Action", width="small"),
                         "Grade":  st.column_config.TextColumn("Grade", width="small"),
                         "CMP":    st.column_config.NumberColumn("CMP", format="₹%.2f"),
@@ -2790,3 +3035,12 @@ elif _page == 'smc':
                 st.info("No setups found at this quality/action filter. Try lowering to grade B or 'All' actions.")
         else:
             st.info("Click **🎯 Scan Setups** to find SMC trade setups across the universe.")
+
+# ── Post-render scan kickoff ───────────────────────────────────────────────────
+# The dashboard has now fully rendered. If this was the first paint after login,
+# trigger ONE immediate rerun so the deferred scans begin on the next pass —
+# the user sees a complete dashboard instantly, then data fills in moments later.
+if st.session_state.get("_kickoff_scan", False):
+    st.session_state._kickoff_scan = False
+    time.sleep(0.1)
+    st.rerun()
