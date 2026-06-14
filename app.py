@@ -18,6 +18,7 @@ import plotly.express as px
 import plotly.graph_objects as go
 from datetime import datetime
 import time
+import re 
 import hashlib
 
 from signals import (
@@ -183,14 +184,15 @@ except Exception:
 # provides an IPv4 address. We explicitly set search_path=public to prevent the
 # "InvalidSchemaName" errors that PgBouncer otherwise causes.
 
+# ── SUPABASE POOLER CONNECTION (IPv4 Compatible) ─────────────────────────────
 _PG_PARAMS = dict(
-    host            = "aws-1-ap-northeast-2.pooler.supabase.com", # Pooler URL (Check Supabase Dashboard!)
-    port            = 5432,                                      # Transaction pooler port
+    host            = "aws-1-ap-northeast-2.pooler.supabase.com",
+    port            = 5432,                                      
     dbname          = "postgres",
-    user            = "postgres.ktgajqymvuaqeyiropmt",           # Pooler requires project ref in username
+    user            = "postgres.ktgajqymvuaqeyiropmt",          
     password        = "MYfOKRcopF8tH2S1",
     sslmode         = "require",
-    options         = "-c search_path=public",                   # Fixes InvalidSchemaName!
+    options         = "-c search_path=public",                   # <-- Critical: Fixes InvalidSchemaName
     connect_timeout = 15,
 )
 _USE_PG = True
@@ -231,19 +233,15 @@ _PG_TABLES = ("users", "trades", "portfolio_history", "tg_config", "watchlist")
 
 
 def _pg_qualify(sql):
-    """Hardcode public. prefix into every table name in the SQL string.
-    This runs BEFORE psycopg2 sees the query so it's guaranteed to work
-    regardless of search_path, pooler behaviour, or connection options."""
+    """Hardcode public. prefix into every table name using regex.
+    This fixes the bug where 'INSERT INTO table(' was missed because of the parenthesis."""
     s = sql
     for tbl in _PG_TABLES:
-        # Replace bare table name with public.table — cover all SQL contexts.
-        # We replace the longer patterns first to avoid partial matches.
-        for kw in ("TABLE IF NOT EXISTS ", "DELETE FROM ", "UPDATE ",
-                   "INSERT INTO ", "FROM ", "JOIN "):
-            bare = kw + tbl
-            qualified = kw + _PG_SCHEMA_PREFIX + tbl
-            if bare in s:
-                s = s.replace(bare, qualified)
+        # Match the table name only when preceded by SQL keywords, 
+        # and followed by a word boundary (space, parenthesis, semicolon, etc.)
+        pattern = r'(TABLE IF NOT EXISTS|DELETE FROM|UPDATE|INSERT INTO|FROM|JOIN)\s+' + re.escape(tbl) + r'\b'
+        replacement = rf'\1 public.' + tbl
+        s = re.sub(pattern, replacement, s, flags=re.IGNORECASE)
     return s
 
 
