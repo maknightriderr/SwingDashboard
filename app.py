@@ -70,18 +70,11 @@ def _cached_market_regime():
 @st.cache_data(ttl=300, show_spinner=False)
 def _cached_prices(symbols_tuple):
     """Fetch live prices for a tuple of symbols. Tuple is hashable → cacheable.
-    Robust across yfinance versions: tries fast_info, then history() as fallback.
-    Handles Nifty/Sensex indices properly."""
+    Robust across yfinance versions: tries fast_info (dict OR attribute style),
+    then history() as a fallback. Never raises — missing prices just stay absent."""
     import yfinance as _yf
     import pandas as _pd
     prices = {}
-
-    # Map common names to their Yahoo Finance index tickers
-    INDEX_ALIASES = {
-        "NIFTY": "^NSEI", "NIFTY50": "^NSEI", "NIFTY 50": "^NSEI",
-        "SENSEX": "^BSESN", "BSE SENSEX": "^BSESN",
-        "BANKNIFTY": "^NSEBANK", "BANK NIFTY": "^NSEBANK",
-    }
 
     def _extract_fast_price(t):
         """Get last price from fast_info regardless of yfinance API shape."""
@@ -90,19 +83,23 @@ def _cached_prices(symbols_tuple):
             fi = t.fast_info
         except Exception:
             return None
+        # Try several access styles — yfinance changed this API across versions
         for key in ("last_price", "lastPrice", "regularMarketPrice"):
+            # dict-style .get
             try:
                 v = fi.get(key) if hasattr(fi, "get") else None
                 if v is not None and not _pd.isna(v):
                     return float(v)
             except Exception:
                 pass
+            # attribute-style
             try:
                 v = getattr(fi, key, None)
                 if v is not None and not _pd.isna(v):
                     return float(v)
             except Exception:
                 pass
+            # key-index style
             try:
                 v = fi[key]
                 if v is not None and not _pd.isna(v):
@@ -113,22 +110,11 @@ def _cached_prices(symbols_tuple):
 
     for sym in symbols_tuple:
         clean = str(sym).upper().strip()
-        
-        # Apply alias if it's an index name
-        clean = INDEX_ALIASES.get(clean, clean)
-        is_index = clean.startswith("^")
-
-        # Strip suffixes only for regular stocks
-        if not is_index:
-            for sfx in [".NS", ".BO", ".NSE", ".BSE"]:
-                if clean.endswith(sfx):
-                    clean = clean[:-len(sfx)]
-        
+        for sfx in [".NS", ".BO", ".NSE", ".BSE"]:
+            if clean.endswith(sfx):
+                clean = clean[:-len(sfx)]
         got = False
-        # Indices don't need suffixes, stocks need .NS or .BO
-        suffixes_to_try = [""] if is_index else [".NS", ".BO"]
-        
-        for sfx in suffixes_to_try:
+        for sfx in [".NS", ".BO"]:
             try:
                 t = _yf.Ticker(clean + sfx)
                 # 1) fast_info
@@ -179,34 +165,12 @@ DB = "trades_v2.db"   # SQLite fallback (used if psycopg2 unavailable)
 
 # ── SUPABASE DIRECT CONNECTION (no pooler) ─────────────────────────────────────
 # project ref = ktgajqymvuaqeyiropmt  (from the pooler username)
-PG_PARAMS = dict(
-    host            = "ep-cold-morning-atyjado2.c-9.us-east-1.aws.neon.tech",
-    port            = 5432,                                     
-    dbname          = "neondb",
-    user            = "neondb_owner",          
-    password        = "npg_jZxyXU6vRm1P",
-    sslmode         = "require",
-    connect_timeout = 15,
-)
-_USE_PG = True
-
-try:
-    import psycopg2
-    import psycopg2.extras
-except ImportError:
-    _USE_PG = False
-
-
-# ── Database ───────────────────────────────────────────────────────────────────
-DB = "trades_v2.db"   # SQLite fallback
-
-# ── NEON DATABASE CONNECTION ──────────────────────────────────────────────────
 _PG_PARAMS = dict(
-    host            = "ep-cold-morning-atyjado2.c-9.us-east-1.aws.neon.tech",
-    port            = 5432,                                     
-    dbname          = "neondb",
-    user            = "neondb_owner",          
-    password        = "npg_jZxyXU6vRm1P",
+    host            = "db.ktgajqymvuaqeyiropmt.supabase.co",
+    port            = 5432,
+    dbname          = "postgres",
+    user            = "postgres",
+    password        = "MYfOKRcopF8tH2S1",
     sslmode         = "require",
     connect_timeout = 15,
 )
@@ -220,7 +184,8 @@ except ImportError:
 
 
 def _pg_conn():
-    """Open a Neon Postgres connection."""
+    """Open a Supabase Postgres connection using explicit keyword params.
+    Never passes a URL string so libpq never mis-parses the dotted username."""
     last_err = None
     for _attempt in range(2):
         try:
@@ -233,18 +198,45 @@ def _pg_conn():
     raise last_err
 
 def _q(sql):
-    """Translate SQLite SQL → Postgres '%s' placeholders."""
+    """Translate SQLite SQL → Postgres '%s' placeholders and 'INSERT OR REPLACE'.
+    Schema qualification is handled directly in db() below."""
     if not _USE_PG:
         return sql
     s = sql.replace("?", "%s")
     s = s.replace("INSERT OR REPLACE INTO", "INSERT INTO")
     return s
 
+
+_PG_SCHEMA_PREFIX = "public."
+_PG_TABLES = ("users", "trades", "portfolio_history", "tg_config", "watchlist")
+
+
+def _pg_qualify(sql):
+    """Hardcode public. prefix into every table name in the SQL string.
+    This runs BEFORE psycopg2 sees the query so it's guaranteed to work
+    regardless of search_path, pooler behaviour, or connection options."""
+    s = sql
+    for tbl in _PG_TABLES:
+        # Replace bare table name with public.table — cover all SQL contexts.
+        # We replace the longer patterns first to avoid partial matches.
+        for kw in ("TABLE IF NOT EXISTS ", "DELETE FROM ", "UPDATE ",
+                   "INSERT INTO ", "FROM ", "JOIN "):
+            bare = kw + tbl
+            qualified = kw + _PG_SCHEMA_PREFIX + tbl
+            if bare in s:
+                s = s.replace(bare, qualified)
+    return s
+
+
 def db(sql, params=(), fetch=False):
     if _USE_PG:
         conn = _pg_conn()
         cur  = conn.cursor()
-        pg_sql = _q(sql)
+        # Step 1: _q converts placeholders and SQLite-only syntax (INSERT OR REPLACE→INSERT)
+        # Step 2: _pg_qualify adds public. to every table name
+        # Order matters: _q must run first so INSERT OR REPLACE → INSERT INTO
+        # before _pg_qualify looks for "INSERT INTO tg_config" etc.
+        pg_sql = _pg_qualify(_q(sql))
         cur.execute(pg_sql, params)
         conn.commit()
         result = cur.fetchall() if fetch else None
@@ -261,22 +253,23 @@ def db(sql, params=(), fetch=False):
 def init_db():
     if _USE_PG:
         conn = _pg_conn(); cur = conn.cursor()
-        cur.execute("""CREATE TABLE IF NOT EXISTS users(
+        cur.execute("CREATE SCHEMA IF NOT EXISTS public")
+        cur.execute("""CREATE TABLE IF NOT EXISTS public.users(
             id SERIAL PRIMARY KEY,
             username TEXT UNIQUE NOT NULL,
             password_hash TEXT NOT NULL)""")
-        cur.execute("""CREATE TABLE IF NOT EXISTS trades(
+        cur.execute("""CREATE TABLE IF NOT EXISTS public.trades(
             id SERIAL PRIMARY KEY, user_id INTEGER, stock TEXT NOT NULL,
             quantity REAL NOT NULL, buy_at REAL NOT NULL, sell_at REAL,
             status TEXT DEFAULT 'Open',
             added_date TEXT DEFAULT to_char(CURRENT_DATE,'YYYY-MM-DD'),
             closed_date TEXT)""")
-        cur.execute("""CREATE TABLE IF NOT EXISTS portfolio_history(
+        cur.execute("""CREATE TABLE IF NOT EXISTS public.portfolio_history(
             id SERIAL PRIMARY KEY, user_id INTEGER, snapshot_date TEXT,
             total_invested REAL, current_value REAL)""")
-        cur.execute("""CREATE TABLE IF NOT EXISTS tg_config(
+        cur.execute("""CREATE TABLE IF NOT EXISTS public.tg_config(
             user_id INTEGER PRIMARY KEY, bot_token TEXT, chat_id TEXT)""")
-        cur.execute("""CREATE TABLE IF NOT EXISTS watchlist(
+        cur.execute("""CREATE TABLE IF NOT EXISTS public.watchlist(
             id SERIAL PRIMARY KEY, user_id INTEGER, stock TEXT NOT NULL,
             target_price REAL, notes TEXT,
             added_date TEXT DEFAULT to_char(CURRENT_DATE,'YYYY-MM-DD'))""")
@@ -321,7 +314,7 @@ def get_trades(user_id):
     if _USE_PG:
         conn = _pg_conn()
         df = pd.read_sql_query(
-            "SELECT * FROM trades WHERE user_id=%s ORDER BY id DESC",
+            "SELECT * FROM public.trades WHERE user_id=%s ORDER BY id DESC",
             conn, params=(user_id,))
         conn.close()
         return df
@@ -336,7 +329,7 @@ def get_history(user_id):
     if _USE_PG:
         conn = _pg_conn()
         df = pd.read_sql_query(
-            "SELECT * FROM portfolio_history WHERE user_id=%s ORDER BY snapshot_date",
+            "SELECT * FROM public.portfolio_history WHERE user_id=%s ORDER BY snapshot_date",
             conn, params=(user_id,))
         conn.close()
         return df
@@ -351,7 +344,7 @@ def get_watchlist(user_id):
     if _USE_PG:
         conn = _pg_conn()
         df = pd.read_sql_query(
-            "SELECT * FROM watchlist WHERE user_id=%s ORDER BY id DESC",
+            "SELECT * FROM public.watchlist WHERE user_id=%s ORDER BY id DESC",
             conn, params=(user_id,))
         conn.close()
         return df
@@ -963,16 +956,13 @@ ul[role="listbox"] li[aria-selected="true"] {{
 # ── Price Fetcher & Logic ───────────────────────────────────────────────────────
 _CACHE = {}
 _TTL = 300
-INDEX_ALIASES_GLOBAL = {
-    "NIFTY": "^NSEI", "NIFTY50": "^NSEI", "NIFTY 50": "^NSEI",
-    "SENSEX": "^BSESN", "BSE SENSEX": "^BSESN",
-    "BANKNIFTY": "^NSEBANK", "BANK NIFTY": "^NSEBANK",
-}
+
 
 def fetch_price(symbol):
     clean = str(symbol).upper().strip()
-    clean = INDEX_ALIASES_GLOBAL.get(clean, clean)
-    is_index = clean.startswith("^")
+    for sfx in [".NS", ".BO", ".NSE", ".BSE"]:
+        if clean.endswith(sfx):
+            clean = clean[:-len(sfx)]
     if clean in _CACHE and time.time() - _CACHE[clean][1] < _TTL:
         return _CACHE[clean][0]
 
@@ -993,13 +983,7 @@ def fetch_price(symbol):
                     pass
         return None
 
-    if not is_index:
-        for sfx in [".NS", ".BO", ".NSE", ".BSE"]:
-            if clean.endswith(sfx):
-                clean = clean[:-len(sfx)]
-
-    suffixes_to_try = [""] if is_index else [".NS", ".BO"]
-    for sfx in suffixes_to_try:
+    for sfx in [".NS", ".BO"]:
         try:
             t = yf.Ticker(clean + sfx)
             v = _fast(t)
