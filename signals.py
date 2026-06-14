@@ -266,7 +266,7 @@ def sanitize_ticker(sym):
 
 def _bulk_fetch_history(symbols, period="1y"):
     results = {}
-    with ThreadPoolExecutor(max_workers=5) as executor:
+    with ThreadPoolExecutor(max_workers=20) as executor:
         def fetch_single(sym):
             if sym.startswith("^"):
                 return sym, _fetch_history(sym, period)
