@@ -165,12 +165,12 @@ DB = "trades_v2.db"   # SQLite fallback (used if psycopg2 unavailable)
 
 # ── SUPABASE DIRECT CONNECTION (no pooler) ─────────────────────────────────────
 # project ref = ktgajqymvuaqeyiropmt  (from the pooler username)
-_PG_PARAMS = dict(
-    host            = "db.ktgajqymvuaqeyiropmt.supabase.co",
-    port            = 5432,
-    dbname          = "postgres",
-    user            = "postgres",
-    password        = "MYfOKRcopF8tH2S1",
+PG_PARAMS = dict(
+    host            = "ep-cold-morning-atyjado2.c-9.us-east-1.aws.neon.tech",
+    port            = 5432,                                     
+    dbname          = "neondb",
+    user            = "neondb_owner",          
+    password        = "npg_jZxyXU6vRm1P",
     sslmode         = "require",
     connect_timeout = 15,
 )
