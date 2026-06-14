@@ -279,6 +279,7 @@ def db(sql, params=(), fetch=False):
 def init_db():
     if _USE_PG:
         conn = _pg_conn(); cur = conn.cursor()
+        cur.execute("CREATE SCHEMA IF NOT EXISTS public")
         cur.execute("""CREATE TABLE IF NOT EXISTS public.users(
             id SERIAL PRIMARY KEY,
             username TEXT UNIQUE NOT NULL,
