@@ -218,25 +218,57 @@ def _pg_conn():
     raise last_err
 
 def _q(sql):
-    """Translate SQLite SQL → Postgres:
-    1. '?' → '%s'
-    2. Schema-qualify every table name with 'public.' (pooler strips search_path)
-    3. 'INSERT OR REPLACE' → 'INSERT' (not valid in Postgres; handled separately)
-    SQLite path returns sql unchanged."""
+    """Translate SQLite SQL → Postgres '%s' placeholders and 'INSERT OR REPLACE'.
+    Schema qualification is handled directly in db() below."""
     if not _USE_PG:
         return sql
     s = sql.replace("?", "%s")
-    # Fix SQLite-only syntax
     s = s.replace("INSERT OR REPLACE INTO", "INSERT INTO")
-    # Schema-qualify all known tables wherever they appear after a SQL keyword
-    for tbl in ("users", "trades", "portfolio_history", "tg_config", "watchlist"):
-        for kw in ("FROM ", "INTO ", "UPDATE ", "JOIN ", "DELETE FROM ",
-                   "TABLE IF NOT EXISTS "):
-            old = kw + tbl
-            new = kw + "public." + tbl
-            if old in s:
-                s = s.replace(old, new)
     return s
+
+
+_PG_SCHEMA_PREFIX = "public."
+_PG_TABLES = ("users", "trades", "portfolio_history", "tg_config", "watchlist")
+
+
+def _pg_qualify(sql):
+    """Hardcode public. prefix into every table name in the SQL string.
+    This runs BEFORE psycopg2 sees the query so it's guaranteed to work
+    regardless of search_path, pooler behaviour, or connection options."""
+    s = sql
+    for tbl in _PG_TABLES:
+        # Replace bare table name with public.table — cover all SQL contexts.
+        # We replace the longer patterns first to avoid partial matches.
+        for kw in ("TABLE IF NOT EXISTS ", "DELETE FROM ", "UPDATE ",
+                   "INSERT INTO ", "FROM ", "JOIN "):
+            bare = kw + tbl
+            qualified = kw + _PG_SCHEMA_PREFIX + tbl
+            if bare in s:
+                s = s.replace(bare, qualified)
+    return s
+
+
+def db(sql, params=(), fetch=False):
+    if _USE_PG:
+        conn = _pg_conn()
+        cur  = conn.cursor()
+        # Step 1: _q converts placeholders and SQLite-only syntax (INSERT OR REPLACE→INSERT)
+        # Step 2: _pg_qualify adds public. to every table name
+        # Order matters: _q must run first so INSERT OR REPLACE → INSERT INTO
+        # before _pg_qualify looks for "INSERT INTO tg_config" etc.
+        pg_sql = _pg_qualify(_q(sql))
+        cur.execute(pg_sql, params)
+        conn.commit()
+        result = cur.fetchall() if fetch else None
+        cur.close(); conn.close()
+        return result
+    else:
+        conn = sqlite3.connect(DB)
+        cur = conn.execute(sql, params)
+        conn.commit()
+        result = cur.fetchall() if fetch else None
+        conn.close()
+        return result
 
 def init_db():
     if _USE_PG:
@@ -282,22 +314,6 @@ def init_db():
             id INTEGER PRIMARY KEY AUTOINCREMENT, user_id INTEGER, stock TEXT NOT NULL,
             target_price REAL, notes TEXT, added_date TEXT DEFAULT(date('now')))""")
         c.commit(); c.close()
-
-def db(sql, params=(), fetch=False):
-    if _USE_PG:
-        conn = _pg_conn(); cur = conn.cursor()
-        cur.execute(_q(sql), params)
-        conn.commit()
-        result = cur.fetchall() if fetch else None
-        cur.close(); conn.close()
-        return result
-    else:
-        conn = sqlite3.connect(DB)
-        cur = conn.execute(sql, params)
-        conn.commit()
-        result = cur.fetchall() if fetch else None
-        conn.close()
-        return result
 
 def register_user(username, password):
     try:
