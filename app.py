@@ -394,9 +394,10 @@ for k, v in [("user_id", None), ("username", None), ("edit_id", None), ("close_i
              ("outlook_cache", None), ("scanner_cache", None), ("trap_scan_cache", None),
              ("corp_actions_cache", None), ("selected_scanner_sector", "All Sectors"),
              ("custom_stocks_input", ""), ("active_page", "portfolio"),
-             ("smc_scan_cache", None),
+              ("smc_scan_cache", None),
              ("first_render_done", False), ("_kickoff_scan", False),
              ("_scan_stage", "done"),
+             ("_deep_stage", "idle"),
              ("filter_status", "All"),
              ("filter_pnl", "All"), ("search", ""), ("theme", "Obsidian & Gold (Institutional)")]:
     if k not in st.session_state:
@@ -1380,37 +1381,54 @@ if _fast_due:
             st.session_state.last_auto_scan = _now
             st.toast(f"⚠️ Signal refresh error: {_e}", icon="⚠️")
 
-if _deep_due:
-    with st.spinner("🔄 Deep scan: sector rotation · universe · SMC setups…"):
-        # Sector rotation + picks
+# ── Staged deep scan: sector → universe → SMC, one stage per rerun ──────────
+# When the 15-min timer fires (PASS 3 or steady-state sets _deep_due), we start
+# the pipeline at the "sector" stage. Each stage runs alone, paints, then
+# triggers a quick rerun to advance — so the UI never blocks on all three.
+if _deep_due and st.session_state._deep_stage == "idle":
+    st.session_state._deep_stage = "sector"
+
+_stage = st.session_state._deep_stage
+
+if _stage == "sector":
+    with st.spinner("🔄 Deep scan 1/3: sector rotation…"):
         try:
-            st.session_state.sector_cache  = sector_rotation()
+            st.session_state.sector_cache = sector_rotation()
             if (st.session_state.sector_cache is not None and
                     not st.session_state.sector_cache.empty):
                 st.session_state.outlook_cache = predict_sector_outlook(
                     st.session_state.sector_cache)
-                st.session_state.picks_cache   = find_sector_picks(
+                st.session_state.picks_cache = find_sector_picks(
                     st.session_state.sector_cache.head(5)["sector"].tolist(), 3)
             else:
                 st.session_state.outlook_cache = pd.DataFrame()
-                st.session_state.picks_cache   = []
+                st.session_state.picks_cache = []
         except Exception as _e:
             st.toast(f"⚠️ Sector refresh error: {_e}", icon="⚠️")
-        # Universe scanner
+    st.session_state._deep_stage = "universe"
+    st.session_state._kickoff_scan = True
+
+elif _stage == "universe":
+    with st.spinner("🔄 Deep scan 2/3: universe scanner…"):
         try:
             _usd = generate_market_scanner()
             st.session_state.scanner_cache = (_usd if (_usd is not None and not _usd.empty)
                                               else pd.DataFrame())
         except Exception as _e:
             st.toast(f"⚠️ Universe scan error: {_e}", icon="⚠️")
-        # SMC setup scan (if available)
+    st.session_state._deep_stage = "smc"
+    st.session_state._kickoff_scan = True
+
+elif _stage == "smc":
+    with st.spinner("🔄 Deep scan 3/3: SMC setups…"):
         try:
             if scan_for_smc_setups is not None:
                 st.session_state.smc_scan_cache = scan_for_smc_setups(
                     min_quality="B", action_filter="All")
         except Exception as _e:
             st.toast(f"⚠️ SMC scan error: {_e}", icon="⚠️")
-        st.session_state.last_slow_scan = _now
+    st.session_state._deep_stage = "idle"          # cycle complete
+    st.session_state.last_slow_scan = _now         # restart 15-min timer
 
 # ── Portfolio metrics ──────────────────────────────────────────────────────────
 if not df.empty:
