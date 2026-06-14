@@ -2166,4 +2166,881 @@ elif _page == 'metrics':
             '<div class="cards">'
             + card("Win Rate",      f'{a["win_rate"]}%',
                    f'{a["wins"]}W / {a["losses"]}L',
-                   "green" if a["wi
+                   "green" if a["win_rate"] >= 50 else "red")
+            + card("Profit Factor", str(a["profit_factor"]), "Gross P / Gross L")
+            + card("Expectancy",    f'₹{a["expectancy"]}')
+            + card("Avg Win",       f'₹{a["avg_win"]:,.0f}')
+            + card("Avg Loss",      f'₹{a["avg_loss"]:,.0f}', "", "red")
+            + card("Max Drawdown",  f'₹{a["max_drawdown"]:,.0f}', "", "red")
+            + card("Avg Hold",      f'{a["avg_hold_days"]}d')
+            + card("Sharpe",        str(a["sharpe"]))
+            + '</div>',
+            unsafe_allow_html=True)
+
+# ── Watchlist ────────────────────────────────────────────────────────────────
+elif _page == 'watchlist':
+    st.markdown('<div class="sec">👁 Target Watchlist</div>', unsafe_allow_html=True)
+
+    def drop_watchlist_cb(w_id, s_name):
+        delete_watchlist_item(w_id, UID)
+        st.toast(f"🗑️ Dropped {s_name}")
+
+    with st.form(key="add_stock_form", clear_on_submit=True):
+        col_inp, col_btn = st.columns([4, 1])
+        with col_inp:
+            new_stock = st.text_input(
+                "Stock Ticker", placeholder="e.g., SBIN, TATAMOTORS",
+                label_visibility="collapsed").upper().strip()
+        with col_btn:
+            if st.form_submit_button("➕ Add", width="stretch") and new_stock:
+                add_watchlist(UID, new_stock)
+                st.toast(f"🚀 {new_stock} added!")
+                st.rerun()
+
+    wdf = get_watchlist(UID)
+    if not wdf.empty:
+        st.markdown('<div class="sec" style="margin-top:1rem">Live Monitored Assets</div>',
+                    unsafe_allow_html=True)
+        wl_symbols = wdf["stock"].tolist()
+        with st.spinner("Fetching live metrics..."):
+            wl_data = _bulk_fetch_history(wl_symbols, period="3mo")
+
+        cols = st.columns(3)
+        for i, row in wdf.iterrows():
+            stock = row["stock"]
+            wid   = int(row["id"])
+            col   = cols[i % 3]
+            with col:
+                df_hist = wl_data.get(stock)
+                ind = compute_indicators(stock, period="3mo", prefetched_df=df_hist)
+                if ind:
+                    cmp_v  = ind.get("cmp", "—")
+                    rsi_v  = ind.get("rsi", "—")
+                    trend  = ind.get("trend", "—")
+                    sup    = ind.get("support", "—")
+                    res    = ind.get("resistance", "—")
+                    ema9   = ind.get("ema9",  ind.get("ema20", "—"))
+                    ema21  = ind.get("ema21", ind.get("ema50", "—"))
+                    brd = (theme_t["green"]  if "Uptrend"   in str(trend)
+                           else theme_t["red"] if "Downtrend" in str(trend)
+                           else theme_t["yellow"])
+                    st.markdown(f"""
+<div style="background:var(--card);border-top:4px solid {brd};border-radius:8px;
+     padding:1rem;box-shadow:0 4px 6px rgba(0,0,0,.05);margin-bottom:.5rem">
+  <div style="font-size:1.1rem;font-weight:800;color:var(--text)">{stock}</div>
+  <div style="font-size:.75rem;color:var(--muted);margin-bottom:.5rem;
+       text-transform:uppercase">{get_sector(stock)}</div>
+  <div style="font-size:.8rem;line-height:1.6;color:var(--text)">
+    <b>CMP:</b> ₹{cmp_v}<br>
+    <b>RSI:</b> {rsi_v} | <b>Trend:</b> {trend}<br>
+    <b>EMA9:</b> ₹{ema9} | <b>EMA21:</b> ₹{ema21}<br>
+    <b>Sup:</b> ₹{sup} | <b>Res:</b> ₹{res}
+  </div>
+</div>""", unsafe_allow_html=True)
+                else:
+                    st.markdown(f"""
+<div style="background:var(--card);border-top:4px solid var(--muted);
+     border-radius:8px;padding:1rem;margin-bottom:.5rem">
+  <div style="font-size:1.1rem;font-weight:800;color:var(--text)">{stock}</div>
+  <div style="font-size:.85rem;color:var(--red);margin-bottom:.5rem">
+    Data Unavailable — check symbol</div>
+</div>""", unsafe_allow_html=True)
+
+                st.button("🗑️ Drop", key=f"wl_del_{wid}",
+                          on_click=drop_watchlist_cb,
+                          args=(wid, stock), width="stretch")
+    else:
+        st.info("Watchlist empty. Add a ticker above.")
+
+# ── Export ───────────────────────────────────────────────────────────────────
+elif _page == 'export':
+    if df.empty:
+        st.info("No data available for export.")
+    else:
+        st.markdown('<div class="sec">Raw Database Export</div>',
+                    unsafe_allow_html=True)
+        st.dataframe(df)
+        csv = df.to_csv(index=False).encode("utf-8")
+        st.download_button(
+            "⬇️ Download CSV", csv,
+            file_name=f"swing_portfolio_{datetime.now().strftime('%Y%m%d')}.csv",
+            mime="text/csv")
+
+# ── Signal Scores ────────────────────────────────────────────────────────────
+elif _page == 'scores':
+    st.markdown('<div class="sec">🎯 signals.py v12 — Component Scorecard</div>',
+                unsafe_allow_html=True)
+    render_score_dashboard()
+    st.markdown("""
+<div style="margin-top:1rem;padding:1rem;background:rgba(16,185,129,.08);
+     border:1px solid rgba(16,185,129,.3);border-radius:8px;font-size:.85rem;
+     color:var(--muted);line-height:1.8">
+<b style="color:var(--text)">✅ All v12 priority fixes shipped:</b><br>
+1. <b>MACD</b> — single-pass crossover + histogram momentum flags<br>
+2. <b>Supertrend</b> — numpy array loop, Wilder ATR(10), mult 2.5<br>
+3. <b>ATR</b> — Wilder's EWM smoothing (matches Zerodha/TradingView)<br>
+4. <b>RSI</b> — adjust=False on all ewm() + explicit 100/0 edges<br>
+5. <b>VWAP</b> — 20-day rolling + price_vs_vwap deviation<br>
+6. <b>Fibonacci</b> — scipy swing-peak detection, not fixed window<br>
+7. <b>Risk Engine</b> — unified across signals, picks, and scanner
+</div>""", unsafe_allow_html=True)
+
+# ── Trap Scanner ─────────────────────────────────────────────────────────────
+elif _page == 'traps':
+    if not _TRAP_SCANNER_AVAILABLE:
+        st.warning("🪤 Trap Scanner requires the updated **signals.py** (v12+). "
+                   "Deploy the new signals.py from the project outputs to enable this tab.",
+                   icon="⚠️")
+    st.markdown('<div class="sec">🪤 Bull & Bear Trap Scanner — Full Nifty 500</div>',
+                unsafe_allow_html=True)
+
+    # ── Summary banner ─────────────────────────────────────────────────────────
+    trap_data = st.session_state.trap_scan_cache
+    if trap_data:
+        bull_n = trap_data.get("bull_count", 0)
+        bear_n = trap_data.get("bear_count", 0)
+        scanned = trap_data.get("scanned", 0)
+        liquid  = trap_data.get("liquid", 0)
+        ts      = trap_data.get("timestamp", "—")
+        st.markdown(
+            f'<div style="display:flex;gap:1rem;flex-wrap:wrap;margin-bottom:1.5rem">'
+            f'<div style="background:rgba(239,68,68,.1);border:1px solid rgba(239,68,68,.3);'
+            f'border-radius:10px;padding:.7rem 1.2rem;font-weight:800;font-size:.9rem">'
+            f'🔴 Bull Traps: <span style="color:var(--red)">{bull_n}</span></div>'
+            f'<div style="background:rgba(16,185,129,.1);border:1px solid rgba(16,185,129,.3);'
+            f'border-radius:10px;padding:.7rem 1.2rem;font-weight:800;font-size:.9rem">'
+            f'🟢 Bear Traps: <span style="color:var(--green)">{bear_n}</span></div>'
+            f'<div style="background:var(--card);border:1px solid var(--border);'
+            f'border-radius:10px;padding:.7rem 1.2rem;font-size:.8rem;color:var(--muted);font-weight:600">'
+            f'🔍 Scanned: {scanned} | Liquid: {liquid} | Updated: {ts}</div>'
+            f'</div>',
+            unsafe_allow_html=True)
+
+    # ── Controls ────────────────────────────────────────────────────────────────
+    ctrl1, ctrl2, ctrl3 = st.columns([2, 1, 1])
+    with ctrl1:
+        st.caption("⚡ Sweeps all Nifty 500 liquid stocks for false breakout / breakdown patterns.")
+    with ctrl2:
+        min_conf = st.slider("Min Confidence %", 50, 90, 60, 5, label_visibility="collapsed")
+    with ctrl3:
+        run_trap_scan = st.button("🪤 Run Trap Scan", width="stretch")
+
+    if run_trap_scan:
+        total_sym = len(SECTOR_MAP)
+        with st.spinner(f"🔍 Scanning {total_sym} stocks for trap patterns…"):
+            st.session_state.trap_scan_cache = scan_for_traps(min_confidence=min_conf)
+            trap_data = st.session_state.trap_scan_cache
+            st.toast(
+                f"✅ Found {trap_data['bull_count']} bull traps, "
+                f"{trap_data['bear_count']} bear traps across {trap_data['liquid']} liquid stocks",
+                icon="🪤")
+
+    if not trap_data:
+        st.info("💡 Click **🪤 Run Trap Scan** to sweep the full Nifty 500 for active trap patterns.")
+    else:
+        bull_traps = trap_data.get("bull_traps", [])
+        bear_traps = trap_data.get("bear_traps", [])
+
+        # ── Filter by confidence slider ─────────────────────────────────────────
+        bull_traps = [x for x in bull_traps if x["confidence"] >= min_conf]
+        bear_traps = [x for x in bear_traps if x["confidence"] >= min_conf]
+
+        col_bull, col_bear = st.columns(2)
+
+        # ── BULL TRAPS ──────────────────────────────────────────────────────────
+        with col_bull:
+            st.markdown(
+                f'<div style="font-size:.85rem;font-weight:800;color:var(--red);'
+                f'text-transform:uppercase;letter-spacing:.1em;margin-bottom:.8rem;'
+                f'padding:.5rem .8rem;background:rgba(239,68,68,.08);'
+                f'border-left:4px solid var(--red);border-radius:0 8px 8px 0">'
+                f'🔴 Bull Traps — Exit / Avoid ({len(bull_traps)})</div>',
+                unsafe_allow_html=True)
+
+            if not bull_traps:
+                st.success("✅ No bull traps found at this confidence level.")
+            else:
+                for bt in bull_traps:
+                    conf = bt["confidence"]
+                    conf_clr = "#ef4444" if conf >= 80 else "#f59e0b"
+                    st.markdown(f"""
+<div style="background:var(--card);border:1px solid rgba(239,68,68,.25);
+     border-left:4px solid var(--red);border-radius:10px;
+     padding:1rem 1.2rem;margin-bottom:.8rem;
+     box-shadow:0 4px 12px -4px rgba(239,68,68,.15)">
+  <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:.4rem">
+    <span style="font-weight:800;font-size:.95rem">{bt['stock']}</span>
+    <span style="background:rgba(239,68,68,.12);color:{conf_clr};
+          padding:.2rem .6rem;border-radius:6px;font-size:.75rem;font-weight:800">
+      {conf}% CONF
+    </span>
+  </div>
+  <div style="font-size:.75rem;color:var(--muted);margin-bottom:.5rem">
+    {bt['sector']} · CMP ₹{bt['cmp']} · RSI {bt['rsi'] if bt['rsi'] else '—'}
+  </div>
+  <div style="font-size:.8rem;color:var(--red);font-weight:600;margin-bottom:.5rem">
+    ⚠️ {bt['detail']}
+  </div>
+  <div style="height:4px;background:var(--input);border-radius:2px;margin-bottom:.6rem">
+    <div style="height:4px;border-radius:2px;background:var(--red);width:{min(conf,100)}%"></div>
+  </div>
+  <div style="font-size:.78rem;color:var(--muted);display:grid;grid-template-columns:1fr 1fr;gap:.2rem">
+    <span>📊 Trend: {bt['trend']}</span>
+    <span>📦 Vol: {bt['vol_ratio']:.1f}x avg</span>
+    <span>🛡 Support: ₹{bt['support']}</span>
+    <span>🚧 Resist: ₹{bt['resistance']}</span>
+    <span>🔁 Re-entry SL: ₹{bt['re_entry_sl']}</span>
+    <span>ST: {'🟢 Bull' if bt.get('supertrend_bullish') else '🔴 Bear'}</span>
+  </div>
+  {('<div style="font-size:.72rem;color:var(--muted);margin-top:.4rem">📐 ' + bt['patterns'] + '</div>') if bt.get('patterns') else ''}
+</div>""", unsafe_allow_html=True)
+
+        # ── BEAR TRAPS ──────────────────────────────────────────────────────────
+        with col_bear:
+            st.markdown(
+                f'<div style="font-size:.85rem;font-weight:800;color:var(--green);'
+                f'text-transform:uppercase;letter-spacing:.1em;margin-bottom:.8rem;'
+                f'padding:.5rem .8rem;background:rgba(16,185,129,.08);'
+                f'border-left:4px solid var(--green);border-radius:0 8px 8px 0">'
+                f'🟢 Bear Traps — Buy Opportunity ({len(bear_traps)})</div>',
+                unsafe_allow_html=True)
+
+            if not bear_traps:
+                st.info("No bear traps found at this confidence level.")
+            else:
+                for brt in bear_traps:
+                    conf = brt["confidence"]
+                    conf_clr = "#10b981" if conf >= 80 else "#f59e0b"
+                    rr = brt.get("risk_reward")
+                    rr_str = f"R:R {rr}" if rr else "—"
+                    st.markdown(f"""
+<div style="background:var(--card);border:1px solid rgba(16,185,129,.25);
+     border-left:4px solid var(--green);border-radius:10px;
+     padding:1rem 1.2rem;margin-bottom:.8rem;
+     box-shadow:0 4px 12px -4px rgba(16,185,129,.15)">
+  <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:.4rem">
+    <span style="font-weight:800;font-size:.95rem">{brt['stock']}</span>
+    <span style="background:rgba(16,185,129,.12);color:{conf_clr};
+          padding:.2rem .6rem;border-radius:6px;font-size:.75rem;font-weight:800">
+      {conf}% CONF
+    </span>
+  </div>
+  <div style="font-size:.75rem;color:var(--muted);margin-bottom:.5rem">
+    {brt['sector']} · CMP ₹{brt['cmp']} · RSI {brt['rsi'] if brt['rsi'] else '—'}
+  </div>
+  <div style="font-size:.8rem;color:var(--green);font-weight:600;margin-bottom:.5rem">
+    🪤 {brt['detail']}
+  </div>
+  <div style="height:4px;background:var(--input);border-radius:2px;margin-bottom:.6rem">
+    <div style="height:4px;border-radius:2px;background:var(--green);width:{min(conf,100)}%"></div>
+  </div>
+  <div style="background:rgba(16,185,129,.06);border-radius:6px;
+       padding:.6rem .8rem;margin-bottom:.5rem;
+       display:grid;grid-template-columns:1fr 1fr 1fr;gap:.3rem;font-size:.8rem;font-weight:700">
+    <span>🎯 Entry<br><b>₹{brt['entry']}</b></span>
+    <span>🚀 Target<br><b style="color:var(--green)">₹{brt['target']}</b></span>
+    <span>🛑 SL<br><b style="color:var(--red)">₹{brt['stop_loss']}</b></span>
+  </div>
+  <div style="font-size:.78rem;color:var(--muted);display:grid;grid-template-columns:1fr 1fr;gap:.2rem">
+    <span>📊 {rr_str}</span>
+    <span>📦 Vol: {brt['vol_ratio']:.1f}x avg</span>
+    <span>🛡 Support: ₹{brt['support']}</span>
+    <span>🚧 Resist: ₹{brt['resistance']}</span>
+    <span>📈 Trend: {brt['trend']}</span>
+    <span>ST: {'🟢 Bull' if brt.get('supertrend_bullish') else '🔴 Bear'}</span>
+  </div>
+  {('<div style="font-size:.72rem;color:var(--muted);margin-top:.4rem">📐 ' + brt['patterns'] + '</div>') if brt.get('patterns') else ''}
+</div>""", unsafe_allow_html=True)
+
+        # ── Export trap results ─────────────────────────────────────────────────
+        st.markdown("<br>", unsafe_allow_html=True)
+        if bull_traps or bear_traps:
+            bull_df = pd.DataFrame(bull_traps)[
+                ["stock","sector","cmp","rsi","confidence","detail","support","resistance","trend"]
+            ] if bull_traps else pd.DataFrame()
+            bear_df = pd.DataFrame(bear_traps)[
+                ["stock","sector","cmp","rsi","confidence","detail","entry","target","stop_loss","risk_reward","trend"]
+            ] if bear_traps else pd.DataFrame()
+
+            exp1, exp2 = st.columns(2)
+            with exp1:
+                if not bull_df.empty:
+                    st.download_button(
+                        "⬇️ Export Bull Traps CSV",
+                        bull_df.to_csv(index=False).encode("utf-8"),
+                        file_name=f"bull_traps_{datetime.now().strftime('%Y%m%d_%H%M')}.csv",
+                        mime="text/csv", use_container_width=True)
+            with exp2:
+                if not bear_df.empty:
+                    st.download_button(
+                        "⬇️ Export Bear Traps CSV",
+                        bear_df.to_csv(index=False).encode("utf-8"),
+                        file_name=f"bear_traps_{datetime.now().strftime('%Y%m%d_%H%M')}.csv",
+                        mime="text/csv", use_container_width=True)
+
+# ── Corporate Actions ────────────────────────────────────────────────────────
+elif _page == 'corp_actions':
+    if not _CORP_ACTIONS_AVAILABLE:
+        st.warning("📅 Corporate Actions requires the updated **signals.py** (v12+). "
+                   "Deploy the new signals.py from the project outputs to enable this tab.",
+                   icon="⚠️")
+    st.markdown('<div class="sec">📅 Corporate Actions — Full Nifty 500</div>',
+                unsafe_allow_html=True)
+    st.caption("Dividends · Stock Splits · Bonus Issues — sourced from NSE via yfinance. 6-hour cache.")
+
+    # ── Portfolio holdings quick-view ──────────────────────────────────────────
+    open_syms = raw[raw["status"]=="Open"]["stock"].unique().tolist() if not raw.empty else []
+    if open_syms:
+        st.markdown('<div class="sec" style="margin-top:1rem">📌 Your Holdings</div>',
+                    unsafe_allow_html=True)
+        with st.spinner("Fetching corporate actions for your holdings..."):
+            port_actions = fetch_bulk_corporate_actions(open_syms, max_workers=5)
+
+        p_rows = ""
+        for sym in open_syms:
+            data = port_actions.get(sym, {})
+            div_str  = (f"₹{data['last_dividend']} on {data['last_div_date']}"
+                        if data.get("last_dividend") else "—")
+            exd_str  = (f'<b style="color:var(--yellow)">{data["upcoming_exdate"]}</b>'
+                        if data.get("upcoming_exdate") else "—")
+            spl_str  = (f"{data['splits'][-1]['ratio']}x on {data['splits'][-1]['date']}"
+                        if data.get("splits") else "—")
+            split_badge = ('<span style="background:rgba(59,130,246,.15);color:var(--blue);'
+                           'padding:.1rem .5rem;border-radius:4px;font-size:.7rem;'
+                           'font-weight:800">SPLIT/BONUS 1Y</span>'
+                           if data.get("has_split_1y") else "")
+            p_rows += (
+                f"<tr>"
+                f"<td style='text-align:left;font-weight:800'>{sym} {split_badge}</td>"
+                f"<td style='text-align:left;color:var(--muted);font-size:.8rem'>"
+                f"{get_sector(sym)}</td>"
+                f"<td>{div_str}</td>"
+                f"<td>{exd_str}</td>"
+                f"<td style='font-size:.78rem;color:var(--muted)'>{spl_str}</td>"
+                f"</tr>"
+            )
+        if p_rows:
+            st.markdown(
+                f'<div class="tbl-wrap"><table class="t">'
+                f'<thead><tr>'
+                f'<th class="l">Stock</th><th class="l">Sector</th>'
+                f'<th>Last Dividend</th><th>Ex-Date (upcoming)</th>'
+                f'<th>Last Split/Bonus</th>'
+                f'</tr></thead><tbody>{p_rows}</tbody></table></div>',
+                unsafe_allow_html=True)
+
+    st.markdown("<hr style='border-color:var(--border);margin:1.5rem 0'>",
+                unsafe_allow_html=True)
+
+    # ── Full universe scan controls ────────────────────────────────────────────
+    ca1, ca2 = st.columns([3, 1])
+    with ca1:
+        st.markdown(
+            '<div style="font-size:.85rem;font-weight:700;color:var(--text)">'
+            '🔍 Sweep full Nifty 500 for upcoming ex-dates, recent dividends '
+            'and bonus/split events</div>',
+            unsafe_allow_html=True)
+    with ca2:
+        run_ca_scan = st.button("📅 Scan Corporate Actions", width="stretch")
+
+    if run_ca_scan:
+        total_sym = len(SECTOR_MAP)
+        with st.spinner(f"Fetching corporate actions for {total_sym} stocks… (may take 60–90s)"):
+            st.session_state.corp_actions_cache = scan_corporate_actions_universe()
+            ca = st.session_state.corp_actions_cache
+            st.toast(
+                f"✅ {len(ca['with_upcoming_exdate'])} upcoming ex-dates · "
+                f"{len(ca['recent_dividends'])} recent dividends · "
+                f"{len(ca['recent_splits'])} splits/bonus",
+                icon="📅")
+
+    ca_data = st.session_state.corp_actions_cache
+    if ca_data is None:
+        st.info("Click **📅 Scan Corporate Actions** to fetch the full Nifty 500 action calendar.")
+    else:
+        ts = ca_data.get("timestamp","—"); scanned = ca_data.get("scanned",0)
+        st.markdown(
+            f'<div style="font-size:.75rem;color:var(--muted);margin-bottom:1rem">'
+            f'Last scanned {scanned} stocks at {ts}</div>',
+            unsafe_allow_html=True)
+
+        ca_t1, ca_t2, ca_t3 = st.tabs([
+            f"📆 Upcoming Ex-Dates ({len(ca_data['with_upcoming_exdate'])})",
+            f"💰 Recent Dividends ({len(ca_data['recent_dividends'])})",
+            f"🔀 Splits & Bonus ({len(ca_data['recent_splits'])})",
+        ])
+
+        # ── Upcoming Ex-Dates ──────────────────────────────────────────────────
+        with ca_t1:
+            exd_list = ca_data["with_upcoming_exdate"]
+            if not exd_list:
+                st.info("No upcoming ex-dividend dates found.")
+            else:
+                rows = ""
+                for item in exd_list:
+                    days_away = (pd.Timestamp(item["ex_date"]) -
+                                 pd.Timestamp.now()).days
+                    urgency = (
+                        f'<span style="color:var(--red);font-weight:800">'
+                        f'⚡ {days_away}d away</span>'
+                        if days_away <= 7 else
+                        f'<span style="color:var(--yellow);font-weight:700">'
+                        f'{days_away}d</span>'
+                        if days_away <= 30 else
+                        f'<span style="color:var(--muted)">{days_away}d</span>'
+                    )
+                    div_amt = (f"₹{item['last_dividend']}"
+                               if item.get("last_dividend") else "—")
+                    rows += (
+                        f"<tr>"
+                        f"<td style='text-align:left;font-weight:800'>{item['stock']}</td>"
+                        f"<td style='text-align:left;color:var(--muted);font-size:.8rem'>"
+                        f"{item['sector']}</td>"
+                        f"<td><b>{item['ex_date']}</b></td>"
+                        f"<td>{urgency}</td>"
+                        f"<td>{div_amt}</td>"
+                        f"</tr>"
+                    )
+                st.markdown(
+                    f'<div class="tbl-wrap"><table class="t"><thead><tr>'
+                    f'<th class="l">Stock</th><th class="l">Sector</th>'
+                    f'<th>Ex-Date</th><th>Days Away</th><th>Last Div Amt</th>'
+                    f'</tr></thead><tbody>{rows}</tbody></table></div>',
+                    unsafe_allow_html=True)
+                # Export
+                ex_df = pd.DataFrame(exd_list)
+                st.download_button(
+                    "⬇️ Export Ex-Dates CSV",
+                    ex_df.to_csv(index=False).encode("utf-8"),
+                    file_name=f"upcoming_exdates_{datetime.now().strftime('%Y%m%d')}.csv",
+                    mime="text/csv")
+
+        # ── Recent Dividends ───────────────────────────────────────────────────
+        with ca_t2:
+            div_list = ca_data["recent_dividends"]
+            if not div_list:
+                st.info("No recent dividends found in the last 12 months.")
+            else:
+                rows = ""
+                for item in sorted(div_list, key=lambda x: x["amount"], reverse=True):
+                    rows += (
+                        f"<tr>"
+                        f"<td style='text-align:left;font-weight:800'>{item['stock']}</td>"
+                        f"<td style='text-align:left;color:var(--muted);font-size:.8rem'>"
+                        f"{item['sector']}</td>"
+                        f"<td><b style='color:var(--green)'>₹{item['amount']}</b></td>"
+                        f"<td>{item['ex_date']}</td>"
+                        f"</tr>"
+                    )
+                st.markdown(
+                    f'<div class="tbl-wrap"><table class="t"><thead><tr>'
+                    f'<th class="l">Stock</th><th class="l">Sector</th>'
+                    f'<th>Dividend ₹</th><th>Ex-Date</th>'
+                    f'</tr></thead><tbody>{rows}</tbody></table></div>',
+                    unsafe_allow_html=True)
+                div_df = pd.DataFrame(div_list)
+                st.download_button(
+                    "⬇️ Export Dividends CSV",
+                    div_df.to_csv(index=False).encode("utf-8"),
+                    file_name=f"recent_dividends_{datetime.now().strftime('%Y%m%d')}.csv",
+                    mime="text/csv")
+
+        # ── Splits & Bonus ─────────────────────────────────────────────────────
+        with ca_t3:
+            split_list = ca_data["recent_splits"]
+            if not split_list:
+                st.info("No stock splits or bonus issues found in the last 12 months.")
+            else:
+                rows = ""
+                for item in split_list:
+                    type_badge = (
+                        f'<span style="background:rgba(59,130,246,.15);color:var(--blue);'
+                        f'padding:.2rem .6rem;border-radius:5px;font-size:.72rem;'
+                        f'font-weight:800">{item["type"]}</span>'
+                    )
+                    rows += (
+                        f"<tr>"
+                        f"<td style='text-align:left;font-weight:800'>{item['stock']}</td>"
+                        f"<td style='text-align:left;color:var(--muted);font-size:.8rem'>"
+                        f"{item['sector']}</td>"
+                        f"<td>{type_badge}</td>"
+                        f"<td><b>{item['ratio']}:1</b></td>"
+                        f"<td>{item['date']}</td>"
+                        f"</tr>"
+                    )
+                st.markdown(
+                    f'<div class="tbl-wrap"><table class="t"><thead><tr>'
+                    f'<th class="l">Stock</th><th class="l">Sector</th>'
+                    f'<th>Type</th><th>Ratio</th><th>Date</th>'
+                    f'</tr></thead><tbody>{rows}</tbody></table></div>',
+                    unsafe_allow_html=True)
+                sp_df = pd.DataFrame(split_list)
+                st.download_button(
+                    "⬇️ Export Splits/Bonus CSV",
+                    sp_df.to_csv(index=False).encode("utf-8"),
+                    file_name=f"splits_bonus_{datetime.now().strftime('%Y%m%d')}.csv",
+                    mime="text/csv")
+
+# ── Smart Money Concepts (SMC / ICT) ──────────────────────────────────────────
+elif _page == 'smc':
+    st.markdown('<div class="sec">🏦 Smart Money Concepts — FVG · Order Blocks · Liquidity</div>',
+                unsafe_allow_html=True)
+    st.caption("Institutional footprint analysis: Fair Value Gaps, Order Blocks, "
+               "Liquidity Pools, Premium/Discount zones, and Displacement. "
+               "Optimised for NSE daily charts with circuit-filter awareness.")
+
+    # ── Stock selector: portfolio holdings + custom symbol ─────────────────────
+    open_syms = (raw[raw["status"]=="Open"]["stock"].unique().tolist()
+                 if not raw.empty else [])
+    sc1, sc2 = st.columns([2, 1])
+    with sc1:
+        symbol_options = open_syms + ["— Enter custom symbol —"]
+        sel_sym = st.selectbox("Select stock for SMC analysis", symbol_options,
+                               label_visibility="collapsed")
+    with sc2:
+        custom_sym = st.text_input("Custom", placeholder="e.g. RELIANCE",
+                                   label_visibility="collapsed")
+
+    target_sym = (custom_sym.strip().upper() if custom_sym.strip()
+                  else (sel_sym if sel_sym != "— Enter custom symbol —" else None))
+
+    if not target_sym:
+        st.info("💡 Select a holding or enter any NSE symbol to see its Smart Money structure.")
+    else:
+        with st.spinner(f"Analysing {target_sym} institutional structure…"):
+            try:
+                ind = compute_indicators(target_sym, period="6mo")
+            except Exception as e:
+                ind = None
+                st.error(f"Could not analyse {target_sym}: {e}")
+
+        if ind:
+            cmp = ind.get("cmp", 0)
+            score = ind.get("smc_score", 0)
+            label = ind.get("smc_label", "Neutral SMC")
+            zone  = ind.get("smc_zone", "Unknown")
+            bias  = ind.get("smc_bias", "Neutral")
+            action = ind.get("smc_action", "WAIT")
+            entry  = ind.get("smc_entry")
+            target = ind.get("smc_target")
+            sl     = ind.get("smc_sl")
+            rr     = ind.get("smc_rr")
+            quality = ind.get("smc_setup_quality")
+            reason = ind.get("smc_setup_reason", "")
+
+            # ── ACTIONABLE TRADE SETUP CARD (the headline) ─────────────────────
+            if action in ("BUY", "SELL") and entry:
+                act_clr = theme_t["green"] if action == "BUY" else theme_t["red"]
+                act_bg  = ("rgba(16,185,129,.08)" if action == "BUY"
+                           else "rgba(239,68,68,.08)")
+                q_clr = ("#fbbf24" if quality == "A+" else
+                         theme_t["accent"] if quality == "A" else theme_t["muted"])
+                st.markdown(
+                    f'<div style="background:{act_bg};border:2px solid {act_clr};'
+                    f'border-radius:14px;padding:1.4rem;margin:1rem 0">'
+                    f'<div style="display:flex;justify-content:space-between;'
+                    f'align-items:center;margin-bottom:1rem">'
+                    f'<div style="font-size:1.8rem;font-weight:800;color:{act_clr}">'
+                    f'{"🟢" if action=="BUY" else "🔴"} {action} {target_sym}</div>'
+                    f'<div style="background:{q_clr};color:#000;padding:.3rem .9rem;'
+                    f'border-radius:8px;font-size:.95rem;font-weight:800">'
+                    f'{quality} Setup</div></div>'
+                    f'<div style="display:grid;grid-template-columns:repeat(4,1fr);'
+                    f'gap:.8rem;margin-bottom:1rem">'
+                    f'<div style="background:var(--card);border-radius:10px;padding:.9rem;'
+                    f'text-align:center"><div style="font-size:.7rem;color:var(--muted);'
+                    f'font-weight:700;text-transform:uppercase">Entry</div>'
+                    f'<div style="font-size:1.3rem;font-weight:800;color:var(--text)">'
+                    f'₹{entry}</div></div>'
+                    f'<div style="background:var(--card);border-radius:10px;padding:.9rem;'
+                    f'text-align:center"><div style="font-size:.7rem;color:var(--muted);'
+                    f'font-weight:700;text-transform:uppercase">Target</div>'
+                    f'<div style="font-size:1.3rem;font-weight:800;color:{theme_t["green"]}">'
+                    f'₹{target}</div></div>'
+                    f'<div style="background:var(--card);border-radius:10px;padding:.9rem;'
+                    f'text-align:center"><div style="font-size:.7rem;color:var(--muted);'
+                    f'font-weight:700;text-transform:uppercase">Stop Loss</div>'
+                    f'<div style="font-size:1.3rem;font-weight:800;color:{theme_t["red"]}">'
+                    f'₹{sl}</div></div>'
+                    f'<div style="background:var(--card);border-radius:10px;padding:.9rem;'
+                    f'text-align:center"><div style="font-size:.7rem;color:var(--muted);'
+                    f'font-weight:700;text-transform:uppercase">Risk:Reward</div>'
+                    f'<div style="font-size:1.3rem;font-weight:800;color:var(--accent)">'
+                    f'1:{rr}</div></div>'
+                    f'</div>'
+                    f'<div style="font-size:.82rem;color:var(--muted);line-height:1.6">'
+                    f'📋 {reason}</div>'
+                    f'</div>',
+                    unsafe_allow_html=True)
+            else:
+                st.markdown(
+                    f'<div style="background:var(--card);border:2px solid var(--border);'
+                    f'border-radius:14px;padding:1.4rem;margin:1rem 0;text-align:center">'
+                    f'<div style="font-size:1.5rem;font-weight:800;color:var(--muted)">'
+                    f'⏸ WAIT — {target_sym}</div>'
+                    f'<div style="font-size:.85rem;color:var(--muted);margin-top:.5rem">'
+                    f'{reason}</div></div>',
+                    unsafe_allow_html=True)
+
+            # ── Context cards (now secondary, below the action) ────────────────
+            score_clr = (theme_t["green"] if score >= 35 else
+                         theme_t["red"] if score <= -35 else theme_t["muted"])
+            zone_clr  = (theme_t["red"] if zone == "Premium" else
+                         theme_t["green"] if zone == "Discount" else theme_t["muted"])
+            st.markdown(
+                f'<div style="display:flex;gap:1rem;flex-wrap:wrap;margin:1rem 0">'
+                f'<div style="flex:1;min-width:180px;background:var(--card);'
+                f'border:1px solid {score_clr};border-radius:12px;padding:1.2rem">'
+                f'<div style="font-size:.7rem;color:var(--muted);font-weight:700;'
+                f'text-transform:uppercase;letter-spacing:.08em">SMC Bias</div>'
+                f'<div style="font-size:1.5rem;font-weight:800;color:{score_clr};'
+                f'margin:.2rem 0">{label}</div>'
+                f'<div style="font-size:.8rem;color:var(--muted)">Score: {score:+d} / 100</div>'
+                f'</div>'
+                f'<div style="flex:1;min-width:180px;background:var(--card);'
+                f'border:1px solid {zone_clr};border-radius:12px;padding:1.2rem">'
+                f'<div style="font-size:.7rem;color:var(--muted);font-weight:700;'
+                f'text-transform:uppercase;letter-spacing:.08em">Premium/Discount</div>'
+                f'<div style="font-size:1.5rem;font-weight:800;color:{zone_clr};'
+                f'margin:.2rem 0">{zone}</div>'
+                f'<div style="font-size:.8rem;color:var(--muted)">'
+                f'{ind.get("smc_zone_pct","—")}% of range · {bias} bias</div>'
+                f'</div>'
+                f'<div style="flex:1;min-width:180px;background:var(--card);'
+                f'border:1px solid var(--border);border-radius:12px;padding:1.2rem">'
+                f'<div style="font-size:.7rem;color:var(--muted);font-weight:700;'
+                f'text-transform:uppercase;letter-spacing:.08em">CMP</div>'
+                f'<div style="font-size:1.5rem;font-weight:800;color:var(--text);'
+                f'margin:.2rem 0">₹{cmp}</div>'
+                f'<div style="font-size:.8rem;color:var(--muted)">'
+                f'Range ₹{ind.get("smc_range_low","—")}–₹{ind.get("smc_range_high","—")}</div>'
+                f'</div>'
+                f'</div>',
+                unsafe_allow_html=True)
+
+            # ── Displacement banner ────────────────────────────────────────────
+            disp = ind.get("smc_displacement")
+            if disp:
+                d_ago = ind.get("smc_displacement_bars_ago", "?")
+                d_clr = theme_t["green"] if disp == "Bullish" else theme_t["red"]
+                st.markdown(
+                    f'<div style="background:rgba(0,0,0,.15);border-left:4px solid {d_clr};'
+                    f'border-radius:0 8px 8px 0;padding:.7rem 1rem;margin-bottom:1rem;'
+                    f'font-size:.85rem">⚡ <b style="color:{d_clr}">{disp} Displacement</b> '
+                    f'detected {d_ago} bar(s) ago — institutional momentum present.</div>',
+                    unsafe_allow_html=True)
+
+            # ── Four detail panels ─────────────────────────────────────────────
+            colA, colB = st.columns(2)
+
+            # FVG panel
+            with colA:
+                st.markdown('<div style="font-size:.85rem;font-weight:800;color:var(--text);'
+                            'margin-bottom:.5rem">📊 Fair Value Gaps</div>',
+                            unsafe_allow_html=True)
+                nbf = ind.get("smc_nearest_bull_fvg")
+                nbef = ind.get("smc_nearest_bear_fvg")
+                in_bull = ind.get("smc_in_bull_fvg")
+                in_bear = ind.get("smc_in_bear_fvg")
+                fvg_rows = ""
+                if in_bull:
+                    fvg_rows += ('<div style="color:var(--green);font-size:.82rem;'
+                                 'margin-bottom:.3rem">📍 Price currently INSIDE a bullish FVG (support)</div>')
+                if in_bear:
+                    fvg_rows += ('<div style="color:var(--red);font-size:.82rem;'
+                                 'margin-bottom:.3rem">📍 Price currently INSIDE a bearish FVG (resistance)</div>')
+                if nbf:
+                    fvg_rows += (f'<div style="font-size:.82rem;margin-bottom:.3rem">'
+                                 f'🟢 Nearest bull FVG below: <b>₹{nbf["bottom"]}–₹{nbf["top"]}</b> '
+                                 f'({nbf["size_atr"]} ATR)</div>')
+                if nbef:
+                    fvg_rows += (f'<div style="font-size:.82rem;margin-bottom:.3rem">'
+                                 f'🔴 Nearest bear FVG above: <b>₹{nbef["bottom"]}–₹{nbef["top"]}</b> '
+                                 f'({nbef["size_atr"]} ATR)</div>')
+                fvg_rows += (f'<div style="font-size:.75rem;color:var(--muted);margin-top:.4rem">'
+                             f'Unfilled: {ind.get("smc_bull_fvg_count",0)} bullish · '
+                             f'{ind.get("smc_bear_fvg_count",0)} bearish</div>')
+                if not (nbf or nbef or in_bull or in_bear):
+                    fvg_rows = '<div style="font-size:.82rem;color:var(--muted)">No significant unfilled FVGs nearby.</div>'
+                st.markdown(f'<div style="background:var(--card);border:1px solid var(--border);'
+                            f'border-radius:10px;padding:1rem">{fvg_rows}</div>',
+                            unsafe_allow_html=True)
+
+            # Order Block panel
+            with colB:
+                st.markdown('<div style="font-size:.85rem;font-weight:800;color:var(--text);'
+                            'margin-bottom:.5rem">🧱 Order Blocks</div>',
+                            unsafe_allow_html=True)
+                nbo = ind.get("smc_nearest_bull_ob")
+                nbeo = ind.get("smc_nearest_bear_ob")
+                ob_rows = ""
+                if ind.get("smc_at_bull_ob"):
+                    ob_rows += ('<div style="color:var(--green);font-size:.82rem;'
+                                'margin-bottom:.3rem">📍 Price at a bullish order block (demand)</div>')
+                if ind.get("smc_at_bear_ob"):
+                    ob_rows += ('<div style="color:var(--red);font-size:.82rem;'
+                                'margin-bottom:.3rem">📍 Price at a bearish order block (supply)</div>')
+                if nbo:
+                    ob_rows += (f'<div style="font-size:.82rem;margin-bottom:.3rem">'
+                                f'🟢 Bull OB (demand): <b>₹{nbo["bottom"]}–₹{nbo["top"]}</b> '
+                                f'({nbo["strength_atr"]} ATR move)</div>')
+                if nbeo:
+                    ob_rows += (f'<div style="font-size:.82rem;margin-bottom:.3rem">'
+                                f'🔴 Bear OB (supply): <b>₹{nbeo["bottom"]}–₹{nbeo["top"]}</b> '
+                                f'({nbeo["strength_atr"]} ATR move)</div>')
+                if not (nbo or nbeo or ind.get("smc_at_bull_ob") or ind.get("smc_at_bear_ob")):
+                    ob_rows = '<div style="font-size:.82rem;color:var(--muted)">No active order blocks nearby.</div>'
+                st.markdown(f'<div style="background:var(--card);border:1px solid var(--border);'
+                            f'border-radius:10px;padding:1rem">{ob_rows}</div>',
+                            unsafe_allow_html=True)
+
+            colC, colD = st.columns(2)
+
+            # Liquidity panel
+            with colC:
+                st.markdown('<div style="font-size:.85rem;font-weight:800;color:var(--text);'
+                            'margin:.8rem 0 .5rem">💧 Liquidity Pools</div>',
+                            unsafe_allow_html=True)
+                nbs = ind.get("smc_nearest_buyside")
+                nss = ind.get("smc_nearest_sellside")
+                liq_rows = ""
+                if nbs:
+                    liq_rows += (f'<div style="font-size:.82rem;margin-bottom:.3rem">'
+                                 f'🔼 Buy-side liquidity above: <b>₹{nbs["level"]}</b> '
+                                 f'({nbs["touches"]} equal highs — short stops)</div>')
+                if nss:
+                    liq_rows += (f'<div style="font-size:.82rem;margin-bottom:.3rem">'
+                                 f'🔽 Sell-side liquidity below: <b>₹{nss["level"]}</b> '
+                                 f'({nss["touches"]} equal lows — long stops)</div>')
+                if not (nbs or nss):
+                    liq_rows = '<div style="font-size:.82rem;color:var(--muted)">No clear liquidity clusters nearby.</div>'
+                st.markdown(f'<div style="background:var(--card);border:1px solid var(--border);'
+                            f'border-radius:10px;padding:1rem">{liq_rows}</div>',
+                            unsafe_allow_html=True)
+
+            # How to read panel
+            with colD:
+                st.markdown('<div style="font-size:.85rem;font-weight:800;color:var(--text);'
+                            'margin:.8rem 0 .5rem">📖 How to Read This</div>',
+                            unsafe_allow_html=True)
+                st.markdown(
+                    '<div style="background:var(--card);border:1px solid var(--border);'
+                    'border-radius:10px;padding:1rem;font-size:.78rem;color:var(--muted);'
+                    'line-height:1.7">'
+                    '<b style="color:var(--text)">Confluence is key:</b> a bullish setup is '
+                    'strongest when price is in <b>Discount</b>, sitting at a <b>bull Order Block</b> '
+                    'or <b>FVG</b>, with recent <b>bullish Displacement</b>. '
+                    'Liquidity pools show where price is likely drawn next (stop hunts).'
+                    '</div>',
+                    unsafe_allow_html=True)
+
+            # ── Confluence with existing signals ───────────────────────────────
+            st.markdown('<div style="font-size:.85rem;font-weight:800;color:var(--text);'
+                        'margin:1.2rem 0 .5rem">🔗 Confluence with Technical Signals</div>',
+                        unsafe_allow_html=True)
+            conf_items = []
+            if ind.get("bull_trap"):
+                conf_items.append(("🪤 Bull Trap active", "bear"))
+            if ind.get("bear_trap"):
+                conf_items.append(("🪤 Bear Trap active", "bull"))
+            if ind.get("supertrend_bullish"): conf_items.append(("Supertrend Bullish", "bull"))
+            else: conf_items.append(("Supertrend Bearish", "bear"))
+            if ind.get("rsi"):
+                if ind["rsi"] >= 70: conf_items.append((f"RSI Overbought ({ind['rsi']})", "bear"))
+                elif ind["rsi"] <= 30: conf_items.append((f"RSI Oversold ({ind['rsi']})", "bull"))
+            if score >= 35: conf_items.append(("SMC Bullish Confluence", "bull"))
+            elif score <= -35: conf_items.append(("SMC Bearish Confluence", "bear"))
+
+            chips = ""
+            for txt, side in conf_items:
+                c = theme_t["green"] if side == "bull" else theme_t["red"]
+                chips += (f'<span style="background:rgba(0,0,0,.12);border:1px solid {c};'
+                          f'color:{c};border-radius:6px;padding:.3rem .7rem;font-size:.78rem;'
+                          f'font-weight:700;margin:.2rem">{txt}</span> ')
+            st.markdown(f'<div style="display:flex;flex-wrap:wrap;gap:.3rem">{chips}</div>',
+                        unsafe_allow_html=True)
+
+    # ── Universe-wide SMC setup scanner ────────────────────────────────────────
+    st.markdown("<hr style='border-color:var(--border);margin:1.5rem 0'>",
+                unsafe_allow_html=True)
+    st.markdown('<div class="sec">🎯 Scan Universe for SMC Setups</div>',
+                unsafe_allow_html=True)
+
+    if not _SMC_SCANNER_AVAILABLE:
+        st.warning("Universe SMC scan requires the updated signals.py (with "
+                   "scan_for_smc_setups). Deploy the latest signals.py to enable.",
+                   icon="⚠️")
+    else:
+        scs1, scs2, scs3 = st.columns([1.2, 1.2, 1])
+        with scs1:
+            min_q = st.selectbox("Min quality", ["B", "A", "A+"],
+                                 label_visibility="collapsed")
+        with scs2:
+            act_f = st.selectbox("Action", ["All", "BUY", "SELL"],
+                                 label_visibility="collapsed")
+        with scs3:
+            run_smc_scan = st.button("🎯 Scan Setups", width="stretch")
+
+        if run_smc_scan:
+            with st.spinner(f"Scanning {len(SECTOR_MAP)} stocks for SMC setups…"):
+                st.session_state.smc_scan_cache = scan_for_smc_setups(
+                    min_quality=min_q, action_filter=act_f)
+                sc = st.session_state.smc_scan_cache
+                st.toast(f"✅ {sc['buy_count']} BUY · {sc['sell_count']} SELL setups",
+                         icon="🎯")
+
+        sc = st.session_state.get("smc_scan_cache")
+        if sc:
+            st.markdown(
+                f'<div style="font-size:.75rem;color:var(--muted);margin:.5rem 0">'
+                f'Scanned {sc["scanned"]} · {sc["liquid"]} liquid · '
+                f'{sc["buy_count"]} BUY · {sc["sell_count"]} SELL · {sc["timestamp"]}</div>',
+                unsafe_allow_html=True)
+
+            all_setups = sc["buy_setups"] + sc["sell_setups"]
+            if all_setups:
+                rows = []
+                for s in all_setups:
+                    rows.append({
+                        "Stock": s["stock"], "Sector": s["sector"],
+                        "Action": s["action"], "Grade": s["quality"],
+                        "CMP": s["cmp"], "Entry": s["entry"],
+                        "Target": s["target"], "SL": s["stop_loss"],
+                        "RR": s["risk_reward"], "Zone": s["zone"],
+                        "SMC": s["smc_score"],
+                    })
+                setup_df = pd.DataFrame(rows)
+                # Dynamic height: ~35px per row + header, capped so it scrolls
+                _dyn_h = min(max(len(setup_df) * 36 + 40, 200), 600)
+                st.dataframe(
+                    setup_df, hide_index=True, height=_dyn_h,
+                    use_container_width=True, row_height=35,
+                    column_config={
+                        "Stock":  st.column_config.TextColumn("Stock", width="small", pinned=True),
+                        "Action": st.column_config.TextColumn("Action", width="small"),
+                        "Grade":  st.column_config.TextColumn("Grade", width="small"),
+                        "CMP":    st.column_config.NumberColumn("CMP", format="₹%.2f"),
+                        "Entry":  st.column_config.NumberColumn("Entry", format="₹%.2f"),
+                        "Target": st.column_config.NumberColumn("Target", format="₹%.2f"),
+                        "SL":     st.column_config.NumberColumn("SL", format="₹%.2f"),
+                        "RR":     st.column_config.NumberColumn("R:R", format="%.2f"),
+                        "SMC":    st.column_config.NumberColumn("Score", format="%d"),
+                    })
+                st.download_button(
+                    "⬇️ Export SMC Setups CSV",
+                    setup_df.to_csv(index=False).encode("utf-8"),
+                    file_name=f"smc_setups_{datetime.now().strftime('%Y%m%d_%H%M')}.csv",
+                    mime="text/csv")
+            else:
+                st.info("No setups found at this quality/action filter. Try lowering to grade B or 'All' actions.")
+        else:
+            st.info("Click **🎯 Scan Setups** to find SMC trade setups across the universe.")
+
+# ── Post-render scan kickoff ───────────────────────────────────────────────────
+# The dashboard has now fully rendered. If this was the first paint after login,
+# trigger ONE immediate rerun so the deferred scans begin on the next pass —
+# the user sees a complete dashboard instantly, then data fills in moments later.
+if st.session_state.get("_kickoff_scan", False):
+    st.session_state._kickoff_scan = False
+    time.sleep(0.1)
+    st.rerun()
