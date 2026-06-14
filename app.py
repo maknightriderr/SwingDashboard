@@ -195,7 +195,7 @@ _PG_PARAMS = dict(
     sslmode         = "require",
     connect_timeout = 15,
 )
-_USE_PG = False
+_USE_PG = True 
 
 try:
     import psycopg2
@@ -248,10 +248,6 @@ def db(sql, params=(), fetch=False):
     if _USE_PG:
         conn = _pg_conn()
         cur  = conn.cursor()
-        
-        # 🔥 THE FIX: Force PgBouncer to use the public schema on every single transaction
-        cur.execute("SET search_path TO public;")
-        
         pg_sql = _q(sql)
         cur.execute(pg_sql, params)
         conn.commit()
