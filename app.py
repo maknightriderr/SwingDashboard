@@ -205,22 +205,12 @@ except ImportError:
 
 
 def _pg_conn():
-    """Open a Supabase Postgres connection and force the schema."""
+    """Open a Supabase Postgres connection."""
     last_err = None
     for _attempt in range(2):
         try:
             conn = psycopg2.connect(**_PG_PARAMS)
             conn.autocommit = False
-            
-            # ── CRITICAL FIX ──────────────────────────────────────────────
-            # PgBouncer strips the 'options' parameter, so we must explicitly
-            # set the search_path to 'public' right after connecting. This 
-            # guarantees Postgres knows where your tables are.
-            cur = conn.cursor()
-            cur.execute("SET search_path TO public;")
-            cur.close()
-            # ──────────────────────────────────────────────────────────────
-            
             return conn
         except Exception as e:
             last_err = e
@@ -228,13 +218,13 @@ def _pg_conn():
     raise last_err
 
 def _q(sql):
-    """Translate SQLite SQL → Postgres '%s' placeholders and 'INSERT OR REPLACE'.
-    Schema qualification is handled directly in db() below."""
     if not _USE_PG:
         return sql
     s = sql.replace("?", "%s")
     s = s.replace("INSERT OR REPLACE INTO", "INSERT INTO")
     return s
+
+
 
 
 _PG_SCHEMA_PREFIX = "public."
@@ -258,11 +248,8 @@ def db(sql, params=(), fetch=False):
     if _USE_PG:
         conn = _pg_conn()
         cur  = conn.cursor()
-        # Step 1: _q converts placeholders and SQLite-only syntax (INSERT OR REPLACE→INSERT)
-        # Step 2: _pg_qualify adds public. to every table name
-        # Order matters: _q must run first so INSERT OR REPLACE → INSERT INTO
-        # before _pg_qualify looks for "INSERT INTO tg_config" etc.
-        pg_sql = _pg_qualify(_q(sql))
+        # Just use _q, we removed _pg_qualify
+        pg_sql = _q(sql)
         cur.execute(pg_sql, params)
         conn.commit()
         result = cur.fetchall() if fetch else None
