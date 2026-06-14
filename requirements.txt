@@ -9,3 +9,4 @@ scipy
 streamlit-cookies-controller
 streamlit-autorefresh
 psycopg2-binary
+sqlalchemy
