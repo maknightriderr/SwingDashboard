@@ -2023,6 +2023,11 @@ def detect_fvg(high, low, close, atr, lookback=30, max_zones=5):
     start = max(2, n - lookback)
 
     for i in range(start, n - 1):
+        # The gap-forming (middle) candle must itself be a real move, not drift.
+        # Require its close-to-close move >= 0.5 ATR, else it's not displacement.
+        mid_move = abs(c[i] - c[i - 1])
+        if mid_move < atr * 0.5:
+            continue
         # Bullish FVG: gap between high[i-1] and low[i+1]
         gap_bot = h[i - 1]
         gap_top = l[i + 1]
@@ -2116,9 +2121,14 @@ def detect_order_blocks(open_, high, low, close, atr, lookback=40, max_blocks=4)
         # Look at the 3 bars following the candle for displacement
         fwd_high = np.max(h[i + 1:i + 4])
         fwd_low  = np.min(l[i + 1:i + 4])
+        # Impulsiveness: count directional closes in the 3 following bars.
+        # A real OB is followed by an IMPULSIVE leg, not choppy sideways drift.
+        fwd_up_closes   = int(np.sum(c[i + 1:i + 4] > o[i + 1:i + 4]))
+        fwd_down_closes = int(np.sum(c[i + 1:i + 4] < o[i + 1:i + 4]))
 
-        # Bullish OB: a down candle, then price displaces UP >= 1.5 ATR
-        if is_down and (fwd_high - h[i]) >= disp_thresh:
+        # Bullish OB: a down candle, then an IMPULSIVE up move >= 1.5 ATR
+        if (is_down and (fwd_high - h[i]) >= disp_thresh
+                and fwd_up_closes >= 2):
             ob_top = max(o[i], c[i]); ob_bot = l[i]
             mitigated = bool(np.any(l[i + 4:] <= ob_bot)) if i + 4 < n else False
             result["bull_obs"].append({
@@ -2127,8 +2137,9 @@ def detect_order_blocks(open_, high, low, close, atr, lookback=40, max_blocks=4)
                 "idx": int(i), "mitigated": mitigated,
                 "strength_atr": round((fwd_high - h[i]) / max(atr, 0.01), 2),
             })
-        # Bearish OB: an up candle, then price displaces DOWN >= 1.5 ATR
-        if is_up and (l[i] - fwd_low) >= disp_thresh:
+        # Bearish OB: an up candle, then an IMPULSIVE down move >= 1.5 ATR
+        if (is_up and (l[i] - fwd_low) >= disp_thresh
+                and fwd_down_closes >= 2):
             ob_top = h[i]; ob_bot = min(o[i], c[i])
             mitigated = bool(np.any(h[i + 4:] >= ob_top)) if i + 4 < n else False
             result["bear_obs"].append({
@@ -2187,13 +2198,20 @@ def detect_liquidity_pools(high, low, close, atr, lookback=50, tol_atr=0.15):
     tol = atr * tol_atr
     start = max(2, n - lookback)
 
-    # Find local swing highs/lows (3-bar fractal)
+    # Find local swing highs/lows with PROMINENCE filter.
+    # A swing must stand out from its neighbours by >= 0.4 ATR to count —
+    # this skips micro-swings/noise that aren't real liquidity-resting points.
+    prom = atr * 0.4
     swing_highs = []
     swing_lows  = []
     for i in range(start, n - 1):
-        if h[i] >= h[i - 1] and h[i] >= h[i + 1]:
+        # 3-bar fractal high that is meaningfully above both neighbours
+        if (h[i] >= h[i - 1] and h[i] >= h[i + 1]
+                and (h[i] - min(h[i - 1], h[i + 1])) >= prom):
             swing_highs.append((i, h[i]))
-        if l[i] <= l[i - 1] and l[i] <= l[i + 1]:
+        # 3-bar fractal low that is meaningfully below both neighbours
+        if (l[i] <= l[i - 1] and l[i] <= l[i + 1]
+                and (max(l[i - 1], l[i + 1]) - l[i]) >= prom):
             swing_lows.append((i, l[i]))
 
     # Cluster equal highs (buy-side liquidity)
@@ -2303,8 +2321,8 @@ def detect_displacement(open_, high, low, close, atr, lookback=10):
     for i in range(n - 1, start - 1, -1):
         body = abs(c[i] - o[i])
         rng  = max(h[i] - l[i], 1e-9)
+        # Single-candle displacement: body >= 1.5 ATR with conviction close
         if body >= atr * 1.5:
-            # conviction close: in top third (bullish) or bottom third (bearish)
             close_pos = (c[i] - l[i]) / rng
             if c[i] > o[i] and close_pos >= 0.66:
                 result.update({"recent_displacement": True, "direction": "Bullish",
@@ -2315,6 +2333,19 @@ def detect_displacement(open_, high, low, close, atr, lookback=10):
                 result.update({"recent_displacement": True, "direction": "Bearish",
                                "bars_ago": int(n - 1 - i),
                                "strength_atr": round(body / max(atr, 0.01), 2)})
+                return result
+        # Multi-candle leg: 2-3 consecutive same-direction candles covering
+        # >= 2 ATR total also counts as institutional displacement.
+        if i >= 2:
+            up3   = all(c[j] > o[j] for j in (i-2, i-1, i))
+            dn3   = all(c[j] < o[j] for j in (i-2, i-1, i))
+            leg   = abs(c[i] - o[i-2])
+            if (up3 or dn3) and leg >= atr * 2.0:
+                result.update({
+                    "recent_displacement": True,
+                    "direction": "Bullish" if up3 else "Bearish",
+                    "bars_ago": int(n - 1 - i),
+                    "strength_atr": round(leg / max(atr, 0.01), 2)})
                 return result
     return result
 
@@ -2385,9 +2416,23 @@ def build_smc_setup(cmp, atr, fvg, obs, liq, pdz, disp, score):
     disp_dir = disp.get("direction")
     disp_recent = disp.get("bars_ago") is not None and disp.get("bars_ago") <= 4
 
-    # ── Decide direction by confluence score + zone availability ───────────────
-    want_buy  = score >= 25 and buy_zone is not None
-    want_sell = score <= -25 and sell_zone is not None
+    # Proximity gate: only emit a setup if CMP is within a workable distance of
+    # the entry zone (<= 4 ATR away). Prevents suggesting an entry far from the
+    # current price, which is the #1 source of confusing/unusable signals.
+    max_dist = atr * 4.0
+    def _zone_near(zone):
+        if not zone:
+            return False
+        z_top = float(zone.get("top", 0)); z_bot = float(zone.get("bottom", 0))
+        z_mid = (z_top + z_bot) / 2
+        return abs(cmp - z_mid) <= max_dist
+
+    buy_near  = _zone_near(buy_zone)
+    sell_near = _zone_near(sell_zone)
+
+    # ── Decide direction by confluence score + zone availability + proximity ───
+    want_buy  = score >= 25 and buy_zone is not None and buy_near
+    want_sell = score <= -25 and sell_zone is not None and sell_near
 
     # If both or neither, pick the stronger-aligned one
     if want_buy and not want_sell:
@@ -2416,12 +2461,13 @@ def build_smc_setup(cmp, atr, fvg, obs, liq, pdz, disp, score):
             tgt = round(entry + risk * 2, 2)     # fallback 2R
         rr = round((tgt - entry) / risk, 2)
 
-        # Quality grade by confluence
+        # Quality grade by confluence (+ RR magnitude bonus)
         confl = 0
         if pdz.get("bias") == "Bullish": confl += 1
         if buy_src == "Order Block":     confl += 1
         if disp_dir == "Bullish" and disp_recent: confl += 1
         if nbs:                          confl += 1
+        if rr >= 3.0:                    confl += 1   # strong RR adds conviction
         quality = "A+" if confl >= 4 else "A" if confl == 3 else "B"
 
         reasons = [f"Buy at {buy_src} ₹{entry}"]
@@ -2459,6 +2505,7 @@ def build_smc_setup(cmp, atr, fvg, obs, liq, pdz, disp, score):
         if sell_src == "Order Block":    confl += 1
         if disp_dir == "Bearish" and disp_recent: confl += 1
         if nss:                          confl += 1
+        if rr >= 3.0:                    confl += 1
         quality = "A+" if confl >= 4 else "A" if confl == 3 else "B"
 
         reasons = [f"Sell at {sell_src} ₹{entry}"]
@@ -2502,9 +2549,10 @@ def compute_smc(open_, high, low, close, vol, atr):
         score += 15
     elif disp["direction"] == "Bearish" and disp["bars_ago"] is not None and disp["bars_ago"] <= 3:
         score -= 15
-    # Nearest unfilled FVG acting as pull
-    if fvg["nearest_bull_fvg"]: score += 8
-    if fvg["nearest_bear_fvg"]: score -= 8
+    # Nearest unfilled FVG acting as a pull — but DON'T double-count if price
+    # is already inside an FVG (that's already scored above).
+    if fvg["nearest_bull_fvg"] and not fvg["in_bull_fvg"]: score += 8
+    if fvg["nearest_bear_fvg"] and not fvg["in_bear_fvg"]: score -= 8
     score = max(-100, min(100, score))
 
     if score >= 35:   smc_label = "Bullish SMC"
