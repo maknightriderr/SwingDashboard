@@ -218,10 +218,25 @@ def _pg_conn():
     raise last_err
 
 def _q(sql):
-    """Translate SQLite '?' placeholders to Postgres '%s' when in PG mode."""
-    if _USE_PG:
-        return sql.replace("?", "%s")
-    return sql
+    """Translate SQLite SQL → Postgres:
+    1. '?' → '%s'
+    2. Schema-qualify every table name with 'public.' (pooler strips search_path)
+    3. 'INSERT OR REPLACE' → 'INSERT' (not valid in Postgres; handled separately)
+    SQLite path returns sql unchanged."""
+    if not _USE_PG:
+        return sql
+    s = sql.replace("?", "%s")
+    # Fix SQLite-only syntax
+    s = s.replace("INSERT OR REPLACE INTO", "INSERT INTO")
+    # Schema-qualify all known tables wherever they appear after a SQL keyword
+    for tbl in ("users", "trades", "portfolio_history", "tg_config", "watchlist"):
+        for kw in ("FROM ", "INTO ", "UPDATE ", "JOIN ", "DELETE FROM ",
+                   "TABLE IF NOT EXISTS "):
+            old = kw + tbl
+            new = kw + "public." + tbl
+            if old in s:
+                s = s.replace(old, new)
+    return s
 
 def init_db():
     if _USE_PG:
@@ -303,7 +318,7 @@ def get_trades(user_id):
     if _USE_PG:
         conn = _pg_conn()
         df = pd.read_sql_query(
-            "SELECT * FROM trades WHERE user_id=%s ORDER BY id DESC",
+            "SELECT * FROM public.trades WHERE user_id=%s ORDER BY id DESC",
             conn, params=(user_id,))
         conn.close()
         return df
@@ -318,7 +333,7 @@ def get_history(user_id):
     if _USE_PG:
         conn = _pg_conn()
         df = pd.read_sql_query(
-            "SELECT * FROM portfolio_history WHERE user_id=%s ORDER BY snapshot_date",
+            "SELECT * FROM public.portfolio_history WHERE user_id=%s ORDER BY snapshot_date",
             conn, params=(user_id,))
         conn.close()
         return df
@@ -329,14 +344,35 @@ def get_history(user_id):
     conn.close()
     return df
 
+def get_watchlist(user_id):
+    if _USE_PG:
+        conn = _pg_conn()
+        df = pd.read_sql_query(
+            "SELECT * FROM public.watchlist WHERE user_id=%s ORDER BY id DESC",
+            conn, params=(user_id,))
+        conn.close()
+        return df
+    conn = sqlite3.connect(DB)
+    df = pd.read_sql_query(
+        "SELECT * FROM watchlist WHERE user_id=? ORDER BY id DESC",
+        conn, params=(user_id,))
+    conn.close()
+    return df
+
 def get_tg_config(user_id):
     rows = db("SELECT bot_token,chat_id FROM tg_config WHERE user_id=?",
               (user_id,), fetch=True)
     return rows[0] if rows else ("", "")
 
 def save_tg_config(user_id, token, chat):
-    db("INSERT OR REPLACE INTO tg_config(user_id,bot_token,chat_id) VALUES(?,?,?)",
-       (user_id, token, chat))
+    if _USE_PG:
+        db("INSERT INTO tg_config(user_id,bot_token,chat_id) VALUES(?,?,?) "
+           "ON CONFLICT(user_id) DO UPDATE SET bot_token=EXCLUDED.bot_token, "
+           "chat_id=EXCLUDED.chat_id",
+           (user_id, token, chat))
+    else:
+        db("INSERT OR REPLACE INTO tg_config(user_id,bot_token,chat_id) VALUES(?,?,?)",
+           (user_id, token, chat))
 
 def add_trade(user_id, stock, qty, buy, sell=None):
     status = "Closed" if sell else "Open"
@@ -365,21 +401,6 @@ def save_snapshot(user_id, invested, value):
 def add_watchlist(user_id, stock, target=None, notes=""):
     db("INSERT INTO watchlist(user_id,stock,target_price,notes) VALUES(?,?,?,?)",
        (user_id, stock.upper().strip(), target, notes))
-
-def get_watchlist(user_id):
-    if _USE_PG:
-        conn = _pg_conn()
-        df = pd.read_sql_query(
-            "SELECT * FROM watchlist WHERE user_id=%s ORDER BY id DESC",
-            conn, params=(user_id,))
-        conn.close()
-        return df
-    conn = sqlite3.connect(DB)
-    df = pd.read_sql_query(
-        "SELECT * FROM watchlist WHERE user_id=? ORDER BY id DESC",
-        conn, params=(user_id,))
-    conn.close()
-    return df
 
 def delete_watchlist_item(wid, user_id):
     db("DELETE FROM watchlist WHERE id=? AND user_id=?", (wid, user_id))
