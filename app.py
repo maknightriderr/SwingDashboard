@@ -248,7 +248,10 @@ def db(sql, params=(), fetch=False):
     if _USE_PG:
         conn = _pg_conn()
         cur  = conn.cursor()
-        # Just use _q, we removed _pg_qualify
+        
+        # 🔥 THE FIX: Force PgBouncer to use the public schema on every single transaction
+        cur.execute("SET search_path TO public;")
+        
         pg_sql = _q(sql)
         cur.execute(pg_sql, params)
         conn.commit()
