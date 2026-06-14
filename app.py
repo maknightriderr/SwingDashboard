@@ -8,7 +8,7 @@ Fixes vs v13:
   - signals.py v12 already deployed: unified risk engine, Wilder ATR/RSI,
     numpy Supertrend, 20-day VWAP, swing-peak Fibonacci, MACD histogram
 """
-
+import socket
 import streamlit as st
 import streamlit.components.v1 as components
 import pandas as pd
@@ -165,7 +165,7 @@ DB = "trades_v2.db"   # SQLite fallback (used if psycopg2 unavailable)
 
 # ── SUPABASE DIRECT CONNECTION (no pooler) ─────────────────────────────────────
 # project ref = ktgajqymvuaqeyiropmt  (from the pooler username)
-import socket
+
 
 # Force IPv4 resolution to avoid IPv6 "Cannot assign requested address" errors
 _PG_IPV4 = None
