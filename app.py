@@ -185,14 +185,14 @@ except Exception:
 # "InvalidSchemaName" errors that PgBouncer otherwise causes.
 
 # ── SUPABASE POOLER CONNECTION (IPv4 Compatible) ─────────────────────────────
+# ── SUPABASE POOLER CONNECTION (IPv4 Compatible) ─────────────────────────────
 _PG_PARAMS = dict(
     host            = "aws-1-ap-northeast-2.pooler.supabase.com",
-    port            = 5432,                                      
+    port            = 5432,                                     
     dbname          = "postgres",
     user            = "postgres.ktgajqymvuaqeyiropmt",          
     password        = "MYfOKRcopF8tH2S1",
     sslmode         = "require",
-    options         = "-c search_path=public",                   # <-- Critical: Fixes InvalidSchemaName
     connect_timeout = 15,
 )
 _USE_PG = True
@@ -205,13 +205,22 @@ except ImportError:
 
 
 def _pg_conn():
-    """Open a Supabase Postgres connection using explicit keyword params.
-    Never passes a URL string so libpq never mis-parses the dotted username."""
+    """Open a Supabase Postgres connection and force the schema."""
     last_err = None
     for _attempt in range(2):
         try:
             conn = psycopg2.connect(**_PG_PARAMS)
             conn.autocommit = False
+            
+            # ── CRITICAL FIX ──────────────────────────────────────────────
+            # PgBouncer strips the 'options' parameter, so we must explicitly
+            # set the search_path to 'public' right after connecting. This 
+            # guarantees Postgres knows where your tables are.
+            cur = conn.cursor()
+            cur.execute("SET search_path TO public;")
+            cur.close()
+            # ──────────────────────────────────────────────────────────────
+            
             return conn
         except Exception as e:
             last_err = e
