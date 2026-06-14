@@ -2515,7 +2515,7 @@ elif _page == 'corp_actions':
         st.markdown('<div class="sec" style="margin-top:1rem">📌 Your Holdings</div>',
                     unsafe_allow_html=True)
         with st.spinner("Fetching corporate actions for your holdings..."):
-            port_actions = fetch_bulk_corporate_actions(open_syms, max_workers=20)
+            port_actions = fetch_bulk_corporate_actions(open_syms, max_workers=5)
 
         p_rows = ""
         for sym in open_syms:
