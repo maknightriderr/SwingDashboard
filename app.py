@@ -733,47 +733,41 @@ table.t tr.row-loss td   {{ box-shadow: inset 3px 0 0 var(--red); }}
     background: var(--card) !important; border-right: 1px solid var(--border);
     padding-top: 1rem;
 }}
-/* CRITICAL FIX — keep the sidebar expand ("maximize") control ALWAYS visible.
-   Streamlit changed this test-id across versions, so we target every known
-   variant. The backdrop-filter was removed from the sidebar above because it
-   created a stacking context that hid this button after collapsing. */
+/* Force-show the sidebar expand control across ALL Streamlit versions */
 [data-testid="stSidebarCollapsedControl"],
 [data-testid="collapsedControl"],
 [data-testid="stSidebarCollapseButton"],
-button[kind="headerNoPadding"][data-testid="baseButton-headerNoPadding"] {{
+[data-testid="stExpandSidebarButton"],
+button[kind="header"],
+button[kind="headerNoPadding"] {{
     display: flex !important; visibility: visible !important; opacity: 1 !important;
-    z-index: 1000000 !important;
+    z-index: 999999 !important;
 }}
-/* The floating expand control when sidebar is collapsed */
+/* Floating expand button when collapsed — pin it top-left, make it obvious */
 [data-testid="stSidebarCollapsedControl"],
-[data-testid="collapsedControl"] {{
+[data-testid="collapsedControl"],
+[data-testid="stExpandSidebarButton"] {{
     position: fixed !important; top: .55rem !important; left: .55rem !important;
     background: var(--accent) !important; border-radius: 8px !important;
     padding: .3rem !important; box-shadow: 0 2px 12px rgba(0,0,0,.5) !important;
 }}
 [data-testid="stSidebarCollapsedControl"] svg,
-[data-testid="collapsedControl"] svg {{
+[data-testid="collapsedControl"] svg,
+[data-testid="stExpandSidebarButton"] svg {{
     color: #000 !important; fill: #000 !important; width: 1.5rem; height: 1.5rem;
 }}
-[data-testid="stSidebarCollapseButton"] svg {{ color: var(--text) !important; }}
-/* The Streamlit top header bar can overlap the control — keep it transparent
-   and non-blocking so the expand button is always clickable. */
-[data-testid="stHeader"] {{
-    background: transparent !important; z-index: 1 !important;
-}}
-/* Ensure dataframes scroll internally (both axes) and never clip results */
-[data-testid="stDataFrame"] {{ overflow: auto !important; }}
-[data-testid="stDataFrame"] > div {{ overflow: auto !important; max-width: 100% !important; }}
-.stDataFrame [data-testid="stDataFrameResizable"] {{ overflow: auto !important; }}
-/* Mobile: bigger tap target, sidebar takes most of the screen when open */
+/* Don't let the (hidden) header bar swallow clicks on the expand button */
+[data-testid="stHeader"] {{ background: transparent !important; z-index: 1 !important; }}
 @media (max-width: 768px) {{
     [data-testid="stSidebarCollapsedControl"],
-    [data-testid="collapsedControl"] {{
+    [data-testid="collapsedControl"],
+    [data-testid="stExpandSidebarButton"] {{
         top: .5rem !important; left: .5rem !important;
         padding: .45rem !important; transform: scale(1.2);
     }}
     [data-testid="stSidebar"] {{ min-width: 82vw !important; }}
 }}
+
 div[data-baseweb="input"], div[data-baseweb="select"],
 [data-testid="stNumberInputContainer"] {{
     background-color: var(--input) !important; border: 1px solid var(--border) !important;
