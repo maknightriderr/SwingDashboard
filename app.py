@@ -154,22 +154,25 @@ def verify_hash(password, hashed_pw):
     return make_hash(password) == hashed_pw
 
 # ── Database ───────────────────────────────────────────────────────────────────
-# Supabase Postgres — hardcoded connection params (no URL string, no secrets lookup).
-# Passing params as explicit keyword args bypasses libpq URL parsing which
-# misinterprets the dot in 'postgres.xxxx' usernames as schema.user notation.
+# Uses Supabase DIRECT connection (db.xxxx.supabase.co port 5432) instead of
+# the session pooler. The pooler (aws-1-ap-northeast-2.pooler.supabase.com)
+# applies schema restrictions that cause InvalidSchemaName regardless of how
+# the SQL is qualified. The direct connection bypasses the pooler entirely and
+# works with standard psycopg2. Fine for a personal dashboard (1-2 users).
 # ==============================================================================
 
-DB = "trades_v2.db"   # SQLite fallback (used locally without Postgres)
+DB = "trades_v2.db"   # SQLite fallback (used if psycopg2 unavailable)
 
-# ── HARDCODED SUPABASE CONNECTION ──────────────────────────────────────────────
+# ── SUPABASE DIRECT CONNECTION (no pooler) ─────────────────────────────────────
+# project ref = ktgajqymvuaqeyiropmt  (from the pooler username)
 _PG_PARAMS = dict(
-    host     = "aws-1-ap-northeast-2.pooler.supabase.com",
-    port     = 5432,
-    dbname   = "postgres",
-    user     = "postgres.ktgajqymvuaqeyiropmt",
-    password = "MYfOKRcopF8tH2S1",
-    sslmode  = "require",
-    connect_timeout = 10,
+    host            = "db.ktgajqymvuaqeyiropmt.supabase.co",
+    port            = 5432,
+    dbname          = "postgres",
+    user            = "postgres",
+    password        = "MYfOKRcopF8tH2S1",
+    sslmode         = "require",
+    connect_timeout = 15,
 )
 _USE_PG = True
 
