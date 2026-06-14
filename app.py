@@ -424,8 +424,8 @@ if st.session_state.user_id is None:
                 # Cookie points to a user that doesn't exist in THIS database
                 # (e.g. Postgres→SQLite fallback). Clear the stale cookie.
                 controller.set("swing_user_id", "", max_age=0)
-        except Exception:
-      pass
+      except Exception:
+            pass
 
 
     st.markdown(
