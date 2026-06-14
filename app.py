@@ -183,9 +183,30 @@ except ImportError:
     _USE_PG = False
 
 
+# ── Database ───────────────────────────────────────────────────────────────────
+DB = "trades_v2.db"   # SQLite fallback
+
+# ── NEON DATABASE CONNECTION ──────────────────────────────────────────────────
+_PG_PARAMS = dict(
+    host            = "ep-cold-morning-atyjado2.c-9.us-east-1.aws.neon.tech",
+    port            = 5432,                                     
+    dbname          = "neondb",
+    user            = "neondb_owner",          
+    password        = "npg_jZxyXU6vRm1P",
+    sslmode         = "require",
+    connect_timeout = 15,
+)
+_USE_PG = True
+
+try:
+    import psycopg2
+    import psycopg2.extras
+except ImportError:
+    _USE_PG = False
+
+
 def _pg_conn():
-    """Open a Supabase Postgres connection using explicit keyword params.
-    Never passes a URL string so libpq never mis-parses the dotted username."""
+    """Open a Neon Postgres connection."""
     last_err = None
     for _attempt in range(2):
         try:
@@ -198,45 +219,18 @@ def _pg_conn():
     raise last_err
 
 def _q(sql):
-    """Translate SQLite SQL → Postgres '%s' placeholders and 'INSERT OR REPLACE'.
-    Schema qualification is handled directly in db() below."""
+    """Translate SQLite SQL → Postgres '%s' placeholders."""
     if not _USE_PG:
         return sql
     s = sql.replace("?", "%s")
     s = s.replace("INSERT OR REPLACE INTO", "INSERT INTO")
     return s
 
-
-_PG_SCHEMA_PREFIX = "public."
-_PG_TABLES = ("users", "trades", "portfolio_history", "tg_config", "watchlist")
-
-
-def _pg_qualify(sql):
-    """Hardcode public. prefix into every table name in the SQL string.
-    This runs BEFORE psycopg2 sees the query so it's guaranteed to work
-    regardless of search_path, pooler behaviour, or connection options."""
-    s = sql
-    for tbl in _PG_TABLES:
-        # Replace bare table name with public.table — cover all SQL contexts.
-        # We replace the longer patterns first to avoid partial matches.
-        for kw in ("TABLE IF NOT EXISTS ", "DELETE FROM ", "UPDATE ",
-                   "INSERT INTO ", "FROM ", "JOIN "):
-            bare = kw + tbl
-            qualified = kw + _PG_SCHEMA_PREFIX + tbl
-            if bare in s:
-                s = s.replace(bare, qualified)
-    return s
-
-
 def db(sql, params=(), fetch=False):
     if _USE_PG:
         conn = _pg_conn()
         cur  = conn.cursor()
-        # Step 1: _q converts placeholders and SQLite-only syntax (INSERT OR REPLACE→INSERT)
-        # Step 2: _pg_qualify adds public. to every table name
-        # Order matters: _q must run first so INSERT OR REPLACE → INSERT INTO
-        # before _pg_qualify looks for "INSERT INTO tg_config" etc.
-        pg_sql = _pg_qualify(_q(sql))
+        pg_sql = _q(sql)
         cur.execute(pg_sql, params)
         conn.commit()
         result = cur.fetchall() if fetch else None
@@ -253,23 +247,22 @@ def db(sql, params=(), fetch=False):
 def init_db():
     if _USE_PG:
         conn = _pg_conn(); cur = conn.cursor()
-        cur.execute("CREATE SCHEMA IF NOT EXISTS public")
-        cur.execute("""CREATE TABLE IF NOT EXISTS public.users(
+        cur.execute("""CREATE TABLE IF NOT EXISTS users(
             id SERIAL PRIMARY KEY,
             username TEXT UNIQUE NOT NULL,
             password_hash TEXT NOT NULL)""")
-        cur.execute("""CREATE TABLE IF NOT EXISTS public.trades(
+        cur.execute("""CREATE TABLE IF NOT EXISTS trades(
             id SERIAL PRIMARY KEY, user_id INTEGER, stock TEXT NOT NULL,
             quantity REAL NOT NULL, buy_at REAL NOT NULL, sell_at REAL,
             status TEXT DEFAULT 'Open',
             added_date TEXT DEFAULT to_char(CURRENT_DATE,'YYYY-MM-DD'),
             closed_date TEXT)""")
-        cur.execute("""CREATE TABLE IF NOT EXISTS public.portfolio_history(
+        cur.execute("""CREATE TABLE IF NOT EXISTS portfolio_history(
             id SERIAL PRIMARY KEY, user_id INTEGER, snapshot_date TEXT,
             total_invested REAL, current_value REAL)""")
-        cur.execute("""CREATE TABLE IF NOT EXISTS public.tg_config(
+        cur.execute("""CREATE TABLE IF NOT EXISTS tg_config(
             user_id INTEGER PRIMARY KEY, bot_token TEXT, chat_id TEXT)""")
-        cur.execute("""CREATE TABLE IF NOT EXISTS public.watchlist(
+        cur.execute("""CREATE TABLE IF NOT EXISTS watchlist(
             id SERIAL PRIMARY KEY, user_id INTEGER, stock TEXT NOT NULL,
             target_price REAL, notes TEXT,
             added_date TEXT DEFAULT to_char(CURRENT_DATE,'YYYY-MM-DD'))""")
@@ -314,7 +307,7 @@ def get_trades(user_id):
     if _USE_PG:
         conn = _pg_conn()
         df = pd.read_sql_query(
-            "SELECT * FROM public.trades WHERE user_id=%s ORDER BY id DESC",
+            "SELECT * FROM trades WHERE user_id=%s ORDER BY id DESC",
             conn, params=(user_id,))
         conn.close()
         return df
@@ -329,7 +322,7 @@ def get_history(user_id):
     if _USE_PG:
         conn = _pg_conn()
         df = pd.read_sql_query(
-            "SELECT * FROM public.portfolio_history WHERE user_id=%s ORDER BY snapshot_date",
+            "SELECT * FROM portfolio_history WHERE user_id=%s ORDER BY snapshot_date",
             conn, params=(user_id,))
         conn.close()
         return df
@@ -344,7 +337,7 @@ def get_watchlist(user_id):
     if _USE_PG:
         conn = _pg_conn()
         df = pd.read_sql_query(
-            "SELECT * FROM public.watchlist WHERE user_id=%s ORDER BY id DESC",
+            "SELECT * FROM watchlist WHERE user_id=%s ORDER BY id DESC",
             conn, params=(user_id,))
         conn.close()
         return df
