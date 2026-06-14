@@ -187,15 +187,15 @@ except Exception:
 # ── SUPABASE POOLER CONNECTION (IPv4 Compatible) ─────────────────────────────
 # ── SUPABASE POOLER CONNECTION (IPv4 Compatible) ─────────────────────────────
 _PG_PARAMS = dict(
-    host            = "aws-1-ap-northeast-2.pooler.supabase.com",
+    host            = "ep-cold-morning-atyjado2.c-9.us-east-1.aws.neon.tech",
     port            = 5432,                                     
-    dbname          = "postgres",
-    user            = "postgres.ktgajqymvuaqeyiropmt",          
-    password        = "MYfOKRcopF8tH2S1",
+    dbname          = "neondb",
+    user            = "neondb_owner",          
+    password        = "npg_jZxyXU6vRm1P",
     sslmode         = "require",
     connect_timeout = 15,
 )
-_USE_PG = True
+_USE_PG = False
 
 try:
     import psycopg2
