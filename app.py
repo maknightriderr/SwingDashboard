@@ -142,8 +142,9 @@ except ImportError:
 
 st.set_page_config(
     page_title="Swing Dashboard", page_icon="📈",
-    layout="wide", initial_sidebar_state="auto"
+    layout="wide", initial_sidebar_state="expanded"
 )
+
 
 # ── Auth helpers ───────────────────────────────────────────────────────────────
 def make_hash(password):
@@ -192,7 +193,8 @@ if _USE_PG:
 
 def _pg_conn():
     """Open a Postgres connection."""
-    return psycopg2.connect(_PG_URL, sslmode="require")
+    return psycopg2.connect(_PG_URL, sslmode="require", connect_timeout=10)
+
 
 def _q(sql):
     """Translate SQLite '?' placeholders to Postgres '%s' when in PG mode."""
@@ -201,7 +203,9 @@ def _q(sql):
     return sql
 
 def init_db():
+    global _USE_PG
     if _USE_PG:
+      try:
         conn = _pg_conn(); cur = conn.cursor()
         cur.execute("""CREATE TABLE IF NOT EXISTS users(
             id SERIAL PRIMARY KEY,
@@ -223,26 +227,43 @@ def init_db():
             target_price REAL, notes TEXT,
             added_date TEXT DEFAULT to_char(CURRENT_DATE,'YYYY-MM-DD'))""")
         conn.commit(); cur.close(); conn.close()
-    else:
-        c = sqlite3.connect(DB)
-        c.execute("""CREATE TABLE IF NOT EXISTS users(
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            username TEXT UNIQUE NOT NULL,
-            password_hash TEXT NOT NULL)""")
-        c.execute("""CREATE TABLE IF NOT EXISTS trades(
-            id INTEGER PRIMARY KEY AUTOINCREMENT, user_id INTEGER, stock TEXT NOT NULL,
-            quantity REAL NOT NULL, buy_at REAL NOT NULL, sell_at REAL,
-            status TEXT DEFAULT 'Open', added_date TEXT DEFAULT(date('now')),
-            closed_date TEXT)""")
-        c.execute("""CREATE TABLE IF NOT EXISTS portfolio_history(
-            id INTEGER PRIMARY KEY AUTOINCREMENT, user_id INTEGER, snapshot_date TEXT,
-            total_invested REAL, current_value REAL)""")
-        c.execute("""CREATE TABLE IF NOT EXISTS tg_config(
-            user_id INTEGER PRIMARY KEY, bot_token TEXT, chat_id TEXT)""")
-        c.execute("""CREATE TABLE IF NOT EXISTS watchlist(
-            id INTEGER PRIMARY KEY AUTOINCREMENT, user_id INTEGER, stock TEXT NOT NULL,
-            target_price REAL, notes TEXT, added_date TEXT DEFAULT(date('now')))""")
-        c.commit(); c.close()
+        return
+      except Exception as _e:
+        # Postgres unreachable (bad URL, IPv6-only direct host, firewall,
+        # wrong password). Fall back to SQLite instead of crashing the whole
+        # app — a startup crash here is what was hiding the sidebar.
+        _USE_PG = False
+        try:
+            st.warning(
+                "⚠️ Postgres unavailable — falling back to local SQLite "
+                "(data will NOT persist across restarts on Streamlit Cloud). "
+                "If using Supabase, use the **Session Pooler** connection "
+                "string (IPv4-compatible), not the direct one. "
+                f"Details: {_e}"
+            )
+        except Exception:
+            pass
+    # SQLite path (default, and fallback if Postgres failed above)
+    c = sqlite3.connect(DB)
+    c.execute("""CREATE TABLE IF NOT EXISTS users(
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        username TEXT UNIQUE NOT NULL,
+        password_hash TEXT NOT NULL)""")
+    c.execute("""CREATE TABLE IF NOT EXISTS trades(
+        id INTEGER PRIMARY KEY AUTOINCREMENT, user_id INTEGER, stock TEXT NOT NULL,
+        quantity REAL NOT NULL, buy_at REAL NOT NULL, sell_at REAL,
+        status TEXT DEFAULT 'Open', added_date TEXT DEFAULT(date('now')),
+        closed_date TEXT)""")
+    c.execute("""CREATE TABLE IF NOT EXISTS portfolio_history(
+        id INTEGER PRIMARY KEY AUTOINCREMENT, user_id INTEGER, snapshot_date TEXT,
+        total_invested REAL, current_value REAL)""")
+    c.execute("""CREATE TABLE IF NOT EXISTS tg_config(
+        user_id INTEGER PRIMARY KEY, bot_token TEXT, chat_id TEXT)""")
+    c.execute("""CREATE TABLE IF NOT EXISTS watchlist(
+        id INTEGER PRIMARY KEY AUTOINCREMENT, user_id INTEGER, stock TEXT NOT NULL,
+        target_price REAL, notes TEXT, added_date TEXT DEFAULT(date('now')))""")
+    c.commit(); c.close()
+
 
 def db(sql, params=(), fetch=False):
     if _USE_PG:
