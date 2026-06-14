@@ -479,8 +479,14 @@ if st.session_state.user_id is None:
                 st.session_state.username = user_row[0][0]
                 st.session_state.first_render_done = False  # defer scans
                 st.rerun()
+            else:
+                # DB lookup failed (connection issue or user deleted), log them out
+                st.session_state.user_id = None
+                controller.remove("swing_user_id")
         except Exception:
-            pass
+            # DB error occurred, log them out to prevent half-logged-in state
+            st.session_state.user_id = None
+            controller.remove("swing_user_id")
 
     st.markdown(
         "<h1 style='text-align:center;margin-top:5rem'>🔐 Quantitative Swing Dashboard</h1>",
@@ -1550,7 +1556,7 @@ st.markdown(theme_css(theme_t), unsafe_allow_html=True)
 with st.sidebar:
     st.markdown(
         f'<div style="font-size:.85rem;font-weight:800;color:var(--accent);'
-        f'margin-bottom:1rem">👤 {st.session_state.username.upper()}</div>',
+        f'margin-bottom:1rem">👤 {(st.session_state.username or "USER").upper()}</div>',
         unsafe_allow_html=True)
 
     # ── DB persistence status badge ────────────────────────────────────────────
