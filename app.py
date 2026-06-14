@@ -10,6 +10,7 @@ Fixes vs v13:
 """
 
 import streamlit as st
+import streamlit.components.v1 as components
 import pandas as pd
 import numpy as np
 import sqlite3
@@ -142,7 +143,7 @@ except ImportError:
 
 st.set_page_config(
     page_title="Swing Dashboard", page_icon="📈",
-    layout="wide", initial_sidebar_state="auto"
+    layout="wide", initial_sidebar_state="expanded"
 )
 
 # ── Auth helpers ───────────────────────────────────────────────────────────────
@@ -191,8 +192,18 @@ if _USE_PG:
         _USE_PG = False   # psycopg2 not installed → fall back to SQLite
 
 def _pg_conn():
-    """Open a Postgres connection."""
-    return psycopg2.connect(_PG_URL, sslmode="require")
+    """Open a Postgres connection (Supabase session pooler compatible).
+    Retries once on transient failures. sslmode=require is mandatory for Supabase."""
+    last_err = None
+    for _attempt in range(2):
+        try:
+            conn = psycopg2.connect(_PG_URL, sslmode="require", connect_timeout=10)
+            conn.autocommit = False
+            return conn
+        except Exception as e:
+            last_err = e
+            time.sleep(0.5)
+    raise last_err
 
 def _q(sql):
     """Translate SQLite '?' placeholders to Postgres '%s' when in PG mode."""
@@ -277,12 +288,11 @@ def login_user(username, password):
 
 def get_trades(user_id):
     if _USE_PG:
-        from sqlalchemy import create_engine
-        engine = create_engine(_PG_URL)
+        conn = _pg_conn()
         df = pd.read_sql_query(
             "SELECT * FROM trades WHERE user_id=%s ORDER BY id DESC",
-            engine, params=(user_id,))
-        engine.dispose()
+            conn, params=(user_id,))
+        conn.close()
         return df
     conn = sqlite3.connect(DB)
     df = pd.read_sql_query(
@@ -291,15 +301,13 @@ def get_trades(user_id):
     conn.close()
     return df
 
-# REPLACE get_history with this:
 def get_history(user_id):
     if _USE_PG:
-        from sqlalchemy import create_engine
-        engine = create_engine(_PG_URL)
+        conn = _pg_conn()
         df = pd.read_sql_query(
             "SELECT * FROM portfolio_history WHERE user_id=%s ORDER BY snapshot_date",
-            engine, params=(user_id,))
-        engine.dispose()
+            conn, params=(user_id,))
+        conn.close()
         return df
     conn = sqlite3.connect(DB)
     df = pd.read_sql_query(
@@ -347,12 +355,11 @@ def add_watchlist(user_id, stock, target=None, notes=""):
 
 def get_watchlist(user_id):
     if _USE_PG:
-        from sqlalchemy import create_engine
-        engine = create_engine(_PG_URL)
+        conn = _pg_conn()
         df = pd.read_sql_query(
             "SELECT * FROM watchlist WHERE user_id=%s ORDER BY id DESC",
-            engine, params=(user_id,))
-        engine.dispose()
+            conn, params=(user_id,))
+        conn.close()
         return df
     conn = sqlite3.connect(DB)
     df = pd.read_sql_query(
@@ -367,7 +374,24 @@ def delete_watchlist_item(wid, user_id):
 # ── Session & Cookie Init ──────────────────────────────────────────────────────
 from streamlit_cookies_controller import CookieController
 controller = CookieController(key='app_cookies')
-init_db()
+
+# Initialise DB and record connection status for the sidebar badge
+_DB_STATUS = "sqlite"
+_DB_ERROR = None
+try:
+    init_db()
+    _DB_STATUS = "postgres" if _USE_PG else "sqlite"
+except Exception as _db_e:
+    _DB_ERROR = str(_db_e)
+    # If Postgres was configured but failed, fall back to SQLite so the app
+    # still loads (data won't persist, but the user isn't locked out).
+    if _USE_PG:
+        _USE_PG = False
+        _DB_STATUS = "sqlite_fallback"
+        try:
+            init_db()
+        except Exception:
+            pass
 
 # Ensure session state variables exist
 for k, v in [("user_id", None), ("username", None), ("edit_id", None), ("close_id", None), ("del_id", None),
@@ -379,7 +403,11 @@ for k, v in [("user_id", None), ("username", None), ("edit_id", None), ("close_i
              ("custom_stocks_input", ""), ("active_page", "portfolio"),
              ("smc_scan_cache", None),
              ("first_render_done", False), ("_kickoff_scan", False),
-             ("_scan_stage", "done"),
+             ("_scan_stage", "done"), ("_deep_stage", "sector"),
+             ("_deep_running", False), ("_manual_deep_request", False),
+             ("_manual_fast_request", False),
+             ("fast_interval_sec", 300), ("deep_interval_sec", 900),
+             ("auto_fast", True), ("auto_deep", True),
              ("filter_status", "All"),
              ("filter_pnl", "All"), ("search", ""), ("theme", "Obsidian & Gold (Institutional)")]:
     if k not in st.session_state:
@@ -455,6 +483,61 @@ if st.session_state.user_id is None:
 
 # User ID strictly injected into all DB calls below
 UID = st.session_state.user_id
+
+# ── HARDCODED SIDEBAR TOGGLE ───────────────────────────────────────────────────
+# Streamlit's native expand control is unreliable across versions and themes.
+# This injects an always-present floating button that finds and clicks the real
+# (possibly hidden) sidebar toggle via JS. Works on desktop AND mobile.
+components.html("""
+<script>
+(function() {
+    const doc = window.parent.document;
+    if (doc.getElementById('hard-sidebar-toggle')) return;  // inject once
+
+    const btn = doc.createElement('button');
+    btn.id = 'hard-sidebar-toggle';
+    btn.innerHTML = '☰';
+    btn.title = 'Toggle sidebar';
+    btn.style.cssText = [
+        'position:fixed', 'top:10px', 'left:10px', 'z-index:2147483647',
+        'width:42px', 'height:42px', 'border-radius:10px', 'border:none',
+        'background:#d4af37', 'color:#000', 'font-size:20px', 'font-weight:800',
+        'cursor:pointer', 'box-shadow:0 3px 14px rgba(0,0,0,.55)',
+        'display:flex', 'align-items:center', 'justify-content:center',
+        'transition:transform .15s ease'
+    ].join(';');
+    btn.onmouseover = () => btn.style.transform = 'scale(1.08)';
+    btn.onmouseout  = () => btn.style.transform = 'scale(1)';
+
+    btn.onclick = function() {
+        // Try every known selector for the sidebar toggle, in priority order.
+        const selectors = [
+            '[data-testid="stSidebarCollapsedControl"] button',
+            '[data-testid="stSidebarCollapsedControl"]',
+            '[data-testid="collapsedControl"] button',
+            '[data-testid="collapsedControl"]',
+            '[data-testid="stSidebarCollapseButton"] button',
+            '[data-testid="stSidebarCollapseButton"]',
+            '[aria-label="Open sidebar"]',
+            '[aria-label="Close sidebar"]'
+        ];
+        for (const sel of selectors) {
+            const el = doc.querySelector(sel);
+            if (el) { el.click(); return; }
+        }
+        // Last resort: toggle the sidebar width directly
+        const sb = doc.querySelector('[data-testid="stSidebar"]');
+        if (sb) {
+            const hidden = sb.getAttribute('aria-expanded') === 'false'
+                        || sb.style.transform.includes('-');
+            sb.style.transform = hidden ? 'translateX(0)' : 'translateX(-100%)';
+            sb.style.visibility = 'visible';
+        }
+    };
+    doc.body.appendChild(btn);
+})();
+</script>
+""", height=0)
 
 THEMES = {
     # ── 1. The flagship: obsidian black + champagne gold, private-bank feel ──
@@ -1320,31 +1403,59 @@ _trade_hash = (hash(tuple(sorted(open_raw["id"].tolist())))
                if not open_raw.empty else 0)
 _trades_changed = (_trade_hash != st.session_state._trade_hash)
 
+# User-configurable intervals (seconds) and auto-scan toggles
+_fast_interval = st.session_state.get("fast_interval_sec", 300)   # default 5 min
+_deep_interval = st.session_state.get("deep_interval_sec", 900)   # default 15 min
+_auto_fast = st.session_state.get("auto_fast", True)
+_auto_deep = st.session_state.get("auto_deep", True)
+
+# Is a sequential deep scan currently in progress? (stage != idle)
+_deep_in_progress = st.session_state.get("_deep_stage", "sector") != "idle" and \
+                    st.session_state.get("_deep_running", False)
+
 if not st.session_state.get("first_render_done", False):
     # PASS 1 — first paint after login: render immediately, defer ALL scanning.
     st.session_state.first_render_done = True
     _fast_due = False
     _deep_due = False
     st.session_state._kickoff_scan = True
-    st.session_state._scan_stage = "fast"   # next pass does the fast scan
+    st.session_state._scan_stage = "fast"
 elif st.session_state.get("_scan_stage") == "fast":
-    # PASS 2 — fast scan only (signals + news, ~20-40s). Deep scan still deferred
-    # so the core dashboard becomes usable before the heavy universe sweep.
+    # PASS 2 — fast scan only (signals + news). Deep scan still deferred.
     _fast_due = True
     _deep_due = False
-    st.session_state._scan_stage = "deep"
-    st.session_state._kickoff_scan = True   # one more rerun to start deep scan
-elif st.session_state.get("_scan_stage") == "deep":
-    # PASS 3 — deep scan (sector + universe + SMC). After this, normal timers.
+    st.session_state._scan_stage = "deep_start"
+    st.session_state._kickoff_scan = True
+elif st.session_state.get("_scan_stage") == "deep_start":
+    # PASS 3 — begin the sequential deep scan (runs section by section).
     _fast_due = False
     _deep_due = True
-    st.session_state._scan_stage = "done"
+    st.session_state._deep_running = True
+    st.session_state._scan_stage = "running"
+elif st.session_state.get("_scan_stage") == "running" and _deep_in_progress:
+    # Deep scan mid-sequence — keep going until all 3 stages done.
+    _fast_due = False
+    _deep_due = True
 else:
-    # Steady state — scans fire only on their 5-min / 15-min schedules.
-    _fast_due = (st.session_state.last_auto_scan == 0.0 or
-                 (_now - st.session_state.last_auto_scan) >= 300)   # 5 min
-    _deep_due = (st.session_state.last_slow_scan == 0.0 or
-                 (_now - st.session_state.last_slow_scan) >= 900)    # 15 min
+    # Steady state — scans fire only on their configured schedules (if auto on).
+    st.session_state._scan_stage = "done"
+    st.session_state._deep_running = False
+    _fast_due = (_auto_fast and
+                 (st.session_state.last_auto_scan == 0.0 or
+                  (_now - st.session_state.last_auto_scan) >= _fast_interval))
+    _deep_due = (_auto_deep and
+                 (st.session_state.last_slow_scan == 0.0 or
+                  (_now - st.session_state.last_slow_scan) >= _deep_interval))
+    # A manual deep-scan request starts the sequence too
+    if st.session_state.get("_manual_deep_request", False):
+        st.session_state._manual_deep_request = False
+        st.session_state._deep_running = True
+        st.session_state._deep_stage = "sector"
+        _deep_due = True
+    # A manual fast-scan request
+    if st.session_state.get("_manual_fast_request", False):
+        st.session_state._manual_fast_request = False
+        _fast_due = True
 
 if _fast_due:
     n_open = len(open_raw)
@@ -1364,36 +1475,64 @@ if _fast_due:
             st.toast(f"⚠️ Signal refresh error: {_e}", icon="⚠️")
 
 if _deep_due:
-    with st.spinner("🔄 Deep scan: sector rotation · universe · SMC setups…"):
-        # Sector rotation + picks
-        try:
-            st.session_state.sector_cache  = sector_rotation()
-            if (st.session_state.sector_cache is not None and
-                    not st.session_state.sector_cache.empty):
-                st.session_state.outlook_cache = predict_sector_outlook(
-                    st.session_state.sector_cache)
-                st.session_state.picks_cache   = find_sector_picks(
-                    st.session_state.sector_cache.head(5)["sector"].tolist(), 3)
-            else:
-                st.session_state.outlook_cache = pd.DataFrame()
-                st.session_state.picks_cache   = []
-        except Exception as _e:
-            st.toast(f"⚠️ Sector refresh error: {_e}", icon="⚠️")
-        # Universe scanner
-        try:
-            _usd = generate_market_scanner()
-            st.session_state.scanner_cache = (_usd if (_usd is not None and not _usd.empty)
-                                              else pd.DataFrame())
-        except Exception as _e:
-            st.toast(f"⚠️ Universe scan error: {_e}", icon="⚠️")
-        # SMC setup scan (if available)
-        try:
-            if scan_for_smc_setups is not None:
-                st.session_state.smc_scan_cache = scan_for_smc_setups(
-                    min_quality="B", action_filter="All")
-        except Exception as _e:
-            st.toast(f"⚠️ SMC scan error: {_e}", icon="⚠️")
-        st.session_state.last_slow_scan = _now
+    # SEQUENTIAL DEEP SCAN — runs ONE section per rerun so each completes and
+    # the UI updates before the next begins. This makes the dashboard feel fast:
+    # sector rotation finishes → shows → universe starts → shows → SMC starts.
+    # The stage is tracked in _deep_stage; each pass advances it and reruns.
+    _stage = st.session_state.get("_deep_stage", "sector")
+
+    if _stage == "sector":
+        with st.spinner("🔄 Step 1/4: Sector rotation…"):
+            try:
+                st.session_state.sector_cache = sector_rotation()
+                if (st.session_state.sector_cache is not None and
+                        not st.session_state.sector_cache.empty):
+                    st.session_state.outlook_cache = predict_sector_outlook(
+                        st.session_state.sector_cache)
+                    st.session_state.picks_cache = find_sector_picks(
+                        st.session_state.sector_cache.head(5)["sector"].tolist(), 3)
+                else:
+                    st.session_state.outlook_cache = pd.DataFrame()
+                    st.session_state.picks_cache   = []
+            except Exception as _e:
+                st.toast(f"⚠️ Sector scan error: {_e}", icon="⚠️")
+        st.session_state._deep_stage = "universe"
+        st.session_state._kickoff_scan = True
+
+    elif _stage == "universe":
+        with st.spinner("🔄 Step 2/4: Universe scanner…"):
+            try:
+                _usd = generate_market_scanner()
+                st.session_state.scanner_cache = (
+                    _usd if (_usd is not None and not _usd.empty) else pd.DataFrame())
+            except Exception as _e:
+                st.toast(f"⚠️ Universe scan error: {_e}", icon="⚠️")
+        st.session_state._deep_stage = "smc"
+        st.session_state._kickoff_scan = True
+
+    elif _stage == "smc":
+        with st.spinner("🔄 Step 3/4: SMC setups…"):
+            try:
+                if scan_for_smc_setups is not None:
+                    st.session_state.smc_scan_cache = scan_for_smc_setups(
+                        min_quality="B", action_filter="All")
+            except Exception as _e:
+                st.toast(f"⚠️ SMC scan error: {_e}", icon="⚠️")
+        st.session_state._deep_stage = "traps"
+        st.session_state._kickoff_scan = True
+
+    elif _stage == "traps":
+        with st.spinner("🔄 Step 4/4: Trap scanner…"):
+            try:
+                if scan_for_traps is not None:
+                    st.session_state.trap_scan_cache = scan_for_traps(min_confidence=55)
+            except Exception as _e:
+                st.toast(f"⚠️ Trap scan error: {_e}", icon="⚠️")
+        st.session_state._deep_stage = "sector"   # reset for next cycle
+        st.session_state._deep_running = False     # sequence complete
+        st.session_state.last_slow_scan = _now      # mark deep scan complete
+        st.toast("✅ Deep scan complete", icon="✅")
+
 
 # ── Portfolio metrics ──────────────────────────────────────────────────────────
 if not df.empty:
@@ -1422,6 +1561,34 @@ with st.sidebar:
         f'<div style="font-size:.85rem;font-weight:800;color:var(--accent);'
         f'margin-bottom:1rem">👤 {st.session_state.username.upper()}</div>',
         unsafe_allow_html=True)
+
+    # ── DB persistence status badge ────────────────────────────────────────────
+    if _DB_STATUS == "postgres":
+        st.markdown(
+            '<div style="font-size:.7rem;font-weight:700;color:#10b981;'
+            'background:rgba(16,185,129,.1);border:1px solid rgba(16,185,129,.3);'
+            'border-radius:6px;padding:.3rem .6rem;margin-bottom:.8rem">'
+            '🟢 Postgres connected — data persists</div>',
+            unsafe_allow_html=True)
+    elif _DB_STATUS == "sqlite_fallback":
+        st.markdown(
+            '<div style="font-size:.7rem;font-weight:700;color:#ef4444;'
+            'background:rgba(239,68,68,.1);border:1px solid rgba(239,68,68,.3);'
+            'border-radius:6px;padding:.3rem .6rem;margin-bottom:.8rem">'
+            '🔴 Postgres failed — using temporary storage. '
+            'Check DATABASE_URL secret.</div>',
+            unsafe_allow_html=True)
+        if _DB_ERROR:
+            with st.expander("⚠️ DB error detail"):
+                st.code(_DB_ERROR[:300])
+    else:
+        st.markdown(
+            '<div style="font-size:.7rem;font-weight:700;color:#f59e0b;'
+            'background:rgba(245,158,11,.1);border:1px solid rgba(245,158,11,.3);'
+            'border-radius:6px;padding:.3rem .6rem;margin-bottom:.8rem">'
+            '🟡 Local storage (data resets on restart). '
+            'Add DATABASE_URL to persist.</div>',
+            unsafe_allow_html=True)
 
     if st.button("🚪 Logout", width="stretch"):
         controller.set("swing_user_id", "", max_age=0)
@@ -1563,25 +1730,66 @@ with st.sidebar:
         placeholder="Search symbol…", label_visibility="collapsed")
 
     st.markdown("<br>", unsafe_allow_html=True)
-    c1, c2 = st.columns(2)
-    with c1:
-        if st.button("🔄 Force Scan", width="stretch"):
-            _cached_market_regime.clear()
-            _cached_prices.clear()
-            st.session_state.last_auto_scan = 0.0
-            st.session_state.last_slow_scan = 0.0
-            st.session_state._trade_hash    = -1
-            st.rerun()
-    with c2:
-        _elapsed_fast = time.time() - st.session_state.last_auto_scan
-        _elapsed_slow = time.time() - st.session_state.last_slow_scan
-        _nxt_fast = max(0, int((300 - _elapsed_fast) // 60))
-        _nxt_slow = max(0, int((900 - _elapsed_slow) // 60))
-        st.markdown(
-            f'<div style="font-size:.7rem;color:var(--muted);padding-top:.5rem;'
-            f'font-weight:600;line-height:1.6">'
-            f'⚡ {_nxt_fast}m core · 🔄 {_nxt_slow}m deep</div>',
-            unsafe_allow_html=True)
+    st.markdown('<div style="font-size:.8rem;font-weight:800;letter-spacing:.05em">'
+                '⚙️ SCAN CONTROLS</div>', unsafe_allow_html=True)
+
+    _interval_opts = {"5 min": 300, "15 min": 900, "30 min": 1800}
+    _interval_labels = list(_interval_opts.keys())
+
+    # Core (fast) scan controls
+    st.markdown('<div style="font-size:.72rem;color:var(--muted);font-weight:700;'
+                'margin:.5rem 0 .2rem">⚡ Core scan (signals · news · prices)</div>',
+                unsafe_allow_html=True)
+    fc1, fc2 = st.columns([1, 1])
+    with fc1:
+        st.session_state.auto_fast = st.toggle(
+            "Auto", value=st.session_state.auto_fast, key="toggle_fast")
+    with fc2:
+        _cur_fast = next((k for k, v in _interval_opts.items()
+                          if v == st.session_state.fast_interval_sec), "5 min")
+        _sel_fast = st.selectbox("Every", _interval_labels,
+                                 index=_interval_labels.index(_cur_fast),
+                                 key="sel_fast", label_visibility="collapsed")
+        st.session_state.fast_interval_sec = _interval_opts[_sel_fast]
+    if st.button("⚡ Scan Core Now", width="stretch"):
+        st.session_state._manual_fast_request = True
+        _cached_prices.clear()
+        st.rerun()
+
+    # Deep scan controls
+    st.markdown('<div style="font-size:.72rem;color:var(--muted);font-weight:700;'
+                'margin:.7rem 0 .2rem">🔄 Deep scan (sector · universe · SMC)</div>',
+                unsafe_allow_html=True)
+    dc1, dc2 = st.columns([1, 1])
+    with dc1:
+        st.session_state.auto_deep = st.toggle(
+            "Auto", value=st.session_state.auto_deep, key="toggle_deep")
+    with dc2:
+        _cur_deep = next((k for k, v in _interval_opts.items()
+                          if v == st.session_state.deep_interval_sec), "15 min")
+        _sel_deep = st.selectbox("Every", _interval_labels,
+                                 index=_interval_labels.index(_cur_deep),
+                                 key="sel_deep", label_visibility="collapsed")
+        st.session_state.deep_interval_sec = _interval_opts[_sel_deep]
+    if st.button("🔄 Scan Deep Now", width="stretch"):
+        st.session_state._manual_deep_request = True
+        st.rerun()
+
+    # Status / countdown
+    _elapsed_fast = time.time() - st.session_state.last_auto_scan
+    _elapsed_slow = time.time() - st.session_state.last_slow_scan
+    _nxt_fast = max(0, int((st.session_state.fast_interval_sec - _elapsed_fast) // 60))
+    _nxt_slow = max(0, int((st.session_state.deep_interval_sec - _elapsed_slow) // 60))
+    if st.session_state.get("_deep_running", False):
+        _deep_status = f'running: {st.session_state.get("_deep_stage","")}'
+    else:
+        _deep_status = f'{_nxt_slow}m' if st.session_state.auto_deep else 'manual'
+    _fast_status = f'{_nxt_fast}m' if st.session_state.auto_fast else 'manual'
+    st.markdown(
+        f'<div style="font-size:.68rem;color:var(--muted);padding-top:.5rem;'
+        f'font-weight:600;line-height:1.6">'
+        f'⚡ core: {_fast_status} · 🔄 deep: {_deep_status}</div>',
+        unsafe_allow_html=True)
 
     st.markdown("<br>", unsafe_allow_html=True)
     st.markdown('<div style="font-size:.8rem;font-weight:800;letter-spacing:.05em">'
@@ -2365,6 +2573,7 @@ elif _page == 'traps':
                 st.success("✅ No bull traps found at this confidence level.")
             else:
                 for bt in bull_traps:
+                  try:
                     conf = bt["confidence"]
                     conf_clr = "#ef4444" if conf >= 80 else "#f59e0b"
                     st.markdown(f"""
@@ -2398,6 +2607,13 @@ elif _page == 'traps':
   </div>
   {('<div style="font-size:.72rem;color:var(--muted);margin-top:.4rem">📐 ' + bt['patterns'] + '</div>') if bt.get('patterns') else ''}
 </div>""", unsafe_allow_html=True)
+                  except Exception:
+                    st.markdown(
+                        f'<div style="background:var(--card);border:1px solid var(--border);'
+                        f'border-radius:8px;padding:.7rem 1rem;margin-bottom:.6rem;font-size:.85rem">'
+                        f'<b>{bt.get("stock","?")}</b> — bull trap '
+                        f'{bt.get("confidence","?")}% (detail unavailable)</div>',
+                        unsafe_allow_html=True)
 
         # ── BEAR TRAPS ──────────────────────────────────────────────────────────
         with col_bear:
@@ -2413,6 +2629,7 @@ elif _page == 'traps':
                 st.info("No bear traps found at this confidence level.")
             else:
                 for brt in bear_traps:
+                  try:
                     conf = brt["confidence"]
                     conf_clr = "#10b981" if conf >= 80 else "#f59e0b"
                     rr = brt.get("risk_reward")
@@ -2455,6 +2672,13 @@ elif _page == 'traps':
   </div>
   {('<div style="font-size:.72rem;color:var(--muted);margin-top:.4rem">📐 ' + brt['patterns'] + '</div>') if brt.get('patterns') else ''}
 </div>""", unsafe_allow_html=True)
+                  except Exception:
+                    st.markdown(
+                        f'<div style="background:var(--card);border:1px solid var(--border);'
+                        f'border-radius:8px;padding:.7rem 1rem;margin-bottom:.6rem;font-size:.85rem">'
+                        f'<b>{brt.get("stock","?")}</b> — bear trap '
+                        f'{brt.get("confidence","?")}% (detail unavailable)</div>',
+                        unsafe_allow_html=True)
 
         # ── Export trap results ─────────────────────────────────────────────────
         st.markdown("<br>", unsafe_allow_html=True)
