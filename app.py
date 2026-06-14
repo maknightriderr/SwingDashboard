@@ -8,6 +8,7 @@ Fixes vs v13:
   - signals.py v12 already deployed: unified risk engine, Wilder ATR/RSI,
     numpy Supertrend, 20-day VWAP, swing-peak Fibonacci, MACD histogram
 """
+
 import streamlit as st
 import streamlit.components.v1 as components
 import pandas as pd
@@ -18,7 +19,6 @@ import plotly.express as px
 import plotly.graph_objects as go
 from datetime import datetime
 import time
-import re 
 import hashlib
 
 from signals import (
@@ -165,37 +165,16 @@ DB = "trades_v2.db"   # SQLite fallback (used if psycopg2 unavailable)
 
 # ── SUPABASE DIRECT CONNECTION (no pooler) ─────────────────────────────────────
 # project ref = ktgajqymvuaqeyiropmt  (from the pooler username)
-
-
-# Force IPv4 resolution to avoid IPv6 "Cannot assign requested address" errors
-_PG_IPV4 = None
-try:
-    _PG_IPV4 = socket.getaddrinfo(
-        "db.ktgajqymvuaqeyiropmt.supabase.co", 5432,
-        family=socket.AF_INET,          # Force IPv4 only
-        type=socket.SOCK_STREAM,
-    )[0][4][0]
-except Exception:
-    pass  # Will fall back to default resolution if this fails
-
-# ── SUPABASE POOLER CONNECTION (IPv4 Compatible) ─────────────────────────────
-# Supabase's direct connection (db.xxxx.supabase.co:5432) is IPv6-only, which
-# fails on Streamlit Cloud ("Cannot assign requested address"). The Pooler 
-# provides an IPv4 address. We explicitly set search_path=public to prevent the
-# "InvalidSchemaName" errors that PgBouncer otherwise causes.
-
-# ── SUPABASE POOLER CONNECTION (IPv4 Compatible) ─────────────────────────────
-# ── SUPABASE POOLER CONNECTION (IPv4 Compatible) ─────────────────────────────
 _PG_PARAMS = dict(
-    host            = "ep-cold-morning-atyjado2.c-9.us-east-1.aws.neon.tech",
-    port            = 5432,                                     
-    dbname          = "neondb",
-    user            = "neondb_owner",          
-    password        = "npg_jZxyXU6vRm1P",
+    host            = "db.ktgajqymvuaqeyiropmt.supabase.co",
+    port            = 5432,
+    dbname          = "postgres",
+    user            = "postgres",
+    password        = "MYfOKRcopF8tH2S1",
     sslmode         = "require",
     connect_timeout = 15,
 )
-_USE_PG = True 
+_USE_PG = True
 
 try:
     import psycopg2
@@ -205,7 +184,8 @@ except ImportError:
 
 
 def _pg_conn():
-    """Open a Supabase Postgres connection."""
+    """Open a Supabase Postgres connection using explicit keyword params.
+    Never passes a URL string so libpq never mis-parses the dotted username."""
     last_err = None
     for _attempt in range(2):
         try:
@@ -218,6 +198,8 @@ def _pg_conn():
     raise last_err
 
 def _q(sql):
+    """Translate SQLite SQL → Postgres '%s' placeholders and 'INSERT OR REPLACE'.
+    Schema qualification is handled directly in db() below."""
     if not _USE_PG:
         return sql
     s = sql.replace("?", "%s")
@@ -225,22 +207,24 @@ def _q(sql):
     return s
 
 
-
-
 _PG_SCHEMA_PREFIX = "public."
 _PG_TABLES = ("users", "trades", "portfolio_history", "tg_config", "watchlist")
 
 
 def _pg_qualify(sql):
-    """Hardcode public. prefix into every table name using regex.
-    This fixes the bug where 'INSERT INTO table(' was missed because of the parenthesis."""
+    """Hardcode public. prefix into every table name in the SQL string.
+    This runs BEFORE psycopg2 sees the query so it's guaranteed to work
+    regardless of search_path, pooler behaviour, or connection options."""
     s = sql
     for tbl in _PG_TABLES:
-        # Match the table name only when preceded by SQL keywords, 
-        # and followed by a word boundary (space, parenthesis, semicolon, etc.)
-        pattern = r'(TABLE IF NOT EXISTS|DELETE FROM|UPDATE|INSERT INTO|FROM|JOIN)\s+' + re.escape(tbl) + r'\b'
-        replacement = rf'\1 public.' + tbl
-        s = re.sub(pattern, replacement, s, flags=re.IGNORECASE)
+        # Replace bare table name with public.table — cover all SQL contexts.
+        # We replace the longer patterns first to avoid partial matches.
+        for kw in ("TABLE IF NOT EXISTS ", "DELETE FROM ", "UPDATE ",
+                   "INSERT INTO ", "FROM ", "JOIN "):
+            bare = kw + tbl
+            qualified = kw + _PG_SCHEMA_PREFIX + tbl
+            if bare in s:
+                s = s.replace(bare, qualified)
     return s
 
 
@@ -248,7 +232,11 @@ def db(sql, params=(), fetch=False):
     if _USE_PG:
         conn = _pg_conn()
         cur  = conn.cursor()
-        pg_sql = _q(sql)
+        # Step 1: _q converts placeholders and SQLite-only syntax (INSERT OR REPLACE→INSERT)
+        # Step 2: _pg_qualify adds public. to every table name
+        # Order matters: _q must run first so INSERT OR REPLACE → INSERT INTO
+        # before _pg_qualify looks for "INSERT INTO tg_config" etc.
+        pg_sql = _pg_qualify(_q(sql))
         cur.execute(pg_sql, params)
         conn.commit()
         result = cur.fetchall() if fetch else None
@@ -265,27 +253,23 @@ def db(sql, params=(), fetch=False):
 def init_db():
     if _USE_PG:
         conn = _pg_conn(); cur = conn.cursor()
-        
-        # Removed "CREATE SCHEMA" and "ALTER ROLE" to prevent 
-        # "tuple concurrently updated" errors on concurrent loads.
-        # The `options="-c search_path=public"` in _PG_PARAMS handles the schema.
-        
-        cur.execute("""CREATE TABLE IF NOT EXISTS users(
+        cur.execute("CREATE SCHEMA IF NOT EXISTS public")
+        cur.execute("""CREATE TABLE IF NOT EXISTS public.users(
             id SERIAL PRIMARY KEY,
             username TEXT UNIQUE NOT NULL,
             password_hash TEXT NOT NULL)""")
-        cur.execute("""CREATE TABLE IF NOT EXISTS trades(
+        cur.execute("""CREATE TABLE IF NOT EXISTS public.trades(
             id SERIAL PRIMARY KEY, user_id INTEGER, stock TEXT NOT NULL,
             quantity REAL NOT NULL, buy_at REAL NOT NULL, sell_at REAL,
             status TEXT DEFAULT 'Open',
             added_date TEXT DEFAULT to_char(CURRENT_DATE,'YYYY-MM-DD'),
             closed_date TEXT)""")
-        cur.execute("""CREATE TABLE IF NOT EXISTS portfolio_history(
+        cur.execute("""CREATE TABLE IF NOT EXISTS public.portfolio_history(
             id SERIAL PRIMARY KEY, user_id INTEGER, snapshot_date TEXT,
             total_invested REAL, current_value REAL)""")
-        cur.execute("""CREATE TABLE IF NOT EXISTS tg_config(
+        cur.execute("""CREATE TABLE IF NOT EXISTS public.tg_config(
             user_id INTEGER PRIMARY KEY, bot_token TEXT, chat_id TEXT)""")
-        cur.execute("""CREATE TABLE IF NOT EXISTS watchlist(
+        cur.execute("""CREATE TABLE IF NOT EXISTS public.watchlist(
             id SERIAL PRIMARY KEY, user_id INTEGER, stock TEXT NOT NULL,
             target_price REAL, notes TEXT,
             added_date TEXT DEFAULT to_char(CURRENT_DATE,'YYYY-MM-DD'))""")
@@ -479,14 +463,8 @@ if st.session_state.user_id is None:
                 st.session_state.username = user_row[0][0]
                 st.session_state.first_render_done = False  # defer scans
                 st.rerun()
-            else:
-                # DB lookup failed (connection issue or user deleted), log them out
-                st.session_state.user_id = None
-                controller.remove("swing_user_id")
         except Exception:
-            # DB error occurred, log them out to prevent half-logged-in state
-            st.session_state.user_id = None
-            controller.remove("swing_user_id")
+            pass
 
     st.markdown(
         "<h1 style='text-align:center;margin-top:5rem'>🔐 Quantitative Swing Dashboard</h1>",
@@ -1556,7 +1534,7 @@ st.markdown(theme_css(theme_t), unsafe_allow_html=True)
 with st.sidebar:
     st.markdown(
         f'<div style="font-size:.85rem;font-weight:800;color:var(--accent);'
-        f'margin-bottom:1rem">👤 {(st.session_state.username or "USER").upper()}</div>',
+        f'margin-bottom:1rem">👤 {st.session_state.username.upper()}</div>',
         unsafe_allow_html=True)
 
     # ── DB persistence status badge ────────────────────────────────────────────
