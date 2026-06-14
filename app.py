@@ -142,48 +142,8 @@ except ImportError:
 
 st.set_page_config(
     page_title="Swing Dashboard", page_icon="📈",
-    layout="wide", initial_sidebar_state="expanded"
+    layout="wide", initial_sidebar_state="auto"
 )
-
-import streamlit.components.v1 as components
-
-# Keep an always-visible "open sidebar" affordance, version-independent.
-components.html(
-    """
-    <script>
-    const doc = window.parent.document;
-    function ensureSidebarButton() {
-        // If the sidebar is collapsed, Streamlit hides/relocates its control.
-        // Add our own floating button that clicks whatever expand control exists.
-        if (doc.getElementById('force-open-sb')) return;
-        const btn = doc.createElement('button');
-        btn.id = 'force-open-sb';
-        btn.innerText = '☰';
-        btn.style.cssText = 'position:fixed;top:8px;left:8px;z-index:999999;'
-            + 'background:#d4af37;color:#000;border:none;border-radius:8px;'
-            + 'font-size:20px;padding:4px 10px;cursor:pointer;'
-            + 'box-shadow:0 2px 10px rgba(0,0,0,.5)';
-        btn.onclick = function() {
-            const sel = [
-                '[data-testid="stSidebarCollapsedControl"] button',
-                '[data-testid="collapsedControl"] button',
-                '[data-testid="stExpandSidebarButton"]',
-                '[data-testid="stSidebarCollapsedControl"]',
-                '[data-testid="collapsedControl"]'
-            ];
-            for (const s of sel) {
-                const el = doc.querySelector(s);
-                if (el) { el.click(); return; }
-            }
-        };
-        doc.body.appendChild(btn);
-    }
-    setInterval(ensureSidebarButton, 500);
-    </script>
-    """,
-    height=0,
-)
-
 
 # ── Auth helpers ───────────────────────────────────────────────────────────────
 def make_hash(password):
@@ -232,8 +192,7 @@ if _USE_PG:
 
 def _pg_conn():
     """Open a Postgres connection."""
-    return psycopg2.connect(_PG_URL, sslmode="require", connect_timeout=10)
-
+    return psycopg2.connect(_PG_URL, sslmode="require")
 
 def _q(sql):
     """Translate SQLite '?' placeholders to Postgres '%s' when in PG mode."""
@@ -242,65 +201,48 @@ def _q(sql):
     return sql
 
 def init_db():
-    global _USE_PG
     if _USE_PG:
-        try:
-            conn = _pg_conn(); cur = conn.cursor()
-            cur.execute("""CREATE TABLE IF NOT EXISTS users(
-                id SERIAL PRIMARY KEY,
-                username TEXT UNIQUE NOT NULL,
-                password_hash TEXT NOT NULL)""")
-            cur.execute("""CREATE TABLE IF NOT EXISTS trades(
-                id SERIAL PRIMARY KEY, user_id INTEGER, stock TEXT NOT NULL,
-                quantity REAL NOT NULL, buy_at REAL NOT NULL, sell_at REAL,
-                status TEXT DEFAULT 'Open',
-                added_date TEXT DEFAULT to_char(CURRENT_DATE,'YYYY-MM-DD'),
-                closed_date TEXT)""")
-            cur.execute("""CREATE TABLE IF NOT EXISTS portfolio_history(
-                id SERIAL PRIMARY KEY, user_id INTEGER, snapshot_date TEXT,
-                total_invested REAL, current_value REAL)""")
-            cur.execute("""CREATE TABLE IF NOT EXISTS tg_config(
-                user_id INTEGER PRIMARY KEY, bot_token TEXT, chat_id TEXT)""")
-            cur.execute("""CREATE TABLE IF NOT EXISTS watchlist(
-                id SERIAL PRIMARY KEY, user_id INTEGER, stock TEXT NOT NULL,
-                target_price REAL, notes TEXT,
-                added_date TEXT DEFAULT to_char(CURRENT_DATE,'YYYY-MM-DD'))""")
-            conn.commit(); cur.close(); conn.close()
-            return
-        except Exception as _e:
-            _USE_PG = False
-            try:
-                st.warning(
-                    "⚠️ Postgres unavailable — falling back to local SQLite "
-                    "(data will NOT persist across restarts on Streamlit Cloud). "
-                    "If using Supabase, use the **Session Pooler** connection "
-                    "string (IPv4-compatible), not the direct one. "
-                    f"Details: {_e}"
-                )
-            except Exception:
-                pass
-    # SQLite path (default, and fallback if Postgres failed above)
-    c = sqlite3.connect(DB)
-    c.execute("""CREATE TABLE IF NOT EXISTS users(
-        id INTEGER PRIMARY KEY AUTOINCREMENT,
-        username TEXT UNIQUE NOT NULL,
-        password_hash TEXT NOT NULL)""")
-    c.execute("""CREATE TABLE IF NOT EXISTS trades(
-        id INTEGER PRIMARY KEY AUTOINCREMENT, user_id INTEGER, stock TEXT NOT NULL,
-        quantity REAL NOT NULL, buy_at REAL NOT NULL, sell_at REAL,
-        status TEXT DEFAULT 'Open', added_date TEXT DEFAULT(date('now')),
-        closed_date TEXT)""")
-    c.execute("""CREATE TABLE IF NOT EXISTS portfolio_history(
-        id INTEGER PRIMARY KEY AUTOINCREMENT, user_id INTEGER, snapshot_date TEXT,
-        total_invested REAL, current_value REAL)""")
-    c.execute("""CREATE TABLE IF NOT EXISTS tg_config(
-        user_id INTEGER PRIMARY KEY, bot_token TEXT, chat_id TEXT)""")
-    c.execute("""CREATE TABLE IF NOT EXISTS watchlist(
-        id INTEGER PRIMARY KEY AUTOINCREMENT, user_id INTEGER, stock TEXT NOT NULL,
-        target_price REAL, notes TEXT, added_date TEXT DEFAULT(date('now')))""")
-    c.commit(); c.close()
-
-
+        conn = _pg_conn(); cur = conn.cursor()
+        cur.execute("""CREATE TABLE IF NOT EXISTS users(
+            id SERIAL PRIMARY KEY,
+            username TEXT UNIQUE NOT NULL,
+            password_hash TEXT NOT NULL)""")
+        cur.execute("""CREATE TABLE IF NOT EXISTS trades(
+            id SERIAL PRIMARY KEY, user_id INTEGER, stock TEXT NOT NULL,
+            quantity REAL NOT NULL, buy_at REAL NOT NULL, sell_at REAL,
+            status TEXT DEFAULT 'Open',
+            added_date TEXT DEFAULT to_char(CURRENT_DATE,'YYYY-MM-DD'),
+            closed_date TEXT)""")
+        cur.execute("""CREATE TABLE IF NOT EXISTS portfolio_history(
+            id SERIAL PRIMARY KEY, user_id INTEGER, snapshot_date TEXT,
+            total_invested REAL, current_value REAL)""")
+        cur.execute("""CREATE TABLE IF NOT EXISTS tg_config(
+            user_id INTEGER PRIMARY KEY, bot_token TEXT, chat_id TEXT)""")
+        cur.execute("""CREATE TABLE IF NOT EXISTS watchlist(
+            id SERIAL PRIMARY KEY, user_id INTEGER, stock TEXT NOT NULL,
+            target_price REAL, notes TEXT,
+            added_date TEXT DEFAULT to_char(CURRENT_DATE,'YYYY-MM-DD'))""")
+        conn.commit(); cur.close(); conn.close()
+    else:
+        c = sqlite3.connect(DB)
+        c.execute("""CREATE TABLE IF NOT EXISTS users(
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            username TEXT UNIQUE NOT NULL,
+            password_hash TEXT NOT NULL)""")
+        c.execute("""CREATE TABLE IF NOT EXISTS trades(
+            id INTEGER PRIMARY KEY AUTOINCREMENT, user_id INTEGER, stock TEXT NOT NULL,
+            quantity REAL NOT NULL, buy_at REAL NOT NULL, sell_at REAL,
+            status TEXT DEFAULT 'Open', added_date TEXT DEFAULT(date('now')),
+            closed_date TEXT)""")
+        c.execute("""CREATE TABLE IF NOT EXISTS portfolio_history(
+            id INTEGER PRIMARY KEY AUTOINCREMENT, user_id INTEGER, snapshot_date TEXT,
+            total_invested REAL, current_value REAL)""")
+        c.execute("""CREATE TABLE IF NOT EXISTS tg_config(
+            user_id INTEGER PRIMARY KEY, bot_token TEXT, chat_id TEXT)""")
+        c.execute("""CREATE TABLE IF NOT EXISTS watchlist(
+            id INTEGER PRIMARY KEY AUTOINCREMENT, user_id INTEGER, stock TEXT NOT NULL,
+            target_price REAL, notes TEXT, added_date TEXT DEFAULT(date('now')))""")
+        c.commit(); c.close()
 
 def db(sql, params=(), fetch=False):
     if _USE_PG:
@@ -431,10 +373,9 @@ for k, v in [("user_id", None), ("username", None), ("edit_id", None), ("close_i
              ("outlook_cache", None), ("scanner_cache", None), ("trap_scan_cache", None),
              ("corp_actions_cache", None), ("selected_scanner_sector", "All Sectors"),
              ("custom_stocks_input", ""), ("active_page", "portfolio"),
-              ("smc_scan_cache", None),
+             ("smc_scan_cache", None),
              ("first_render_done", False), ("_kickoff_scan", False),
              ("_scan_stage", "done"),
-             ("_deep_stage", "idle"),
              ("filter_status", "All"),
              ("filter_pnl", "All"), ("search", ""), ("theme", "Obsidian & Gold (Institutional)")]:
     if k not in st.session_state:
@@ -452,17 +393,13 @@ if st.session_state.user_id is None:
     if cookies and cookies.get("swing_user_id"):
         try:
             cookie_uid = int(cookies.get("swing_user_id"))
+            st.session_state.user_id = cookie_uid
             user_row = db("SELECT username FROM users WHERE id=?",
                           (cookie_uid,), fetch=True)
             if user_row:
-                st.session_state.user_id = cookie_uid
                 st.session_state.username = user_row[0][0]
                 st.session_state.first_render_done = False  # defer scans
                 st.rerun()
-            else:
-                # Cookie points to a user that doesn't exist in THIS database
-                # (e.g. Postgres→SQLite fallback). Clear the stale cookie.
-                controller.set("swing_user_id", "", max_age=0)
         except Exception:
             pass
 
@@ -772,41 +709,47 @@ table.t tr.row-loss td   {{ box-shadow: inset 3px 0 0 var(--red); }}
     background: var(--card) !important; border-right: 1px solid var(--border);
     padding-top: 1rem;
 }}
-/* Force-show the sidebar expand control across ALL Streamlit versions */
+/* CRITICAL FIX — keep the sidebar expand ("maximize") control ALWAYS visible.
+   Streamlit changed this test-id across versions, so we target every known
+   variant. The backdrop-filter was removed from the sidebar above because it
+   created a stacking context that hid this button after collapsing. */
 [data-testid="stSidebarCollapsedControl"],
 [data-testid="collapsedControl"],
 [data-testid="stSidebarCollapseButton"],
-[data-testid="stExpandSidebarButton"],
-button[kind="header"],
-button[kind="headerNoPadding"] {{
+button[kind="headerNoPadding"][data-testid="baseButton-headerNoPadding"] {{
     display: flex !important; visibility: visible !important; opacity: 1 !important;
-    z-index: 999999 !important;
+    z-index: 1000000 !important;
 }}
-/* Floating expand button when collapsed — pin it top-left, make it obvious */
+/* The floating expand control when sidebar is collapsed */
 [data-testid="stSidebarCollapsedControl"],
-[data-testid="collapsedControl"],
-[data-testid="stExpandSidebarButton"] {{
+[data-testid="collapsedControl"] {{
     position: fixed !important; top: .55rem !important; left: .55rem !important;
     background: var(--accent) !important; border-radius: 8px !important;
     padding: .3rem !important; box-shadow: 0 2px 12px rgba(0,0,0,.5) !important;
 }}
 [data-testid="stSidebarCollapsedControl"] svg,
-[data-testid="collapsedControl"] svg,
-[data-testid="stExpandSidebarButton"] svg {{
+[data-testid="collapsedControl"] svg {{
     color: #000 !important; fill: #000 !important; width: 1.5rem; height: 1.5rem;
 }}
-/* Don't let the (hidden) header bar swallow clicks on the expand button */
-[data-testid="stHeader"] {{ background: transparent !important; z-index: 1 !important; }}
+[data-testid="stSidebarCollapseButton"] svg {{ color: var(--text) !important; }}
+/* The Streamlit top header bar can overlap the control — keep it transparent
+   and non-blocking so the expand button is always clickable. */
+[data-testid="stHeader"] {{
+    background: transparent !important; z-index: 1 !important;
+}}
+/* Ensure dataframes scroll internally (both axes) and never clip results */
+[data-testid="stDataFrame"] {{ overflow: auto !important; }}
+[data-testid="stDataFrame"] > div {{ overflow: auto !important; max-width: 100% !important; }}
+.stDataFrame [data-testid="stDataFrameResizable"] {{ overflow: auto !important; }}
+/* Mobile: bigger tap target, sidebar takes most of the screen when open */
 @media (max-width: 768px) {{
     [data-testid="stSidebarCollapsedControl"],
-    [data-testid="collapsedControl"],
-    [data-testid="stExpandSidebarButton"] {{
+    [data-testid="collapsedControl"] {{
         top: .5rem !important; left: .5rem !important;
         padding: .45rem !important; transform: scale(1.2);
     }}
     [data-testid="stSidebar"] {{ min-width: 82vw !important; }}
 }}
-
 div[data-baseweb="input"], div[data-baseweb="select"],
 [data-testid="stNumberInputContainer"] {{
     background-color: var(--input) !important; border: 1px solid var(--border) !important;
@@ -1416,54 +1359,37 @@ if _fast_due:
             st.session_state.last_auto_scan = _now
             st.toast(f"⚠️ Signal refresh error: {_e}", icon="⚠️")
 
-# ── Staged deep scan: sector → universe → SMC, one stage per rerun ──────────
-# When the 15-min timer fires (PASS 3 or steady-state sets _deep_due), we start
-# the pipeline at the "sector" stage. Each stage runs alone, paints, then
-# triggers a quick rerun to advance — so the UI never blocks on all three.
-if _deep_due and st.session_state._deep_stage == "idle":
-    st.session_state._deep_stage = "sector"
-
-_stage = st.session_state._deep_stage
-
-if _stage == "sector":
-    with st.spinner("🔄 Deep scan 1/3: sector rotation…"):
+if _deep_due:
+    with st.spinner("🔄 Deep scan: sector rotation · universe · SMC setups…"):
+        # Sector rotation + picks
         try:
-            st.session_state.sector_cache = sector_rotation()
+            st.session_state.sector_cache  = sector_rotation()
             if (st.session_state.sector_cache is not None and
                     not st.session_state.sector_cache.empty):
                 st.session_state.outlook_cache = predict_sector_outlook(
                     st.session_state.sector_cache)
-                st.session_state.picks_cache = find_sector_picks(
+                st.session_state.picks_cache   = find_sector_picks(
                     st.session_state.sector_cache.head(5)["sector"].tolist(), 3)
             else:
                 st.session_state.outlook_cache = pd.DataFrame()
-                st.session_state.picks_cache = []
+                st.session_state.picks_cache   = []
         except Exception as _e:
             st.toast(f"⚠️ Sector refresh error: {_e}", icon="⚠️")
-    st.session_state._deep_stage = "universe"
-    st.session_state._kickoff_scan = True
-
-elif _stage == "universe":
-    with st.spinner("🔄 Deep scan 2/3: universe scanner…"):
+        # Universe scanner
         try:
             _usd = generate_market_scanner()
             st.session_state.scanner_cache = (_usd if (_usd is not None and not _usd.empty)
                                               else pd.DataFrame())
         except Exception as _e:
             st.toast(f"⚠️ Universe scan error: {_e}", icon="⚠️")
-    st.session_state._deep_stage = "smc"
-    st.session_state._kickoff_scan = True
-
-elif _stage == "smc":
-    with st.spinner("🔄 Deep scan 3/3: SMC setups…"):
+        # SMC setup scan (if available)
         try:
             if scan_for_smc_setups is not None:
                 st.session_state.smc_scan_cache = scan_for_smc_setups(
                     min_quality="B", action_filter="All")
         except Exception as _e:
             st.toast(f"⚠️ SMC scan error: {_e}", icon="⚠️")
-    st.session_state._deep_stage = "idle"          # cycle complete
-    st.session_state.last_slow_scan = _now         # restart 15-min timer
+        st.session_state.last_slow_scan = _now
 
 # ── Portfolio metrics ──────────────────────────────────────────────────────────
 if not df.empty:
@@ -1490,8 +1416,7 @@ st.markdown(theme_css(theme_t), unsafe_allow_html=True)
 with st.sidebar:
     st.markdown(
         f'<div style="font-size:.85rem;font-weight:800;color:var(--accent);'
-        f'margin-bottom:1rem">👤 {(st.session_state.username or "USER").upper()}</div>',
-
+        f'margin-bottom:1rem">👤 {st.session_state.username.upper()}</div>',
         unsafe_allow_html=True)
 
     if st.button("🚪 Logout", width="stretch"):
