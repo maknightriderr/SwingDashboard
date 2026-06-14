@@ -191,26 +191,36 @@ if _USE_PG:
     except ImportError:
         _USE_PG = False   # psycopg2 not installed → fall back to SQLite
 
+def _parse_pg_url(url):
+    """Parse a Postgres URL into explicit keyword args for psycopg2.connect().
+    Passing params explicitly avoids libpq misinterpreting dots in the username
+    (e.g. Supabase pooler uses 'postgres.xxxx' which gets parsed as schema.user
+    when passed as a URL string, causing InvalidSchemaName)."""
+    import urllib.parse as _up
+    r = _up.urlparse(url)
+    params = dict(
+        host=r.hostname,
+        port=r.port or 5432,
+        dbname=r.path.lstrip("/") or "postgres",
+        user=_up.unquote(r.username or ""),
+        password=_up.unquote(r.password or ""),
+        sslmode="require",
+        connect_timeout=10,
+    )
+    return params
+
+
 def _pg_conn():
-    """Open a Postgres connection (Supabase session pooler compatible).
-    Retries once on transient failures. sslmode=require is mandatory for Supabase.
-    Forces search_path=public because the Supabase pooler does not always set a
-    default schema, which causes InvalidSchemaName errors on unqualified tables."""
+    """Open a Postgres connection using EXPLICIT keyword params (not URL string).
+    This is the correct way to handle Supabase session-pooler usernames that
+    contain a dot (postgres.xxxx) — passing as a URL string causes libpq to
+    misinterpret the dot as schema.user notation → InvalidSchemaName."""
+    params = _parse_pg_url(_PG_URL)
     last_err = None
     for _attempt in range(2):
         try:
-            conn = psycopg2.connect(
-                _PG_URL, sslmode="require", connect_timeout=10,
-                options="-c search_path=public")
+            conn = psycopg2.connect(**params)
             conn.autocommit = False
-            # Belt-and-suspenders: set it again on the session in case `options`
-            # is stripped by the pooler.
-            try:
-                with conn.cursor() as _c:
-                    _c.execute("SET search_path TO public")
-                conn.commit()
-            except Exception:
-                conn.rollback()
             return conn
         except Exception as e:
             last_err = e
