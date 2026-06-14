@@ -266,23 +266,29 @@ def db(sql, params=(), fetch=False):
 def init_db():
     if _USE_PG:
         conn = _pg_conn(); cur = conn.cursor()
+        
+        # Ensure the schema exists
         cur.execute("CREATE SCHEMA IF NOT EXISTS public")
-        cur.execute("""CREATE TABLE IF NOT EXISTS public.users(
+        
+        # CRITICAL: Force the postgres role to always use the public schema
+        cur.execute("ALTER ROLE postgres SET search_path TO public;")
+        
+        cur.execute("""CREATE TABLE IF NOT EXISTS users(
             id SERIAL PRIMARY KEY,
             username TEXT UNIQUE NOT NULL,
             password_hash TEXT NOT NULL)""")
-        cur.execute("""CREATE TABLE IF NOT EXISTS public.trades(
+        cur.execute("""CREATE TABLE IF NOT EXISTS trades(
             id SERIAL PRIMARY KEY, user_id INTEGER, stock TEXT NOT NULL,
             quantity REAL NOT NULL, buy_at REAL NOT NULL, sell_at REAL,
             status TEXT DEFAULT 'Open',
             added_date TEXT DEFAULT to_char(CURRENT_DATE,'YYYY-MM-DD'),
             closed_date TEXT)""")
-        cur.execute("""CREATE TABLE IF NOT EXISTS public.portfolio_history(
+        cur.execute("""CREATE TABLE IF NOT EXISTS portfolio_history(
             id SERIAL PRIMARY KEY, user_id INTEGER, snapshot_date TEXT,
             total_invested REAL, current_value REAL)""")
-        cur.execute("""CREATE TABLE IF NOT EXISTS public.tg_config(
+        cur.execute("""CREATE TABLE IF NOT EXISTS tg_config(
             user_id INTEGER PRIMARY KEY, bot_token TEXT, chat_id TEXT)""")
-        cur.execute("""CREATE TABLE IF NOT EXISTS public.watchlist(
+        cur.execute("""CREATE TABLE IF NOT EXISTS watchlist(
             id SERIAL PRIMARY KEY, user_id INTEGER, stock TEXT NOT NULL,
             target_price REAL, notes TEXT,
             added_date TEXT DEFAULT to_char(CURRENT_DATE,'YYYY-MM-DD'))""")
