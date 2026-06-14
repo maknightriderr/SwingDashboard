@@ -287,7 +287,7 @@ def _bulk_fetch_history(symbols, period="1y"):
 # ─── Indicator Cache ──────────────────────────────────────────────────────────
 _IND_CACHE = {}
 _IND_CACHE_TS = {}
-_CACHE_TTL = 900
+_CACHE_TTL = 1800
 
 # ==============================================================================
 # FIX 1+4: Wilder's RSI and ATR with adjust=False and edge-case handling
