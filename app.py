@@ -184,8 +184,8 @@ except Exception:
 # "InvalidSchemaName" errors that PgBouncer otherwise causes.
 
 _PG_PARAMS = dict(
-    host            = "aws-0-ap-northeast-2.pooler.supabase.com", # Pooler URL (Check Supabase Dashboard!)
-    port            = 6543,                                      # Transaction pooler port
+    host            = "aws-1-ap-northeast-2.pooler.supabase.com", # Pooler URL (Check Supabase Dashboard!)
+    port            = 5432,                                      # Transaction pooler port
     dbname          = "postgres",
     user            = "postgres.ktgajqymvuaqeyiropmt",           # Pooler requires project ref in username
     password        = "MYfOKRcopF8tH2S1",
