@@ -87,18 +87,23 @@ def _get_market_regime_safe():
     return m or {"regime": "Unknown", "indices": {}, "confidence": "—"}
 
 # Price cache: 5-min TTL so KPI cards don't block on every sidebar interaction.
-@st.cache_data(ttl=300, show_spinner=False)
+@st.cache_data(ttl=120, show_spinner=False)
 def _cached_prices(symbols_tuple):
-    """Fetch live prices for a tuple of symbols. Tuple is hashable → cacheable.
-    Primary method: yf.download() batch (most reliable on cloud hosts).
-    Fallback: per-ticker fast_info then history. Never raises."""
+    """Fetch ACCURATE live prices for a tuple of symbols.
+
+    Accuracy notes:
+      • Primary source is fast_info.last_price — the real-time last traded price.
+      • History fallback uses auto_adjust=FALSE so we get the ACTUAL close, not a
+        dividend/split back-adjusted value (auto_adjust=True was making CMP wrong
+        for stocks that recently went ex-dividend or split).
+      • 2-min cache (was 5) so prices are fresher during market hours.
+    Never raises — missing prices just stay absent."""
     import yfinance as _yf
     import pandas as _pd
     prices = {}
     if not symbols_tuple:
         return prices
 
-    # Build clean symbol → .NS ticker mapping
     sym_map = {}   # ticker_ns → original sym
     for sym in symbols_tuple:
         clean = str(sym).upper().strip()
@@ -107,32 +112,8 @@ def _cached_prices(symbols_tuple):
                 clean = clean[:-len(sfx)]
         sym_map[clean + ".NS"] = sym
 
-    tickers = list(sym_map.keys())
-
-    # ── METHOD 1: batch download (most reliable, single HTTP call) ────────────
-    try:
-        data = _yf.download(tickers, period="5d", interval="1d",
-                            auto_adjust=True, progress=False,
-                            group_by="ticker", threads=True)
-        if data is not None and not data.empty:
-            for tk in tickers:
-                try:
-                    if len(tickers) == 1:
-                        close_ser = data["Close"] if "Close" in data.columns else None
-                    else:
-                        close_ser = (data[tk]["Close"]
-                                     if tk in data.columns.get_level_values(0) else None)
-                    if close_ser is not None:
-                        valid = close_ser.dropna()
-                        if not valid.empty:
-                            prices[sym_map[tk]] = round(float(valid.iloc[-1]), 2)
-                except Exception:
-                    continue
-    except Exception:
-        pass
-
-    # ── METHOD 2: per-ticker fallback for any that the batch missed ───────────
     def _extract_fast_price(t):
+        """Real-time last traded price from fast_info (most accurate source)."""
         try:
             fi = t.fast_info
         except Exception:
@@ -149,21 +130,58 @@ def _cached_prices(symbols_tuple):
                     pass
         return None
 
+    # ── METHOD 1: per-ticker fast_info (LIVE last traded price = most accurate) ─
     for tk, sym in sym_map.items():
-        if sym in prices:
-            continue
+        base = tk[:-3]   # strip .NS
         for sfx in [".NS", ".BO"]:
-            base = tk[:-3]   # strip .NS
             try:
                 t = _yf.Ticker(base + sfx)
                 v = _extract_fast_price(t)
                 if v is not None and v > 0:
-                    prices[sym] = round(v, 2); break
-                h = t.history(period="5d", interval="1d", auto_adjust=True)
+                    prices[sym] = round(v, 2)
+                    break
+            except Exception:
+                continue
+
+    # ── METHOD 2: batch download for any the live method missed ────────────────
+    # auto_adjust=False → ACTUAL close price (not back-adjusted for div/splits)
+    missing = [tk for tk, sym in sym_map.items() if sym not in prices]
+    if missing:
+        try:
+            data = _yf.download(missing, period="5d", interval="1d",
+                                auto_adjust=False, progress=False,
+                                group_by="ticker", threads=True)
+            if data is not None and not data.empty:
+                for tk in missing:
+                    try:
+                        if len(missing) == 1:
+                            close_ser = data["Close"] if "Close" in data.columns else None
+                        else:
+                            close_ser = (data[tk]["Close"]
+                                         if tk in data.columns.get_level_values(0) else None)
+                        if close_ser is not None:
+                            valid = close_ser.dropna()
+                            if not valid.empty:
+                                prices[sym_map[tk]] = round(float(valid.iloc[-1]), 2)
+                    except Exception:
+                        continue
+        except Exception:
+            pass
+
+    # ── METHOD 3: per-ticker history fallback (auto_adjust=False) ──────────────
+    for tk, sym in sym_map.items():
+        if sym in prices:
+            continue
+        base = tk[:-3]
+        for sfx in [".NS", ".BO"]:
+            try:
+                t = _yf.Ticker(base + sfx)
+                h = t.history(period="5d", interval="1d", auto_adjust=False)
                 if h is not None and not h.empty and "Close" in h.columns:
                     valid = h["Close"].dropna()
                     if not valid.empty:
-                        prices[sym] = round(float(valid.iloc[-1]), 2); break
+                        prices[sym] = round(float(valid.iloc[-1]), 2)
+                        break
             except Exception:
                 continue
     return prices
@@ -1055,7 +1073,8 @@ def fetch_price(symbol):
                 p = round(v, 2)
                 _CACHE[clean] = (p, time.time())
                 return p
-            h = t.history(period="5d", interval="1d", auto_adjust=True)
+            # auto_adjust=False → ACTUAL close, not dividend/split back-adjusted
+            h = t.history(period="5d", interval="1d", auto_adjust=False)
             if h is not None and not h.empty and "Close" in h.columns:
                 lv = h["Close"].dropna()
                 if not lv.empty:
