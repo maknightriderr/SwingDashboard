@@ -238,11 +238,37 @@ TRACKED_INDICES = {
 
 # ─── Data Fetcher ──────────────────────────────────────────────────────────────
 def _fetch_history(ticker, period="1y", interval="1d"):
+    """Fetch OHLCV history for one ticker. Tries Ticker.history() first, then
+    falls back to yf.download() which uses a different endpoint and is often
+    more reliable on cloud hosts. Retries once on transient failure."""
+    for _attempt in range(2):
+        # Method 1: Ticker.history()
+        try:
+            t = yf.Ticker(ticker)
+            df = t.history(period=period, interval=interval, auto_adjust=True)
+            if df is not None and not df.empty and "Close" in df.columns:
+                return _normalize_ohlcv(df)
+        except Exception:
+            pass
+        # Method 2: yf.download() fallback (different endpoint)
+        try:
+            df = yf.download(ticker, period=period, interval=interval,
+                             auto_adjust=True, progress=False, threads=False)
+            if df is not None and not df.empty:
+                # download() may return multi-index columns for single ticker
+                if isinstance(df.columns, pd.MultiIndex):
+                    df.columns = df.columns.get_level_values(0)
+                if "Close" in df.columns:
+                    return _normalize_ohlcv(df)
+        except Exception:
+            pass
+        time.sleep(0.3)
+    return None
+
+
+def _normalize_ohlcv(df):
+    """Standardise an OHLCV frame: guaranteed Open/High/Low/Close/Volume cols."""
     try:
-        t = yf.Ticker(ticker)
-        df = t.history(period=period, interval=interval, auto_adjust=True)
-        if df is None or df.empty or "Close" not in df.columns:
-            return None
         result = pd.DataFrame()
         result["Open"]   = df["Open"]   if "Open"   in df.columns else df["Close"]
         result["Close"]  = df["Close"]
