@@ -252,10 +252,11 @@ def _fetch_history(ticker, period="1y", interval="1d"):
     falls back to yf.download() which uses a different endpoint and is often
     more reliable on cloud hosts. Retries once on transient failure."""
     for _attempt in range(2):
-        # Method 1: Ticker.history()
+        # Method 1: Ticker.history()  — auto_adjust=False gives ACTUAL prices
+        # (matching what a trader sees on their chart), not div/split-adjusted.
         try:
             t = yf.Ticker(ticker)
-            df = t.history(period=period, interval=interval, auto_adjust=True)
+            df = t.history(period=period, interval=interval, auto_adjust=False)
             if df is not None and not df.empty and "Close" in df.columns:
                 return _normalize_ohlcv(df)
         except Exception:
@@ -263,7 +264,7 @@ def _fetch_history(ticker, period="1y", interval="1d"):
         # Method 2: yf.download() fallback (different endpoint)
         try:
             df = yf.download(ticker, period=period, interval=interval,
-                             auto_adjust=True, progress=False, threads=False)
+                             auto_adjust=False, progress=False, threads=False)
             if df is not None and not df.empty:
                 # download() may return multi-index columns for single ticker
                 if isinstance(df.columns, pd.MultiIndex):
