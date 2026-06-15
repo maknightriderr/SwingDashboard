@@ -66,6 +66,26 @@ _SMC_SCANNER_AVAILABLE  = scan_for_smc_setups is not None
 def _cached_market_regime():
     return get_market_regime()
 
+
+def _get_market_regime_safe():
+    """Wrapper that avoids caching an empty (failed) regime result.
+    If indices came back empty, clear the cache so the next rerun retries."""
+    m = _cached_market_regime()
+    if not m or not m.get("indices"):
+        # Empty/failed — drop the cached empty so next call re-fetches fresh
+        try:
+            _cached_market_regime.clear()
+        except Exception:
+            pass
+        # Try one direct (uncached) fetch right now
+        try:
+            m2 = get_market_regime()
+            if m2 and m2.get("indices"):
+                return m2
+        except Exception:
+            pass
+    return m or {"regime": "Unknown", "indices": {}, "confidence": "—"}
+
 # Price cache: 5-min TTL so KPI cards don't block on every sidebar interaction.
 @st.cache_data(ttl=300, show_spinner=False)
 def _cached_prices(symbols_tuple):
@@ -1818,8 +1838,8 @@ st.markdown(
     '</div>',
     unsafe_allow_html=True)
 
-market = _cached_market_regime()
-regime = market["regime"]
+market = _get_market_regime_safe()
+regime = market.get("regime", "Unknown")
 
 rc_map = {
     "Strong Bull":  ("rgba(16,185,129,.15)",  "#10b981", "border:1px solid rgba(16,185,129,.4)"),
@@ -1833,7 +1853,8 @@ rc_bg, rc_clr, rc_border = rc_map.get(
     regime, ("rgba(148,163,184,.1)", "#94a3b8", "border:1px solid rgba(148,163,184,.3)"))
 
 indices_html = ""
-for name, d in market.get("indices", {}).items():
+_idx_items = market.get("indices", {})
+for name, d in _idx_items.items():
     price = d.get("price")
     chg   = d.get("chg_pct", 0)
     price_str = f"₹{price:,.0f}" if price else "—"
@@ -1846,6 +1867,13 @@ for name, d in market.get("indices", {}).items():
         f'border-right:1px solid rgba(255,255,255,.1)">'
         f'{name} <b>{price_str}</b> '
         f'<span style="color:{chg_clr};font-weight:700">{chg:+.2f}%</span></span>'
+    )
+if not _idx_items:
+    # Indices failed to load — show a clear note instead of a blank banner
+    indices_html = (
+        '<span style="color:var(--muted);font-size:.78rem;padding:0 .8rem">'
+        '📡 Index data loading… (Yahoo Finance may be rate-limited; '
+        'refreshes automatically)</span>'
     )
 
 sup_str = f"₹{market.get('support'):,.0f}" if market.get("support") else "—"
