@@ -245,33 +245,32 @@ _PG_TABLES = ("users", "trades", "portfolio_history", "tg_config", "watchlist")
 
 
 def _pg_qualify(sql):
-    """Hardcode public. prefix into every table name in the SQL string.
-    This runs BEFORE psycopg2 sees the query so it's guaranteed to work
-    regardless of search_path, pooler behaviour, or connection options."""
-    s = sql
-    for tbl in _PG_TABLES:
-        # Replace bare table name with public.table — cover all SQL contexts.
-        # We replace the longer patterns first to avoid partial matches.
-        for kw in ("TABLE IF NOT EXISTS ", "DELETE FROM ", "UPDATE ",
-                   "INSERT INTO ", "FROM ", "JOIN "):
-            bare = kw + tbl
-            qualified = kw + _PG_SCHEMA_PREFIX + tbl
-            if bare in s:
-                s = s.replace(bare, qualified)
-    return s
+    """No-op now. We rely on 'SET search_path TO public' (which Neon fully
+    supports) rather than hardcoding public. prefixes. Kept as a function so
+    callers don't need to change. Returns sql unchanged."""
+    return sql
 
 
 def db(sql, params=(), fetch=False):
     if _USE_PG:
         conn = _pg_conn()
         cur  = conn.cursor()
-        # Step 1: _q converts placeholders and SQLite-only syntax (INSERT OR REPLACE→INSERT)
-        # Step 2: _pg_qualify adds public. to every table name
-        # Order matters: _q must run first so INSERT OR REPLACE → INSERT INTO
-        # before _pg_qualify looks for "INSERT INTO tg_config" etc.
+        # Neon fully supports search_path (unlike Supabase pooler). Set it so
+        # bare table names resolve to public.* — this is the standard approach.
+        try:
+            cur.execute("SET search_path TO public")
+        except Exception:
+            pass
+        # Also qualify explicitly as belt-and-suspenders.
         pg_sql = _pg_qualify(_q(sql))
-        cur.execute(pg_sql, params)
-        conn.commit()
+        try:
+            cur.execute(pg_sql, params)
+            conn.commit()
+        except Exception as e:
+            conn.rollback()
+            cur.close(); conn.close()
+            # Surface the real SQL + error so the cause is visible, not redacted.
+            raise RuntimeError(f"DB error on [{pg_sql}]: {type(e).__name__}: {e}") from e
         result = cur.fetchall() if fetch else None
         cur.close(); conn.close()
         return result
@@ -286,27 +285,42 @@ def db(sql, params=(), fetch=False):
 def init_db():
     if _USE_PG:
         conn = _pg_conn(); cur = conn.cursor()
-        cur.execute("CREATE SCHEMA IF NOT EXISTS public")
-        cur.execute("""CREATE TABLE IF NOT EXISTS public.users(
-            id SERIAL PRIMARY KEY,
-            username TEXT UNIQUE NOT NULL,
-            password_hash TEXT NOT NULL)""")
-        cur.execute("""CREATE TABLE IF NOT EXISTS public.trades(
-            id SERIAL PRIMARY KEY, user_id INTEGER, stock TEXT NOT NULL,
-            quantity REAL NOT NULL, buy_at REAL NOT NULL, sell_at REAL,
-            status TEXT DEFAULT 'Open',
-            added_date TEXT DEFAULT to_char(CURRENT_DATE,'YYYY-MM-DD'),
-            closed_date TEXT)""")
-        cur.execute("""CREATE TABLE IF NOT EXISTS public.portfolio_history(
-            id SERIAL PRIMARY KEY, user_id INTEGER, snapshot_date TEXT,
-            total_invested REAL, current_value REAL)""")
-        cur.execute("""CREATE TABLE IF NOT EXISTS public.tg_config(
-            user_id INTEGER PRIMARY KEY, bot_token TEXT, chat_id TEXT)""")
-        cur.execute("""CREATE TABLE IF NOT EXISTS public.watchlist(
-            id SERIAL PRIMARY KEY, user_id INTEGER, stock TEXT NOT NULL,
-            target_price REAL, notes TEXT,
-            added_date TEXT DEFAULT to_char(CURRENT_DATE,'YYYY-MM-DD'))""")
-        conn.commit(); cur.close(); conn.close()
+        try:
+            cur.execute("SET search_path TO public")
+            conn.commit()
+        except Exception:
+            conn.rollback()
+        # Create each table in its own transaction so one failure doesn't
+        # abort the others (a failed statement poisons the whole transaction
+        # in Postgres until rollback).
+        table_ddls = [
+            """CREATE TABLE IF NOT EXISTS users(
+                id SERIAL PRIMARY KEY,
+                username TEXT UNIQUE NOT NULL,
+                password_hash TEXT NOT NULL)""",
+            """CREATE TABLE IF NOT EXISTS trades(
+                id SERIAL PRIMARY KEY, user_id INTEGER, stock TEXT NOT NULL,
+                quantity REAL NOT NULL, buy_at REAL NOT NULL, sell_at REAL,
+                status TEXT DEFAULT 'Open',
+                added_date TEXT DEFAULT to_char(CURRENT_DATE,'YYYY-MM-DD'),
+                closed_date TEXT)""",
+            """CREATE TABLE IF NOT EXISTS portfolio_history(
+                id SERIAL PRIMARY KEY, user_id INTEGER, snapshot_date TEXT,
+                total_invested REAL, current_value REAL)""",
+            """CREATE TABLE IF NOT EXISTS tg_config(
+                user_id INTEGER PRIMARY KEY, bot_token TEXT, chat_id TEXT)""",
+            """CREATE TABLE IF NOT EXISTS watchlist(
+                id SERIAL PRIMARY KEY, user_id INTEGER, stock TEXT NOT NULL,
+                target_price REAL, notes TEXT,
+                added_date TEXT DEFAULT to_char(CURRENT_DATE,'YYYY-MM-DD'))""",
+        ]
+        for ddl in table_ddls:
+            try:
+                cur.execute(ddl)
+                conn.commit()
+            except Exception:
+                conn.rollback()
+        cur.close(); conn.close()
     else:
         c = sqlite3.connect(DB)
         c.execute("""CREATE TABLE IF NOT EXISTS users(
@@ -346,8 +360,12 @@ def login_user(username, password):
 def get_trades(user_id):
     if _USE_PG:
         conn = _pg_conn()
+        try:
+            cur = conn.cursor(); cur.execute("SET search_path TO public"); cur.close()
+        except Exception:
+            pass
         df = pd.read_sql_query(
-            "SELECT * FROM public.trades WHERE user_id=%s ORDER BY id DESC",
+            "SELECT * FROM trades WHERE user_id=%s ORDER BY id DESC",
             conn, params=(user_id,))
         conn.close()
         return df
@@ -361,8 +379,12 @@ def get_trades(user_id):
 def get_history(user_id):
     if _USE_PG:
         conn = _pg_conn()
+        try:
+            cur = conn.cursor(); cur.execute("SET search_path TO public"); cur.close()
+        except Exception:
+            pass
         df = pd.read_sql_query(
-            "SELECT * FROM public.portfolio_history WHERE user_id=%s ORDER BY snapshot_date",
+            "SELECT * FROM portfolio_history WHERE user_id=%s ORDER BY snapshot_date",
             conn, params=(user_id,))
         conn.close()
         return df
@@ -376,8 +398,12 @@ def get_history(user_id):
 def get_watchlist(user_id):
     if _USE_PG:
         conn = _pg_conn()
+        try:
+            cur = conn.cursor(); cur.execute("SET search_path TO public"); cur.close()
+        except Exception:
+            pass
         df = pd.read_sql_query(
-            "SELECT * FROM public.watchlist WHERE user_id=%s ORDER BY id DESC",
+            "SELECT * FROM watchlist WHERE user_id=%s ORDER BY id DESC",
             conn, params=(user_id,))
         conn.close()
         return df
@@ -422,10 +448,15 @@ def close_trade(tid, user_id, sell):
        (sell, datetime.now().strftime("%Y-%m-%d"), tid, user_id))
 
 def save_snapshot(user_id, invested, value):
-    today = datetime.now().strftime("%Y-%m-%d")
-    db("DELETE FROM portfolio_history WHERE snapshot_date=? AND user_id=?", (today, user_id))
-    db("INSERT INTO portfolio_history(user_id,snapshot_date,total_invested,current_value) VALUES(?,?,?,?)",
-       (user_id, today, invested, value))
+    """Save a daily portfolio snapshot. Non-critical — if it fails (e.g. DB
+    hiccup), it must NOT crash the dashboard, so errors are swallowed."""
+    try:
+        today = datetime.now().strftime("%Y-%m-%d")
+        db("DELETE FROM portfolio_history WHERE snapshot_date=? AND user_id=?", (today, user_id))
+        db("INSERT INTO portfolio_history(user_id,snapshot_date,total_invested,current_value) VALUES(?,?,?,?)",
+           (user_id, today, invested, value))
+    except Exception:
+        pass   # snapshot is non-essential; never block the dashboard on it
 
 def add_watchlist(user_id, stock, target=None, notes=""):
     db("INSERT INTO watchlist(user_id,stock,target_price,notes) VALUES(?,?,?,?)",
