@@ -1577,12 +1577,20 @@ else:
 if not df.empty:
     odf = df[df["status"] == "Open"]
     cdf = df[df["status"] == "Closed"]
-    t_inv    = df["invested"].sum()
-    t_cur    = df["current_amt"].sum()
-    t_real   = cdf["profit"].sum()   if not cdf.empty else 0
-    t_unreal = odf["profit"].sum()   if not odf.empty else 0
-    t_pnl    = df["profit"].sum()
-    t_pnl_pct = t_pnl / t_inv * 100 if t_inv > 0 else 0
+    # Invested & current (portfolio) value reflect ONLY open positions — money
+    # tied up in stocks you still hold. Sold/closed positions are excluded
+    # because that capital has been freed up (their result lives in realized P&L).
+    t_inv    = odf["invested"].sum()    if not odf.empty else 0
+    t_cur    = odf["current_amt"].sum() if not odf.empty else 0
+    t_real   = cdf["profit"].sum()   if not cdf.empty else 0   # realized (closed)
+    t_unreal = odf["profit"].sum()   if not odf.empty else 0   # unrealized (open)
+    t_pnl    = t_real + t_unreal       # total P&L across realized + unrealized
+    # Return % is measured against invested capital. Use total cost basis
+    # (open invested + the original cost of closed trades) so realized gains
+    # aren't divided by zero when everything is sold.
+    _closed_cost = cdf["invested"].sum() if not cdf.empty else 0
+    _pnl_base = t_inv + _closed_cost
+    t_pnl_pct = t_pnl / _pnl_base * 100 if _pnl_base > 0 else 0
     best  = df.loc[df["profit_pct"].idxmax(), "stock"]
     worst = df.loc[df["profit_pct"].idxmin(), "stock"]
     save_snapshot(UID, t_inv, t_cur)
