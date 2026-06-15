@@ -236,6 +236,16 @@ TRACKED_INDICES = {
     "Bank Nifty": "^NSEBANK", "Nifty IT": "^CNXIT", "India VIX": "^INDIAVIX"
 }
 
+# Fallback symbols for indices that Yahoo sometimes deprecates. If the primary
+# symbol returns nothing, the resilient fetcher retries with these.
+_INDEX_FALLBACKS = {
+    "^NSEMDCP50": ["NIFTY_MIDCAP_100.NS", "^NSEMDCP50"],
+    "^CNXSC":     ["^CNXSC"],
+    "^CNXIT":     ["^CNXIT", "NIFTYIT.NS"],
+    "^INDIAVIX":  ["^INDIAVIX"],
+    "^NSEBANK":   ["^NSEBANK", "NIFTYBANK.NS"],
+}
+
 # ─── Data Fetcher ──────────────────────────────────────────────────────────────
 def _fetch_history(ticker, period="1y", interval="1d"):
     """Fetch OHLCV history for one ticker. Tries Ticker.history() first, then
@@ -526,25 +536,66 @@ def detect_candlesticks(open_p, high, low, close):
 _market_regime_cache = {"ts": 0, "data": None}
 
 
+def _fetch_index_history(symbol, period="1y"):
+    """Fetch a single index (^-prefixed) with maximum resilience.
+    Indices on Yahoo are flaky — try the primary symbol then any known
+    fallbacks, each with Ticker.history then yf.download. Returns a
+    normalised OHLC frame or None."""
+    candidates = _INDEX_FALLBACKS.get(symbol, [symbol])
+    if symbol not in candidates:
+        candidates = [symbol] + candidates
+
+    for sym in candidates:
+        for _attempt in range(2):
+            # Method 1: Ticker.history
+            try:
+                t = yf.Ticker(sym)
+                df = t.history(period=period, interval="1d", auto_adjust=False)
+                if df is not None and not df.empty and "Close" in df.columns:
+                    out = _normalize_ohlcv(df)
+                    if out is not None and len(out) >= 2:
+                        return out
+            except Exception:
+                pass
+            # Method 2: yf.download (different endpoint)
+            try:
+                df = yf.download(sym, period=period, interval="1d",
+                                 auto_adjust=False, progress=False, threads=False)
+                if df is not None and not df.empty:
+                    if isinstance(df.columns, pd.MultiIndex):
+                        df.columns = df.columns.get_level_values(0)
+                    if "Close" in df.columns:
+                        out = _normalize_ohlcv(df)
+                        if out is not None and len(out) >= 2:
+                            return out
+            except Exception:
+                pass
+            time.sleep(0.3)
+    return None
+
+
 def get_market_regime():
     now = time.time()
     if _market_regime_cache["data"] and (now - _market_regime_cache["ts"]) < _CACHE_TTL:
         return _market_regime_cache["data"]
 
     indices_data = {}
-    bulk_data = _bulk_fetch_history(list(TRACKED_INDICES.values()), period="1y")
+    bulk_data = {}
 
+    # Fetch each index individually with the resilient fetcher. Doing them one
+    # by one (not bulk) means one failing index never wipes out the rest.
     for name, symbol in TRACKED_INDICES.items():
-        if symbol in bulk_data:
-            df = bulk_data[symbol]
-            if df is not None and len(df) >= 2:
-                current = float(df["Close"].iloc[-1])
-                prev    = float(df["Close"].iloc[-2])
-                chg     = round((current / prev - 1) * 100, 2)
-                indices_data[name] = {"price": round(current, 2), "chg_pct": chg}
-            elif df is not None and len(df) == 1:
-                current = float(df["Close"].iloc[-1])
-                indices_data[name] = {"price": round(current, 2), "chg_pct": 0.0}
+        df = _fetch_index_history(symbol, period="1y")
+        if df is not None and len(df) >= 2:
+            bulk_data[symbol] = df
+            current = float(df["Close"].iloc[-1])
+            prev    = float(df["Close"].iloc[-2])
+            chg     = round((current / prev - 1) * 100, 2)
+            indices_data[name] = {"price": round(current, 2), "chg_pct": chg}
+        elif df is not None and len(df) == 1:
+            bulk_data[symbol] = df
+            current = float(df["Close"].iloc[-1])
+            indices_data[name] = {"price": round(current, 2), "chg_pct": 0.0}
 
     nifty = indices_data.get("Nifty 50", {})
     nifty_close = nifty.get("price")
@@ -590,10 +641,15 @@ def get_market_regime():
     result = {
         "regime": regime, "trend": trend, "nifty_close": nifty_close,
         "nifty_rsi": nifty_rsi, "risk_level": risk, "indices": indices_data,
-        "support": support, "resistance": resistance, "confidence": conf
+        "support": support, "resistance": resistance, "confidence": conf,
+        "indices_ok": len(indices_data) > 0,
     }
-    _market_regime_cache["data"] = result
-    _market_regime_cache["ts"] = now
+    # Only cache a GOOD result (with at least some index data). If everything
+    # failed (transient Yahoo rate-limit), don't poison the 10-min cache with
+    # an empty result — let the next call retry instead.
+    if indices_data:
+        _market_regime_cache["data"] = result
+        _market_regime_cache["ts"] = now
     return result
 
 
