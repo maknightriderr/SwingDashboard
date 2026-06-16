@@ -230,8 +230,96 @@ def _annualised(total_pct, years):
         return None
 
 
+def compute_mf_rating(returns, hist=None):
+    """Produce a long-term RATING for a mutual fund (NOT a trade signal).
+
+    Mutual funds are long-term instruments — timing buy/sell on NAV moves is
+    inappropriate and can be harmful. Instead this gives an investment-quality
+    rating based on trailing returns, consistency, and momentum:
+      ⭐ STRONG    — strong, consistent multi-period returns
+      ✅ GOOD      — solid performer
+      ➖ AVERAGE   — middling
+      ⚠️ WEAK      — underperforming
+
+    Plus a SIP-oriented note. Returns dict: {rating, stars, score, note, action}.
+    """
+    out = {"rating": "—", "stars": 0, "score": 0, "note": "Insufficient history",
+           "action": "—"}
+    if not returns:
+        return out
+
+    r1y = returns.get("1Y")
+    r3y = returns.get("3Y")
+    r5y = returns.get("5Y")
+    r6m = returns.get("6M")
+    r3m = returns.get("3M")
+
+    score = 0
+    pts = 0   # count of available metrics so we can normalise
+
+    # Long-term CAGR is the biggest weight (what matters for MFs)
+    if r3y is not None:
+        pts += 1
+        if   r3y >= 18: score += 30
+        elif r3y >= 12: score += 22
+        elif r3y >= 8:  score += 12
+        elif r3y >= 0:  score += 4
+        else:           score -= 10
+    if r5y is not None:
+        pts += 1
+        if   r5y >= 16: score += 25
+        elif r5y >= 11: score += 18
+        elif r5y >= 7:  score += 10
+        elif r5y >= 0:  score += 3
+        else:           score -= 8
+    if r1y is not None:
+        pts += 1
+        if   r1y >= 20: score += 20
+        elif r1y >= 12: score += 14
+        elif r1y >= 5:  score += 7
+        elif r1y >= 0:  score += 2
+        else:           score -= 8
+    # Recent momentum (smaller weight)
+    if r6m is not None:
+        pts += 1
+        if   r6m >= 10: score += 12
+        elif r6m >= 3:  score += 6
+        elif r6m < -5:  score -= 6
+    if r3m is not None:
+        pts += 1
+        if   r3m >= 6:  score += 8
+        elif r3m < -6:  score -= 5
+
+    if pts == 0:
+        return out
+
+    # Normalise to a 0-100-ish scale (max possible ≈ 95)
+    norm = max(0, min(100, int(score / 95 * 100)))
+
+    if   norm >= 70:
+        rating, stars, action = "STRONG", 5, "Good for SIP / lump-sum (long-term)"
+    elif norm >= 50:
+        rating, stars, action = "GOOD", 4, "Suitable for SIP accumulation"
+    elif norm >= 32:
+        rating, stars, action = "AVERAGE", 3, "Hold if invested; compare peers before adding"
+    elif norm >= 18:
+        rating, stars, action = "WEAK", 2, "Review vs category leaders"
+    else:
+        rating, stars, action = "POOR", 1, "Underperforming — consider better-rated peers"
+
+    # Build a short rationale note
+    bits = []
+    if r3y is not None: bits.append(f"3Y CAGR {r3y}%")
+    if r1y is not None: bits.append(f"1Y {r1y}%")
+    if r6m is not None: bits.append(f"6M {r6m}%")
+    note = " · ".join(bits) if bits else "Limited data"
+
+    return {"rating": rating, "stars": stars, "score": norm,
+            "note": note, "action": action}
+
+
 def mf_summary(scheme_code):
-    """Everything needed to render a fund card: NAV, meta, returns, 52w range."""
+    """Everything needed to render a fund card: NAV, meta, returns, 52w range, rating."""
     nav = get_mf_nav(scheme_code)
     hist = get_mf_history(scheme_code)
     returns = get_mf_returns(scheme_code)
@@ -243,11 +331,14 @@ def mf_summary(scheme_code):
             high52 = round(float(last_year["nav"].max()), 2)
             low52  = round(float(last_year["nav"].min()), 2)
 
+    rating = compute_mf_rating(returns, hist)
+
     return {
         **nav,
         "returns": returns,
         "high52": high52,
         "low52": low52,
+        "rating": rating,
         "has_history": hist is not None and not hist.empty,
     }
 
@@ -259,8 +350,10 @@ def compare_mfs(scheme_codes):
     for code in scheme_codes:
         s = mf_summary(code)
         r = s.get("returns", {})
+        rating = s.get("rating", {})
         rows.append({
             "Fund": s.get("scheme_name", str(code))[:45],
+            "Rating": f"{'⭐'*rating.get('stars',0)} {rating.get('rating','—')}",
             "Category": s.get("scheme_category", ""),
             "NAV": s.get("nav"),
             "1M %": r.get("1M"), "3M %": r.get("3M"), "6M %": r.get("6M"),
@@ -401,8 +494,142 @@ def _hist_return(hist, days):
     return round((latest / past - 1) * 100, 2)
 
 
+def _ema(series, span):
+    """Exponential moving average of a pandas Series."""
+    return series.ewm(span=span, adjust=False).mean()
+
+
+def _rsi(closes, period=14):
+    """Wilder's RSI for the last value. Returns float or None."""
+    if closes is None or len(closes) < period + 1:
+        return None
+    delta = closes.diff()
+    gain = delta.clip(lower=0)
+    loss = -delta.clip(upper=0)
+    avg_gain = gain.ewm(alpha=1 / period, adjust=False).mean()
+    avg_loss = loss.ewm(alpha=1 / period, adjust=False).mean()
+    rs = avg_gain / avg_loss.replace(0, np.nan)
+    rsi = 100 - (100 / (1 + rs))
+    val = rsi.iloc[-1]
+    if pd.isna(val):
+        return 100.0 if avg_loss.iloc[-1] == 0 else 50.0
+    return round(float(val), 1)
+
+
+def compute_etf_signal(symbol, hist=None):
+    """Generate a BUY / HOLD / SELL signal for an ETF using real technicals.
+
+    ETFs trade like stocks, so this uses genuine trend + momentum logic:
+      • Price vs 50-DMA and 200-DMA (trend)
+      • Golden/death cross (50 vs 200)
+      • RSI (momentum / overbought-oversold)
+      • Position within the 52-week range
+      • 3-month return trend
+    Returns dict: {signal, score (-100..100), confidence, reasons[], rsi, dma50, dma200}.
+    """
+    if hist is None:
+        hist = get_etf_history(symbol, period="1y")
+    out = {"signal": "NO DATA", "score": 0, "confidence": "—",
+           "reasons": [], "rsi": None, "dma50": None, "dma200": None,
+           "entry": None, "target": None, "stop_loss": None}
+    if hist is None or hist.empty or "Close" not in hist.columns:
+        return out
+    closes = hist["Close"].dropna()
+    if len(closes) < 50:
+        return out
+
+    cmp     = float(closes.iloc[-1])
+    dma50   = float(_ema(closes, 50).iloc[-1])
+    dma200  = float(_ema(closes, 200).iloc[-1]) if len(closes) >= 200 else None
+    rsi     = _rsi(closes)
+    hi52    = float(closes.max())
+    lo52    = float(closes.min())
+    ret_3m  = _hist_return(hist, 91)
+    ret_1m  = _hist_return(hist, 30)
+
+    score = 0
+    reasons = []
+
+    # 1. Price vs 50-DMA (short/medium trend)
+    if cmp > dma50:
+        score += 25; reasons.append("Above 50-DMA (uptrend)")
+    else:
+        score -= 25; reasons.append("Below 50-DMA (downtrend)")
+
+    # 2. Price vs 200-DMA (long trend)
+    if dma200:
+        if cmp > dma200:
+            score += 20; reasons.append("Above 200-DMA (long-term bullish)")
+        else:
+            score -= 20; reasons.append("Below 200-DMA (long-term bearish)")
+        # 3. Golden / death cross
+        if dma50 > dma200:
+            score += 10; reasons.append("Golden cross (50>200)")
+        else:
+            score -= 10; reasons.append("Death cross (50<200)")
+
+    # 4. RSI momentum
+    if rsi is not None:
+        if rsi >= 70:
+            score -= 15; reasons.append(f"RSI {rsi} overbought")
+        elif rsi >= 55:
+            score += 12; reasons.append(f"RSI {rsi} bullish momentum")
+        elif rsi <= 30:
+            score += 10; reasons.append(f"RSI {rsi} oversold (bounce setup)")
+        elif rsi <= 45:
+            score -= 12; reasons.append(f"RSI {rsi} weak momentum")
+
+    # 5. Position in 52-week range
+    if hi52 > lo52:
+        pos = (cmp - lo52) / (hi52 - lo52) * 100
+        if pos >= 90:
+            score -= 8; reasons.append(f"Near 52W high ({pos:.0f}% of range)")
+        elif pos <= 15:
+            score += 8; reasons.append(f"Near 52W low ({pos:.0f}% of range)")
+
+    # 6. 3-month return trend
+    if ret_3m is not None:
+        if ret_3m > 8:
+            score += 10; reasons.append(f"Strong 3M trend (+{ret_3m}%)")
+        elif ret_3m < -8:
+            score -= 10; reasons.append(f"Weak 3M trend ({ret_3m}%)")
+
+    score = max(-100, min(100, score))
+
+    # Map score → signal
+    if score >= 35:
+        signal = "BUY"
+    elif score <= -35:
+        signal = "SELL"
+    else:
+        signal = "HOLD"
+
+    # Confidence from absolute score
+    a = abs(score)
+    confidence = "High" if a >= 60 else "Medium" if a >= 35 else "Low"
+
+    # Trade levels (only meaningful for BUY)
+    entry = target = stop_loss = None
+    if signal == "BUY":
+        atr_proxy = (hi52 - lo52) * 0.03   # rough volatility unit
+        entry     = round(cmp, 2)
+        stop_loss = round(min(dma50, cmp - 2 * atr_proxy), 2)
+        target    = round(cmp + 3 * atr_proxy, 2)
+    elif signal == "SELL":
+        entry     = round(cmp, 2)   # exit level
+
+    out.update({
+        "signal": signal, "score": int(score), "confidence": confidence,
+        "reasons": reasons, "rsi": rsi,
+        "dma50": round(dma50, 2), "dma200": round(dma200, 2) if dma200 else None,
+        "entry": entry, "target": target, "stop_loss": stop_loss,
+        "pos_in_range": round((cmp - lo52) / (hi52 - lo52) * 100, 1) if hi52 > lo52 else None,
+    })
+    return out
+
+
 def get_etf_quote(symbol):
-    """Current price, day change, 52w range, and trailing returns for an ETF."""
+    """Current price, day change, 52w range, trailing returns, AND signal for an ETF."""
     name = ETF_UNIVERSE.get(symbol, symbol)
     hist = get_etf_history(symbol, period="1y")
     live = _etf_fast_price(symbol)
@@ -421,6 +648,9 @@ def get_etf_quote(symbol):
     elif live:
         cmp = round(live, 2)
 
+    # Technical signal (reuses the already-fetched history — no extra network call)
+    sig = compute_etf_signal(symbol, hist=hist)
+
     return {
         "symbol": symbol,
         "name": name,
@@ -434,6 +664,16 @@ def get_etf_quote(symbol):
             "6M": _hist_return(hist, 182),
             "1Y": _hist_return(hist, 365),
         },
+        "signal": sig["signal"],
+        "signal_score": sig["score"],
+        "signal_confidence": sig["confidence"],
+        "signal_reasons": sig["reasons"],
+        "rsi": sig["rsi"],
+        "dma50": sig["dma50"],
+        "dma200": sig["dma200"],
+        "entry": sig["entry"],
+        "target": sig["target"],
+        "stop_loss": sig["stop_loss"],
         "has_data": cmp is not None,
     }
 
@@ -457,8 +697,11 @@ def scan_etfs(symbols=None):
             rows.append({
                 "Symbol": sym,
                 "Name": q["name"],
+                "Signal": q["signal"],
+                "Score": q["signal_score"],
                 "CMP": q["cmp"],
                 "Day %": q["day_chg"],
+                "RSI": q["rsi"],
                 "1M %": r.get("1M"), "3M %": r.get("3M"),
                 "6M %": r.get("6M"), "1Y %": r.get("1Y"),
                 "52W High": q["high52"], "52W Low": q["low52"],
@@ -466,8 +709,8 @@ def scan_etfs(symbols=None):
         except Exception:
             continue
     df = pd.DataFrame(rows)
-    if not df.empty and "1Y %" in df.columns:
-        df = df.sort_values("1Y %", ascending=False, na_position="last")
+    if not df.empty and "Score" in df.columns:
+        df = df.sort_values("Score", ascending=False, na_position="last")
         df = df.reset_index(drop=True)
     return df
 
