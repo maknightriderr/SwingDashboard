@@ -3391,16 +3391,37 @@ elif _page == 'etfs':
             else:
                 r = q["returns"]
                 day_clr = "var(--green)" if (q["day_chg"] or 0) >= 0 else "var(--red)"
+                # Signal badge styling
+                _sig = q.get("signal", "—")
+                _sig_clr = {"BUY": "#10b981", "SELL": "#ef4444",
+                            "HOLD": "#f59e0b"}.get(_sig, "#8e8e93")
+                _sig_bg  = {"BUY": "rgba(16,185,129,.15)", "SELL": "rgba(239,68,68,.15)",
+                            "HOLD": "rgba(245,158,11,.15)"}.get(_sig, "rgba(142,142,147,.15)")
                 st.markdown(f"""
 <div style="background:var(--card);border:1px solid var(--border);border-radius:12px;
             padding:1.2rem 1.5rem;margin:.5rem 0">
-  <div style="font-size:1.1rem;font-weight:800;color:var(--accent)">{q['name']}</div>
-  <div style="font-size:.8rem;color:var(--muted);margin-bottom:.6rem">{sel_sym}.NS</div>
-  <div style="display:flex;gap:2rem;flex-wrap:wrap">
+  <div style="display:flex;justify-content:space-between;align-items:flex-start;flex-wrap:wrap;gap:.5rem">
+    <div>
+      <div style="font-size:1.1rem;font-weight:800;color:var(--accent)">{q['name']}</div>
+      <div style="font-size:.8rem;color:var(--muted)">{sel_sym}.NS</div>
+    </div>
+    <div style="text-align:right">
+      <span style="background:{_sig_bg};color:{_sig_clr};font-weight:800;font-size:1rem;
+                   padding:.35rem .9rem;border-radius:8px;border:1px solid {_sig_clr}">
+            {_sig}</span>
+      <div style="font-size:.7rem;color:var(--muted);margin-top:.25rem">
+           Score {q.get('signal_score',0)} · {q.get('signal_confidence','—')} conf · RSI {q.get('rsi','—')}</div>
+    </div>
+  </div>
+  <div style="display:flex;gap:2rem;flex-wrap:wrap;margin-top:.8rem">
     <div><span style="color:var(--muted);font-size:.75rem">CMP</span><br>
          <b style="font-size:1.3rem">₹{q['cmp']}</b></div>
     <div><span style="color:var(--muted);font-size:.75rem">Day</span><br>
          <b style="font-size:1.3rem;color:{day_clr}">{(q['day_chg'] or 0):+.2f}%</b></div>
+    <div><span style="color:var(--muted);font-size:.75rem">50-DMA</span><br>
+         <b style="font-size:1.1rem">₹{q.get('dma50','—')}</b></div>
+    <div><span style="color:var(--muted);font-size:.75rem">200-DMA</span><br>
+         <b style="font-size:1.1rem">₹{q.get('dma200') or '—'}</b></div>
     <div><span style="color:var(--muted);font-size:.75rem">52W High</span><br>
          <b style="font-size:1.1rem">₹{q['high52']}</b></div>
     <div><span style="color:var(--muted);font-size:.75rem">52W Low</span><br>
@@ -3413,7 +3434,17 @@ elif _page == 'etfs':
              f'{"%" if v is not None else ""}</b></div>'
              for k, v in r.items())}
   </div>
+  {('<div style="margin-top:1rem;padding-top:.8rem;border-top:1px solid var(--border)">'
+    '<span style="color:var(--muted);font-size:.72rem">📋 Why this signal:</span><br>'
+    '<span style="font-size:.82rem">' + ' · '.join(q.get('signal_reasons', [])) + '</span></div>')
+   if q.get('signal_reasons') else ''}
+  {('<div style="margin-top:.8rem;font-size:.85rem">'
+    f'<b>Entry</b> ₹{q.get("entry")} &nbsp; <b>Target</b> ₹{q.get("target")} &nbsp; '
+    f'<b>Stop</b> ₹{q.get("stop_loss")}</div>')
+   if q.get('signal')=='BUY' and q.get('target') else ''}
 </div>""", unsafe_allow_html=True)
+                st.caption("⚠️ Signals are algorithmic (trend + momentum), not financial advice. "
+                           "ETFs carry market risk — do your own research.")
 
         # Full scan results
         if st.session_state.etf_scan_cache is not None:
@@ -3485,13 +3516,30 @@ elif _page == 'mutual_funds':
                     st.error("Couldn't load this fund's NAV history. Try again shortly.")
                 else:
                     r = s["returns"]
+                    _rt = s.get("rating", {})
+                    _rt_clr = {"STRONG": "#10b981", "GOOD": "#22c55e",
+                               "AVERAGE": "#f59e0b", "WEAK": "#f97316",
+                               "POOR": "#ef4444"}.get(_rt.get("rating"), "#8e8e93")
+                    _rt_bg = {"STRONG": "rgba(16,185,129,.15)", "GOOD": "rgba(34,197,94,.12)",
+                              "AVERAGE": "rgba(245,158,11,.15)", "WEAK": "rgba(249,115,22,.15)",
+                              "POOR": "rgba(239,68,68,.15)"}.get(_rt.get("rating"), "rgba(142,142,147,.15)")
                     st.markdown(f"""
 <div style="background:var(--card);border:1px solid var(--border);border-radius:12px;
             padding:1.2rem 1.5rem;margin:.5rem 0">
-  <div style="font-size:1.05rem;font-weight:800;color:var(--accent)">{s['scheme_name']}</div>
-  <div style="font-size:.78rem;color:var(--muted);margin-bottom:.7rem">
-       {s.get('fund_house','')} · {s.get('scheme_category','')}</div>
-  <div style="display:flex;gap:2rem;flex-wrap:wrap">
+  <div style="display:flex;justify-content:space-between;align-items:flex-start;flex-wrap:wrap;gap:.5rem">
+    <div>
+      <div style="font-size:1.05rem;font-weight:800;color:var(--accent)">{s['scheme_name']}</div>
+      <div style="font-size:.78rem;color:var(--muted)">
+           {s.get('fund_house','')} · {s.get('scheme_category','')}</div>
+    </div>
+    <div style="text-align:right">
+      <span style="background:{_rt_bg};color:{_rt_clr};font-weight:800;font-size:.95rem;
+                   padding:.35rem .9rem;border-radius:8px;border:1px solid {_rt_clr}">
+            {'⭐'*_rt.get('stars',0)} {_rt.get('rating','—')}</span>
+      <div style="font-size:.7rem;color:var(--muted);margin-top:.25rem">Quality score {_rt.get('score',0)}/100</div>
+    </div>
+  </div>
+  <div style="display:flex;gap:2rem;flex-wrap:wrap;margin-top:.8rem">
     <div><span style="color:var(--muted);font-size:.75rem">NAV</span><br>
          <b style="font-size:1.3rem">₹{s['nav']}</b></div>
     <div><span style="color:var(--muted);font-size:.75rem">As of</span><br>
@@ -3508,7 +3556,12 @@ elif _page == 'mutual_funds':
              f'{"%" if v is not None else ""}</b></div>'
              for k, v in r.items())}
   </div>
+  <div style="margin-top:1rem;padding-top:.8rem;border-top:1px solid var(--border);font-size:.85rem">
+       💡 <b>{_rt.get('action','—')}</b></div>
 </div>""", unsafe_allow_html=True)
+                    st.caption("⚠️ Ratings reflect past performance (returns + consistency), "
+                               "not a buy/sell timing call. Mutual funds are long-term "
+                               "instruments — past returns don't guarantee future results.")
 
                     # NAV history chart
                     hist = _funds.get_mf_history(st.session_state.mf_selected)
