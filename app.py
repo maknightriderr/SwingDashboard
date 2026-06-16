@@ -59,6 +59,14 @@ _TRAP_SCANNER_AVAILABLE = scan_for_traps is not None
 _CORP_ACTIONS_AVAILABLE = fetch_corporate_actions is not None
 _SMC_SCANNER_AVAILABLE  = scan_for_smc_setups is not None
 
+# ── Mutual Fund & ETF module (fully separate from stock/signals logic) ─────────
+try:
+    import funds as _funds
+    _FUNDS_AVAILABLE = True
+except Exception:
+    _funds = None
+    _FUNDS_AVAILABLE = False
+
 # ── Performance: @st.cache_data wrappers ──────────────────────────────────────
 # market_regime is global (same for all users) — safe to cache across sessions.
 # TTL 600s = 10 min. This renders the header banner in <100ms on reruns.
@@ -514,6 +522,8 @@ for k, v in [("user_id", None), ("username", None), ("edit_id", None), ("close_i
              ("corp_actions_cache", None), ("selected_scanner_sector", "All Sectors"),
              ("custom_stocks_input", ""), ("active_page", "portfolio"),
              ("smc_scan_cache", None),
+             ("etf_scan_cache", None), ("mf_search_results", []),
+             ("mf_selected", None), ("mf_compare_list", []),
              ("first_render_done", False), ("_kickoff_scan", False),
              ("_scan_stage", "done"), ("_deep_stage", "sector"),
              ("_deep_running", False), ("_manual_deep_request", False),
@@ -1695,6 +1705,10 @@ with st.sidebar:
             ("🔄 Sector Rotation",   "sector"),
             ("🌌 Universe Scanner",  "scanner"),
             ("📅 Corporate Actions", "corp_actions"),
+        ],
+        "💰 Funds & ETFs": [
+            ("📈 ETF Tracker",       "etfs"),
+            ("🏛 Mutual Funds",      "mutual_funds"),
         ],
         "🛠 Tools": [
             ("👁 Watchlist",         "watchlist"),
@@ -3340,6 +3354,187 @@ elif _page == 'smc':
                 st.info("No setups found at this quality/action filter. Try lowering to grade B or 'All' actions.")
         else:
             st.info("Click **🎯 Scan Setups** to find SMC trade setups across the universe.")
+
+# ── ETF Tracker ────────────────────────────────────────────────────────────────
+elif _page == 'etfs':
+    st.markdown('<div class="sec">📈 ETF Tracker</div>', unsafe_allow_html=True)
+    if not _FUNDS_AVAILABLE:
+        st.warning("⚠️ ETF/Fund module not available. Make sure `funds.py` is in the repo.")
+    else:
+        st.caption("NSE-listed ETFs — tracked separately from your stock portfolio. "
+                   "Data via Yahoo Finance (15-min delayed).")
+
+        # Session cache for ETF scan
+        if "etf_scan_cache" not in st.session_state:
+            st.session_state.etf_scan_cache = None
+
+        c1, c2, c3 = st.columns([1, 1, 2])
+        with c1:
+            if st.button("🔍 Scan All ETFs", width="stretch"):
+                with st.spinner("Fetching ETF data…"):
+                    st.session_state.etf_scan_cache = _funds.scan_etfs()
+        with c2:
+            _cat = st.selectbox("Category", ["All", "Equity Index", "Sectoral",
+                                "Gold/Silver", "Debt/Liquid", "International"],
+                                label_visibility="collapsed")
+
+        # Single ETF lookup
+        st.markdown("##### 🔎 Look up a specific ETF")
+        etf_names = [f"{sym} — {name}" for sym, name in _funds.ETF_UNIVERSE.items()]
+        sel = st.selectbox("Select ETF", etf_names, label_visibility="collapsed")
+        sel_sym = sel.split(" — ")[0]
+        if st.button("📊 Get ETF Details"):
+            with st.spinner(f"Fetching {sel_sym}…"):
+                q = _funds.get_etf_quote(sel_sym)
+            if not q.get("has_data"):
+                st.error(f"Couldn't fetch data for {sel_sym}. Yahoo may be rate-limited — try again.")
+            else:
+                r = q["returns"]
+                day_clr = "var(--green)" if (q["day_chg"] or 0) >= 0 else "var(--red)"
+                st.markdown(f"""
+<div style="background:var(--card);border:1px solid var(--border);border-radius:12px;
+            padding:1.2rem 1.5rem;margin:.5rem 0">
+  <div style="font-size:1.1rem;font-weight:800;color:var(--accent)">{q['name']}</div>
+  <div style="font-size:.8rem;color:var(--muted);margin-bottom:.6rem">{sel_sym}.NS</div>
+  <div style="display:flex;gap:2rem;flex-wrap:wrap">
+    <div><span style="color:var(--muted);font-size:.75rem">CMP</span><br>
+         <b style="font-size:1.3rem">₹{q['cmp']}</b></div>
+    <div><span style="color:var(--muted);font-size:.75rem">Day</span><br>
+         <b style="font-size:1.3rem;color:{day_clr}">{(q['day_chg'] or 0):+.2f}%</b></div>
+    <div><span style="color:var(--muted);font-size:.75rem">52W High</span><br>
+         <b style="font-size:1.1rem">₹{q['high52']}</b></div>
+    <div><span style="color:var(--muted);font-size:.75rem">52W Low</span><br>
+         <b style="font-size:1.1rem">₹{q['low52']}</b></div>
+  </div>
+  <div style="margin-top:1rem;display:flex;gap:1.5rem;flex-wrap:wrap">
+    {''.join(f'<div><span style="color:var(--muted);font-size:.72rem">{k}</span><br>'
+             f'<b style="color:{"var(--green)" if (v or 0)>=0 else "var(--red)"}">'
+             f'{("+" if (v or 0)>=0 else "")}{v if v is not None else "—"}'
+             f'{"%" if v is not None else ""}</b></div>'
+             for k, v in r.items())}
+  </div>
+</div>""", unsafe_allow_html=True)
+
+        # Full scan results
+        if st.session_state.etf_scan_cache is not None:
+            edf = st.session_state.etf_scan_cache
+            if edf is not None and not edf.empty:
+                st.markdown(f"##### 📋 All ETFs ({len(edf)}) — sorted by 1Y return")
+                _h = min(max(len(edf) * 36 + 40, 200), 600)
+                st.dataframe(edf, width="stretch", height=_h, hide_index=True,
+                             column_config={"Symbol": st.column_config.TextColumn(pinned=True)})
+                st.download_button(
+                    "⬇️ Export ETF Data CSV",
+                    edf.to_csv(index=False).encode("utf-8"),
+                    file_name=f"etfs_{datetime.now().strftime('%Y%m%d_%H%M')}.csv",
+                    mime="text/csv")
+            else:
+                st.info("No ETF data returned. Yahoo Finance may be rate-limited — try again shortly.")
+        else:
+            st.info("Click **🔍 Scan All ETFs** to load the full ETF list with returns.")
+
+# ── Mutual Fund Tracker ────────────────────────────────────────────────────────
+elif _page == 'mutual_funds':
+    st.markdown('<div class="sec">🏛 Mutual Fund Tracker</div>', unsafe_allow_html=True)
+    if not _FUNDS_AVAILABLE:
+        st.warning("⚠️ ETF/Fund module not available. Make sure `funds.py` is in the repo.")
+    else:
+        st.caption("Search any Indian mutual fund by name. NAV & returns via AMFI "
+                   "(official, updated daily). Kept separate from your stock portfolio.")
+
+        # Session state for MF
+        for k, v in [("mf_search_results", []), ("mf_selected", None),
+                     ("mf_compare_list", [])]:
+            if k not in st.session_state:
+                st.session_state[k] = v
+
+        tab_search, tab_compare = st.tabs(["🔎 Search & Track", "⚖️ Compare Funds"])
+
+        with tab_search:
+            q = st.text_input("Search mutual fund",
+                              placeholder="e.g. 'parag parikh flexi cap' or 'hdfc small cap'",
+                              label_visibility="collapsed")
+            if st.button("🔎 Search") and q:
+                with st.spinner("Searching AMFI database…"):
+                    st.session_state.mf_search_results = _funds.search_mf(q)
+                if not st.session_state.mf_search_results:
+                    st.warning("No funds found (need 3+ characters). Try the fund house + scheme name.")
+
+            results = st.session_state.mf_search_results
+            if results:
+                opts = [f"{r['schemeName']}" for r in results]
+                pick = st.selectbox(f"Found {len(results)} funds — select one:", opts)
+                pick_code = next((r["schemeCode"] for r in results
+                                  if r["schemeName"] == pick), None)
+
+                cc1, cc2 = st.columns([1, 1])
+                with cc1:
+                    if st.button("📊 View Fund Details", width="stretch"):
+                        st.session_state.mf_selected = pick_code
+                with cc2:
+                    if st.button("➕ Add to Compare", width="stretch"):
+                        if pick_code and pick_code not in st.session_state.mf_compare_list:
+                            st.session_state.mf_compare_list.append(pick_code)
+                            st.toast(f"Added to compare ({len(st.session_state.mf_compare_list)})")
+
+            # Render selected fund card
+            if st.session_state.mf_selected:
+                with st.spinner("Loading fund data…"):
+                    s = _funds.mf_summary(st.session_state.mf_selected)
+                if not s.get("has_history"):
+                    st.error("Couldn't load this fund's NAV history. Try again shortly.")
+                else:
+                    r = s["returns"]
+                    st.markdown(f"""
+<div style="background:var(--card);border:1px solid var(--border);border-radius:12px;
+            padding:1.2rem 1.5rem;margin:.5rem 0">
+  <div style="font-size:1.05rem;font-weight:800;color:var(--accent)">{s['scheme_name']}</div>
+  <div style="font-size:.78rem;color:var(--muted);margin-bottom:.7rem">
+       {s.get('fund_house','')} · {s.get('scheme_category','')}</div>
+  <div style="display:flex;gap:2rem;flex-wrap:wrap">
+    <div><span style="color:var(--muted);font-size:.75rem">NAV</span><br>
+         <b style="font-size:1.3rem">₹{s['nav']}</b></div>
+    <div><span style="color:var(--muted);font-size:.75rem">As of</span><br>
+         <b style="font-size:1rem">{s['nav_date']}</b></div>
+    <div><span style="color:var(--muted);font-size:.75rem">52W High</span><br>
+         <b style="font-size:1.1rem">₹{s['high52']}</b></div>
+    <div><span style="color:var(--muted);font-size:.75rem">52W Low</span><br>
+         <b style="font-size:1.1rem">₹{s['low52']}</b></div>
+  </div>
+  <div style="margin-top:1rem;display:flex;gap:1.5rem;flex-wrap:wrap">
+    {''.join(f'<div><span style="color:var(--muted);font-size:.72rem">{k}{" (CAGR)" if k in ("3Y","5Y") else ""}</span><br>'
+             f'<b style="color:{"var(--green)" if (v or 0)>=0 else "var(--red)"}">'
+             f'{("+" if (v or 0)>=0 else "")}{v if v is not None else "—"}'
+             f'{"%" if v is not None else ""}</b></div>'
+             for k, v in r.items())}
+  </div>
+</div>""", unsafe_allow_html=True)
+
+                    # NAV history chart
+                    hist = _funds.get_mf_history(st.session_state.mf_selected)
+                    if hist is not None and not hist.empty:
+                        chart_df = hist.set_index("date")["nav"].tail(365)
+                        st.line_chart(chart_df, height=260)
+
+        with tab_compare:
+            clist = st.session_state.mf_compare_list
+            if not clist:
+                st.info("Add funds via the **Search & Track** tab → '➕ Add to Compare'.")
+            else:
+                st.markdown(f"##### Comparing {len(clist)} funds")
+                if st.button("🗑 Clear comparison"):
+                    st.session_state.mf_compare_list = []
+                    st.rerun()
+                with st.spinner("Building comparison…"):
+                    cmp_df = _funds.compare_mfs(clist)
+                if cmp_df is not None and not cmp_df.empty:
+                    st.dataframe(cmp_df, width="stretch", hide_index=True,
+                                 column_config={"Fund": st.column_config.TextColumn(pinned=True)})
+                    st.download_button(
+                        "⬇️ Export Comparison CSV",
+                        cmp_df.to_csv(index=False).encode("utf-8"),
+                        file_name=f"mf_compare_{datetime.now().strftime('%Y%m%d_%H%M')}.csv",
+                        mime="text/csv")
 
 # ── Post-render background deep scan ───────────────────────────────────────────
 # The ENTIRE page has now rendered — you can see and interact with everything.
