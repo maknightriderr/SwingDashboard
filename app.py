@@ -267,7 +267,7 @@ def _q(sql):
 
 
 _PG_SCHEMA_PREFIX = "public."
-_PG_TABLES = ("users", "trades", "portfolio_history", "tg_config", "watchlist")
+_PG_TABLES = ("users", "trades", "portfolio_history", "tg_config", "watchlist", "price_alerts", "trade_journal")
 
 
 def _pg_qualify(sql):
@@ -339,6 +339,18 @@ def init_db():
                 id SERIAL PRIMARY KEY, user_id INTEGER, stock TEXT NOT NULL,
                 target_price REAL, notes TEXT,
                 added_date TEXT DEFAULT to_char(CURRENT_DATE,'YYYY-MM-DD'))""",
+            """CREATE TABLE IF NOT EXISTS price_alerts(
+                id SERIAL PRIMARY KEY, user_id INTEGER, stock TEXT NOT NULL,
+                condition TEXT NOT NULL, target_price REAL NOT NULL,
+                status TEXT DEFAULT 'Active', note TEXT,
+                created_date TEXT DEFAULT to_char(CURRENT_DATE,'YYYY-MM-DD'),
+                triggered_date TEXT)""",
+            """CREATE TABLE IF NOT EXISTS trade_journal(
+                id SERIAL PRIMARY KEY, user_id INTEGER, stock TEXT NOT NULL,
+                trade_date TEXT, direction TEXT, entry_price REAL, exit_price REAL,
+                setup TEXT, rationale TEXT, emotion TEXT, outcome TEXT,
+                lesson TEXT, rating INTEGER,
+                created_date TEXT DEFAULT to_char(CURRENT_DATE,'YYYY-MM-DD'))""",
         ]
         for ddl in table_ddls:
             try:
@@ -366,6 +378,16 @@ def init_db():
         c.execute("""CREATE TABLE IF NOT EXISTS watchlist(
             id INTEGER PRIMARY KEY AUTOINCREMENT, user_id INTEGER, stock TEXT NOT NULL,
             target_price REAL, notes TEXT, added_date TEXT DEFAULT(date('now')))""")
+        c.execute("""CREATE TABLE IF NOT EXISTS price_alerts(
+            id INTEGER PRIMARY KEY AUTOINCREMENT, user_id INTEGER, stock TEXT NOT NULL,
+            condition TEXT NOT NULL, target_price REAL NOT NULL,
+            status TEXT DEFAULT 'Active', note TEXT,
+            created_date TEXT DEFAULT(date('now')), triggered_date TEXT)""")
+        c.execute("""CREATE TABLE IF NOT EXISTS trade_journal(
+            id INTEGER PRIMARY KEY AUTOINCREMENT, user_id INTEGER, stock TEXT NOT NULL,
+            trade_date TEXT, direction TEXT, entry_price REAL, exit_price REAL,
+            setup TEXT, rationale TEXT, emotion TEXT, outcome TEXT,
+            lesson TEXT, rating INTEGER, created_date TEXT DEFAULT(date('now')))""")
         c.commit(); c.close()
 
 def register_user(username, password):
@@ -490,6 +512,52 @@ def add_watchlist(user_id, stock, target=None, notes=""):
 
 def delete_watchlist_item(wid, user_id):
     db("DELETE FROM watchlist WHERE id=? AND user_id=?", (wid, user_id))
+
+# ── Price Alert helpers ────────────────────────────────────────────────────────
+def add_price_alert(user_id, stock, condition, target_price, note=""):
+    """condition is 'above' or 'below'."""
+    db("INSERT INTO price_alerts(user_id,stock,condition,target_price,note) "
+       "VALUES(?,?,?,?,?)",
+       (user_id, stock.upper().strip(), condition, float(target_price), note))
+
+def get_price_alerts(user_id, status=None):
+    if status:
+        rows = db("SELECT id,stock,condition,target_price,status,note,"
+                  "created_date,triggered_date FROM price_alerts "
+                  "WHERE user_id=? AND status=? ORDER BY id DESC",
+                  (user_id, status), fetch=True)
+    else:
+        rows = db("SELECT id,stock,condition,target_price,status,note,"
+                  "created_date,triggered_date FROM price_alerts "
+                  "WHERE user_id=? ORDER BY id DESC", (user_id,), fetch=True)
+    return rows or []
+
+def delete_price_alert(aid, user_id):
+    db("DELETE FROM price_alerts WHERE id=? AND user_id=?", (aid, user_id))
+
+def trigger_price_alert(aid, user_id):
+    today = datetime.now().strftime("%Y-%m-%d")
+    db("UPDATE price_alerts SET status='Triggered',triggered_date=? "
+       "WHERE id=? AND user_id=?", (today, aid, user_id))
+
+# ── Trade Journal helpers ──────────────────────────────────────────────────────
+def add_journal_entry(user_id, stock, trade_date, direction, entry, exit_p,
+                      setup, rationale, emotion, outcome, lesson, rating):
+    db("INSERT INTO trade_journal(user_id,stock,trade_date,direction,entry_price,"
+       "exit_price,setup,rationale,emotion,outcome,lesson,rating) "
+       "VALUES(?,?,?,?,?,?,?,?,?,?,?,?)",
+       (user_id, stock.upper().strip(), trade_date, direction, entry, exit_p,
+        setup, rationale, emotion, outcome, lesson, rating))
+
+def get_journal_entries(user_id):
+    rows = db("SELECT id,stock,trade_date,direction,entry_price,exit_price,setup,"
+              "rationale,emotion,outcome,lesson,rating,created_date "
+              "FROM trade_journal WHERE user_id=? ORDER BY id DESC",
+              (user_id,), fetch=True)
+    return rows or []
+
+def delete_journal_entry(jid, user_id):
+    db("DELETE FROM trade_journal WHERE id=? AND user_id=?", (jid, user_id))
 
 # ── Session & Cookie Init ──────────────────────────────────────────────────────
 from streamlit_cookies_controller import CookieController
@@ -1321,6 +1389,9 @@ def render_signals(signals, theme_t):
     <span style="font-size:.7rem;color:var(--muted);font-weight:400">
       {s.get('sector','')}
     </span>
+    {('<span style="font-size:.62rem;background:rgba(245,158,11,.15);color:#f59e0b;'
+      'padding:.1rem .4rem;border-radius:4px;font-weight:700;margin-left:.3rem">'
+      '🆕 ' + str(s.get('bars','')) + 'd history</span>') if s.get('limited_history') else ''}
   </div>
   <div class="sig-meta">CMP {cmp_str} · RSI {rsi_str} · {pct_str}</div>
   <div class="sig-reason">{reason}</div>
@@ -1693,6 +1764,7 @@ with st.sidebar:
         "📊 Portfolio": [
             ("📋 Overview",          "portfolio"),
             ("📊 Charts",            "analytics"),
+            ("📈 Stock Chart",       "chart"),
             ("📐 Metrics",           "metrics"),
             ("📤 Export",            "export"),
         ],
@@ -1710,8 +1782,14 @@ with st.sidebar:
             ("📈 ETF Tracker",       "etfs"),
             ("🏛 Mutual Funds",      "mutual_funds"),
         ],
+        "🛡 Risk & Sizing": [
+            ("🧮 Position Sizing",   "sizing"),
+            ("🛡 Risk Dashboard",    "risk"),
+        ],
         "🛠 Tools": [
             ("👁 Watchlist",         "watchlist"),
+            ("🔔 Price Alerts",      "alerts"),
+            ("📓 Trade Journal",     "journal"),
             ("🎯 Signal Scores",     "scores"),
         ],
     }
@@ -2138,6 +2216,95 @@ elif _page == 'analytics':
         st.plotly_chart(
             chart_growth(get_history(UID), t_cur, t_inv),
             use_container_width=True)
+
+        # ── Enhanced analytics (Batch 2) ──────────────────────────────────────
+        st.markdown("<hr style='border-color:var(--border);margin:1.5rem 0'>",
+                    unsafe_allow_html=True)
+        st.markdown('<div class="sec">📊 Performance Breakdown</div>',
+                    unsafe_allow_html=True)
+
+        closed = df[df["status"] == "Closed"].copy()
+
+        ec1, ec2 = st.columns(2)
+
+        # 1. P&L by sector (realized, closed trades)
+        with ec1:
+            if not closed.empty:
+                closed["sector"] = closed["stock"].apply(get_sector)
+                sec_pnl = closed.groupby("sector")["profit"].sum().sort_values()
+                colors = ["#ef4444" if v < 0 else "#10b981" for v in sec_pnl.values]
+                bfig = go.Figure(go.Bar(
+                    x=sec_pnl.values, y=sec_pnl.index, orientation="h",
+                    marker_color=colors))
+                bfig.update_layout(
+                    title="Realized P&L by Sector", height=300,
+                    margin=dict(l=10, r=10, t=40, b=10),
+                    paper_bgcolor="rgba(0,0,0,0)", plot_bgcolor="rgba(0,0,0,0)",
+                    font=dict(color=theme_t.get("text", "#fff")))
+                bfig.update_xaxes(gridcolor="rgba(255,255,255,0.05)")
+                st.plotly_chart(bfig, use_container_width=True)
+            else:
+                st.info("No closed trades yet for sector P&L.")
+
+        # 2. Win/Loss distribution
+        with ec2:
+            if not closed.empty:
+                wins = len(closed[closed["profit"] > 0])
+                losses = len(closed[closed["profit"] < 0])
+                be = len(closed[closed["profit"] == 0])
+                pfig = go.Figure(go.Pie(
+                    labels=["Wins", "Losses", "Breakeven"],
+                    values=[wins, losses, be], hole=0.5,
+                    marker_colors=["#10b981", "#ef4444", "#f59e0b"]))
+                pfig.update_layout(
+                    title="Win / Loss Distribution", height=300,
+                    margin=dict(l=10, r=10, t=40, b=10),
+                    paper_bgcolor="rgba(0,0,0,0)", plot_bgcolor="rgba(0,0,0,0)",
+                    font=dict(color=theme_t.get("text", "#fff")))
+                st.plotly_chart(pfig, use_container_width=True)
+            else:
+                st.info("No closed trades yet for win/loss split.")
+
+        # 3. Best & worst trades
+        if not closed.empty:
+            st.markdown("##### 🏆 Best & Worst Closed Trades")
+            closed_sorted = closed.sort_values("profit_pct", ascending=False)
+            bw1, bw2 = st.columns(2)
+            with bw1:
+                st.markdown("**🟢 Top 5 Winners**")
+                top5 = closed_sorted.head(5)[["stock", "profit", "profit_pct"]].copy()
+                top5.columns = ["Stock", "P&L ₹", "P&L %"]
+                st.dataframe(top5, width="stretch", hide_index=True)
+            with bw2:
+                st.markdown("**🔴 Top 5 Losers**")
+                bot5 = closed_sorted.tail(5)[["stock", "profit", "profit_pct"]].copy()
+                bot5 = bot5.sort_values("P&L %" if "P&L %" in bot5.columns else "profit_pct")
+                bot5.columns = ["Stock", "P&L ₹", "P&L %"]
+                st.dataframe(bot5, width="stretch", hide_index=True)
+
+        # 4. Holding period distribution
+        if not closed.empty and "closed_date" in closed.columns:
+            try:
+                closed["hold_days"] = (
+                    pd.to_datetime(closed["closed_date"]) -
+                    pd.to_datetime(closed["added_date"])).dt.days
+                valid_hold = closed["hold_days"].dropna()
+                if not valid_hold.empty:
+                    st.markdown("##### ⏱ Holding Period Distribution")
+                    hfig = go.Figure(go.Histogram(
+                        x=valid_hold, marker_color="#3b82f6", nbinsx=20))
+                    hfig.update_layout(
+                        height=260, margin=dict(l=10, r=10, t=10, b=10),
+                        xaxis_title="Days held", yaxis_title="Trades",
+                        paper_bgcolor="rgba(0,0,0,0)", plot_bgcolor="rgba(0,0,0,0)",
+                        font=dict(color=theme_t.get("text", "#fff")))
+                    hfig.update_xaxes(gridcolor="rgba(255,255,255,0.05)")
+                    hfig.update_yaxes(gridcolor="rgba(255,255,255,0.05)")
+                    st.plotly_chart(hfig, use_container_width=True)
+                    avg_hold = valid_hold.mean()
+                    st.caption(f"Average holding period: {avg_hold:.0f} days")
+            except Exception:
+                pass
 
 # ── Active Signals ───────────────────────────────────────────────────────────
 elif _page == 'signals':
@@ -3588,6 +3755,527 @@ elif _page == 'mutual_funds':
                         cmp_df.to_csv(index=False).encode("utf-8"),
                         file_name=f"mf_compare_{datetime.now().strftime('%Y%m%d_%H%M')}.csv",
                         mime="text/csv")
+
+# ── Position Sizing Calculator ─────────────────────────────────────────────────
+elif _page == 'sizing':
+    st.markdown('<div class="sec">🧮 Position Sizing Calculator</div>',
+                unsafe_allow_html=True)
+    st.caption("Risk-based position sizing — never lose more than your chosen % "
+               "on a single trade. This is the most important discipline in trading.")
+
+    colA, colB = st.columns(2)
+    with colA:
+        _cap = st.number_input("💰 Total Trading Capital (₹)", min_value=1000.0,
+                               value=float(st.session_state.get("_sz_cap", 100000.0)),
+                               step=5000.0, key="sz_cap")
+        st.session_state._sz_cap = _cap
+        _risk_pct = st.slider("⚠️ Risk per Trade (%)", 0.25, 5.0,
+                              float(st.session_state.get("_sz_risk", 1.0)), 0.25,
+                              key="sz_risk",
+                              help="Pros risk 1-2% per trade. Never exceed 2% as a beginner.")
+        st.session_state._sz_risk = _risk_pct
+    with colB:
+        _entry = st.number_input("📈 Entry Price (₹)", min_value=0.0,
+                                 value=float(st.session_state.get("_sz_entry", 100.0)),
+                                 step=1.0, key="sz_entry")
+        st.session_state._sz_entry = _entry
+        _stop = st.number_input("🛑 Stop Loss Price (₹)", min_value=0.0,
+                                value=float(st.session_state.get("_sz_stop", 95.0)),
+                                step=1.0, key="sz_stop")
+        st.session_state._sz_stop = _stop
+
+    # Calculations
+    if _entry > 0 and _stop > 0 and _entry != _stop:
+        risk_amount = _cap * (_risk_pct / 100)          # max ₹ to lose
+        risk_per_share = abs(_entry - _stop)             # ₹ risk per share
+        qty = int(risk_amount / risk_per_share) if risk_per_share > 0 else 0
+        position_value = qty * _entry
+        position_pct = (position_value / _cap * 100) if _cap > 0 else 0
+        is_long = _stop < _entry
+        direction = "LONG" if is_long else "SHORT"
+
+        # Warnings
+        warn = ""
+        if position_value > _cap:
+            warn = ("⚠️ This position needs more capital than you have — "
+                    "your stop is too wide for this risk %. Widen the stop "
+                    "distance or lower risk %.")
+        elif position_pct > 50:
+            warn = (f"⚠️ This position is {position_pct:.0f}% of your capital — "
+                    "very concentrated. Consider a tighter stop or smaller risk %.")
+
+        st.markdown(f"""
+<div style="background:var(--card);border:1px solid var(--border);border-radius:12px;
+            padding:1.4rem 1.6rem;margin:1rem 0">
+  <div style="font-size:.75rem;color:var(--muted);text-transform:uppercase;
+              letter-spacing:.08em;margin-bottom:.8rem">{direction} Position</div>
+  <div style="display:flex;gap:2.5rem;flex-wrap:wrap">
+    <div><span style="color:var(--muted);font-size:.78rem">Shares to Buy</span><br>
+         <b style="font-size:1.8rem;color:var(--accent)">{qty:,}</b></div>
+    <div><span style="color:var(--muted);font-size:.78rem">Position Value</span><br>
+         <b style="font-size:1.5rem">₹{position_value:,.0f}</b>
+         <span style="font-size:.8rem;color:var(--muted)"> ({position_pct:.1f}%)</span></div>
+    <div><span style="color:var(--muted);font-size:.78rem">Max Loss (your risk)</span><br>
+         <b style="font-size:1.5rem;color:var(--red)">₹{risk_amount:,.0f}</b></div>
+    <div><span style="color:var(--muted);font-size:.78rem">Risk / Share</span><br>
+         <b style="font-size:1.5rem">₹{risk_per_share:.2f}</b></div>
+  </div>
+</div>""", unsafe_allow_html=True)
+        if warn:
+            st.warning(warn)
+
+        # Target calculator with R-multiples
+        st.markdown("##### 🎯 Target Levels (Risk:Reward)")
+        tcols = st.columns(4)
+        for i, rmult in enumerate([1, 2, 3, 5]):
+            if is_long:
+                tgt = _entry + rmult * risk_per_share
+            else:
+                tgt = _entry - rmult * risk_per_share
+            reward = qty * abs(tgt - _entry)
+            with tcols[i]:
+                st.markdown(f"""
+<div style="background:var(--card);border:1px solid var(--border);border-radius:8px;
+            padding:.7rem;text-align:center">
+  <div style="font-size:.7rem;color:var(--muted)">{rmult}R Target</div>
+  <div style="font-size:1.1rem;font-weight:800;color:var(--green)">₹{tgt:.2f}</div>
+  <div style="font-size:.72rem;color:var(--muted)">+₹{reward:,.0f}</div>
+</div>""", unsafe_allow_html=True)
+
+        st.caption("💡 Quantity is calculated so that IF your stop loss hits, you lose "
+                   "exactly your chosen risk amount — no more. This is how professionals "
+                   "size every trade.")
+    else:
+        st.info("Enter entry and stop loss prices (they must differ) to calculate sizing.")
+
+# ── Risk Dashboard ─────────────────────────────────────────────────────────────
+elif _page == 'risk':
+    st.markdown('<div class="sec">🛡 Portfolio Risk Dashboard</div>',
+                unsafe_allow_html=True)
+    st.caption("Portfolio-level risk exposure across all open positions.")
+
+    odf_risk = df[df["status"] == "Open"].copy() if not df.empty else pd.DataFrame()
+    if odf_risk.empty:
+        st.info("No open positions to analyze. Add trades to see your risk profile.")
+    else:
+        total_cap = st.number_input("💰 Total Trading Capital (₹) — for risk context",
+                                    min_value=1000.0,
+                                    value=float(st.session_state.get("_sz_cap", 100000.0)),
+                                    step=5000.0, key="risk_cap")
+        st.session_state._sz_cap = total_cap
+
+        total_invested = odf_risk["invested"].sum()
+        total_current  = odf_risk["current_amt"].sum()
+        n_positions    = len(odf_risk)
+
+        # Concentration: largest position
+        odf_risk["pos_value"] = odf_risk["current_amt"]
+        largest = odf_risk.loc[odf_risk["pos_value"].idxmax()]
+        largest_pct = (largest["pos_value"] / total_current * 100) if total_current > 0 else 0
+
+        # Capital deployed
+        deployed_pct = (total_invested / total_cap * 100) if total_cap > 0 else 0
+
+        # Sector concentration
+        odf_risk["sector"] = odf_risk["stock"].apply(get_sector)
+        sector_exposure = odf_risk.groupby("sector")["pos_value"].sum()
+        top_sector = sector_exposure.idxmax() if not sector_exposure.empty else "—"
+        top_sector_pct = (sector_exposure.max() / total_current * 100) if total_current > 0 else 0
+
+        # Risk badges
+        def _risk_badge(value, warn_thresh, danger_thresh, reverse=False):
+            if reverse:
+                lvl = "danger" if value < danger_thresh else "warn" if value < warn_thresh else "ok"
+            else:
+                lvl = "danger" if value > danger_thresh else "warn" if value > warn_thresh else "ok"
+            clr = {"ok": "#10b981", "warn": "#f59e0b", "danger": "#ef4444"}[lvl]
+            return clr
+
+        m1, m2, m3, m4 = st.columns(4)
+        with m1:
+            clr = _risk_badge(deployed_pct, 80, 95)
+            st.markdown(f"""<div style="background:var(--card);border:1px solid var(--border);
+                border-radius:10px;padding:1rem;text-align:center">
+                <div style="font-size:.72rem;color:var(--muted)">Capital Deployed</div>
+                <div style="font-size:1.6rem;font-weight:800;color:{clr}">{deployed_pct:.0f}%</div>
+                <div style="font-size:.7rem;color:var(--muted)">₹{total_invested:,.0f}</div>
+                </div>""", unsafe_allow_html=True)
+        with m2:
+            clr = _risk_badge(largest_pct, 25, 40)
+            st.markdown(f"""<div style="background:var(--card);border:1px solid var(--border);
+                border-radius:10px;padding:1rem;text-align:center">
+                <div style="font-size:.72rem;color:var(--muted)">Largest Position</div>
+                <div style="font-size:1.6rem;font-weight:800;color:{clr}">{largest_pct:.0f}%</div>
+                <div style="font-size:.7rem;color:var(--muted)">{largest['stock']}</div>
+                </div>""", unsafe_allow_html=True)
+        with m3:
+            clr = _risk_badge(top_sector_pct, 40, 60)
+            st.markdown(f"""<div style="background:var(--card);border:1px solid var(--border);
+                border-radius:10px;padding:1rem;text-align:center">
+                <div style="font-size:.72rem;color:var(--muted)">Top Sector</div>
+                <div style="font-size:1.6rem;font-weight:800;color:{clr}">{top_sector_pct:.0f}%</div>
+                <div style="font-size:.7rem;color:var(--muted)">{top_sector}</div>
+                </div>""", unsafe_allow_html=True)
+        with m4:
+            st.markdown(f"""<div style="background:var(--card);border:1px solid var(--border);
+                border-radius:10px;padding:1rem;text-align:center">
+                <div style="font-size:.72rem;color:var(--muted)">Open Positions</div>
+                <div style="font-size:1.6rem;font-weight:800;color:var(--accent)">{n_positions}</div>
+                <div style="font-size:.7rem;color:var(--muted)">holdings</div>
+                </div>""", unsafe_allow_html=True)
+
+        # Sector exposure breakdown
+        st.markdown("##### 🥧 Sector Exposure")
+        sec_df = (sector_exposure / total_current * 100).round(1).reset_index()
+        sec_df.columns = ["Sector", "% of Portfolio"]
+        sec_df = sec_df.sort_values("% of Portfolio", ascending=False)
+        st.dataframe(sec_df, width="stretch", hide_index=True)
+
+        # Position-level risk table
+        st.markdown("##### 📊 Position Breakdown")
+        pos_df = odf_risk[["stock", "invested", "current_amt", "profit", "profit_pct"]].copy()
+        pos_df["% of Portfolio"] = (pos_df["current_amt"] / total_current * 100).round(1)
+        pos_df = pos_df.rename(columns={"stock": "Stock", "invested": "Invested",
+                                        "current_amt": "Current", "profit": "P&L",
+                                        "profit_pct": "P&L %"})
+        pos_df = pos_df.sort_values("% of Portfolio", ascending=False)
+        st.dataframe(pos_df, width="stretch", hide_index=True)
+
+        # Health summary
+        st.markdown("##### 🩺 Risk Health Check")
+        issues = []
+        if deployed_pct > 95:
+            issues.append("🔴 Nearly fully invested — no dry powder for opportunities or averaging.")
+        if largest_pct > 40:
+            issues.append(f"🔴 {largest['stock']} is {largest_pct:.0f}% of your portfolio — "
+                          "a single stock shock could badly hurt you.")
+        if top_sector_pct > 60:
+            issues.append(f"🔴 {top_sector} sector is {top_sector_pct:.0f}% of holdings — "
+                          "heavy concentration risk if that sector falls.")
+        if not issues:
+            st.success("✅ Portfolio risk looks reasonably balanced — no major concentration flags.")
+        else:
+            for i in issues:
+                st.warning(i)
+
+# ── Price Alerts ───────────────────────────────────────────────────────────────
+elif _page == 'alerts':
+    st.markdown('<div class="sec">🔔 Price Alerts</div>', unsafe_allow_html=True)
+    st.caption("Set price targets on any stock. Alerts trigger when crossed and "
+               "(if Telegram is configured) send you a message.")
+
+    with st.expander("➕ Create New Alert", expanded=True):
+        ac1, ac2, ac3 = st.columns([2, 1, 1])
+        with ac1:
+            _al_stock = st.text_input("Stock symbol (NSE)", key="al_stock",
+                                      placeholder="e.g. RELIANCE")
+        with ac2:
+            _al_cond = st.selectbox("Condition", ["above", "below"], key="al_cond")
+        with ac3:
+            _al_price = st.number_input("Target ₹", min_value=0.0, step=1.0, key="al_price")
+        _al_note = st.text_input("Note (optional)", key="al_note",
+                                 placeholder="e.g. breakout level / support")
+        if st.button("🔔 Create Alert", width="stretch"):
+            if _al_stock and _al_price > 0:
+                add_price_alert(UID, _al_stock, _al_cond, _al_price, _al_note)
+                st.success(f"Alert set: {_al_stock.upper()} {_al_cond} ₹{_al_price}")
+                st.rerun()
+            else:
+                st.error("Enter a stock symbol and a target price above 0.")
+
+    # Active alerts — check against live prices
+    active = get_price_alerts(UID, status="Active")
+    if active:
+        st.markdown(f"##### 🟢 Active Alerts ({len(active)})")
+        # Fetch current prices for all alert stocks
+        alert_syms = tuple(sorted({a[1] for a in active}))
+        alert_prices = _cached_prices(alert_syms)
+
+        for a in active:
+            aid, stock, cond, target, status, note, created, _ = a
+            cur_price = alert_prices.get(stock)
+            triggered = False
+            if cur_price is not None:
+                if cond == "above" and cur_price >= target:
+                    triggered = True
+                elif cond == "below" and cur_price <= target:
+                    triggered = True
+
+            cur_str = f"₹{cur_price}" if cur_price is not None else "—"
+            arrow = "▲" if cond == "above" else "▼"
+            row_clr = "#10b981" if triggered else "var(--border)"
+
+            cc1, cc2 = st.columns([5, 1])
+            with cc1:
+                trig_html = ('<span style="background:rgba(16,185,129,.2);color:#10b981;'
+                             'padding:.15rem .5rem;border-radius:4px;font-size:.7rem;'
+                             'font-weight:800;margin-left:.5rem">🎯 TRIGGERED</span>') if triggered else ''
+                st.markdown(f"""
+<div style="background:var(--card);border:1px solid {row_clr};border-radius:8px;
+            padding:.7rem 1rem;margin-bottom:.5rem">
+  <b style="font-size:.95rem">{stock}</b> {arrow} ₹{target}
+  <span style="color:var(--muted);font-size:.8rem">· now {cur_str}</span>{trig_html}
+  {('<br><span style="font-size:.72rem;color:var(--muted)">📝 ' + note + '</span>') if note else ''}
+</div>""", unsafe_allow_html=True)
+            with cc2:
+                if st.button("🗑", key=f"del_alert_{aid}"):
+                    delete_price_alert(aid, UID)
+                    st.rerun()
+
+            # If triggered, mark it + optionally send Telegram
+            if triggered:
+                trigger_price_alert(aid, UID)
+                if saved_tok and saved_cid:
+                    try:
+                        send_telegram(saved_tok, saved_cid,
+                            f"🎯 <b>PRICE ALERT</b>\n{stock} is now {cur_str} "
+                            f"({arrow} target ₹{target})\n{note}")
+                    except Exception:
+                        pass
+    else:
+        st.info("No active alerts. Create one above.")
+
+    # Triggered history
+    triggered_alerts = get_price_alerts(UID, status="Triggered")
+    if triggered_alerts:
+        with st.expander(f"📜 Triggered History ({len(triggered_alerts)})"):
+            for a in triggered_alerts:
+                aid, stock, cond, target, status, note, created, trig_date = a
+                arrow = "▲" if cond == "above" else "▼"
+                tc1, tc2 = st.columns([5, 1])
+                with tc1:
+                    st.markdown(f"**{stock}** {arrow} ₹{target} · triggered {trig_date or '—'}")
+                with tc2:
+                    if st.button("🗑", key=f"del_trig_{aid}"):
+                        delete_price_alert(aid, UID)
+                        st.rerun()
+
+# ── Stock Candlestick Chart ────────────────────────────────────────────────────
+elif _page == 'chart':
+    st.markdown('<div class="sec">📈 Stock Chart</div>', unsafe_allow_html=True)
+    st.caption("Candlestick chart with EMAs, Bollinger Bands, and support/resistance. "
+               "Pick a holding, watchlist stock, or type any NSE symbol.")
+
+    # Build symbol options: holdings + watchlist + manual
+    hold_syms = sorted(df["stock"].unique().tolist()) if not df.empty else []
+    try:
+        wl = get_watchlist(UID)
+        wl_syms = sorted(wl["stock"].unique().tolist()) if (wl is not None and not wl.empty) else []
+    except Exception:
+        wl_syms = []
+    combined = sorted(set(hold_syms + wl_syms))
+
+    cc1, cc2, cc3 = st.columns([2, 1, 1])
+    with cc1:
+        if combined:
+            _picked = st.selectbox("Your stocks", ["— type below —"] + combined, key="chart_pick")
+        else:
+            _picked = "— type below —"
+    with cc2:
+        _typed = st.text_input("Or NSE symbol", key="chart_typed", placeholder="e.g. TCS")
+    with cc3:
+        _period = st.selectbox("Period", ["3mo", "6mo", "1y", "2y"], index=1, key="chart_period")
+
+    chart_sym = (_typed.strip().upper() if _typed.strip()
+                 else (_picked if _picked != "— type below —" else None))
+
+    if not chart_sym:
+        st.info("Select or type a stock symbol to view its chart.")
+    else:
+        with st.spinner(f"Loading {chart_sym} chart…"):
+            cdf = None
+            for sfx in [".NS", ".BO"]:
+                try:
+                    bulk = _bulk_fetch_history([chart_sym], period=_period)
+                    cdf = bulk.get(chart_sym)
+                    if cdf is not None and not cdf.empty:
+                        break
+                except Exception:
+                    continue
+
+        if cdf is None or cdf.empty or len(cdf) < 5:
+            st.error(f"Couldn't load chart data for {chart_sym}. Verify the NSE symbol, "
+                     "or it may be newly listed / Yahoo rate-limited.")
+        else:
+            c = cdf.copy()
+            # Indicators for overlay
+            close = c["Close"]
+            c["EMA20"] = close.ewm(span=20, adjust=False).mean()
+            c["EMA50"] = close.ewm(span=50, adjust=False).mean()
+            bb_mid = close.rolling(20).mean()
+            bb_std = close.rolling(20).std()
+            c["BB_up"] = bb_mid + 2 * bb_std
+            c["BB_dn"] = bb_mid - 2 * bb_std
+            support = float(c["Low"].rolling(min(20, len(c))).min().iloc[-1])
+            resistance = float(c["High"].rolling(min(20, len(c))).max().iloc[-1])
+
+            fig = go.Figure()
+            # Bollinger band fill
+            fig.add_trace(go.Scatter(x=c.index, y=c["BB_up"], line=dict(width=0),
+                                     showlegend=False, hoverinfo="skip"))
+            fig.add_trace(go.Scatter(x=c.index, y=c["BB_dn"], line=dict(width=0),
+                                     fill="tonexty", fillcolor="rgba(120,120,200,0.08)",
+                                     showlegend=False, hoverinfo="skip", name="BB"))
+            # Candles
+            fig.add_trace(go.Candlestick(
+                x=c.index, open=c["Open"], high=c["High"], low=c["Low"], close=c["Close"],
+                name=chart_sym, increasing_line_color="#10b981",
+                decreasing_line_color="#ef4444"))
+            # EMAs
+            fig.add_trace(go.Scatter(x=c.index, y=c["EMA20"], line=dict(color="#f59e0b", width=1.3),
+                                     name="EMA 20"))
+            fig.add_trace(go.Scatter(x=c.index, y=c["EMA50"], line=dict(color="#3b82f6", width=1.3),
+                                     name="EMA 50"))
+            # S/R lines
+            fig.add_hline(y=resistance, line=dict(color="#ef4444", width=1, dash="dash"),
+                          annotation_text=f"R ₹{resistance:.1f}", annotation_position="right")
+            fig.add_hline(y=support, line=dict(color="#10b981", width=1, dash="dash"),
+                          annotation_text=f"S ₹{support:.1f}", annotation_position="right")
+
+            fig.update_layout(
+                height=520, margin=dict(l=10, r=10, t=30, b=10),
+                xaxis_rangeslider_visible=False,
+                paper_bgcolor="rgba(0,0,0,0)", plot_bgcolor="rgba(0,0,0,0)",
+                font=dict(color=theme_t.get("text", "#fff")),
+                legend=dict(orientation="h", yanchor="bottom", y=1.0, x=0),
+                hovermode="x unified")
+            fig.update_xaxes(gridcolor="rgba(255,255,255,0.05)")
+            fig.update_yaxes(gridcolor="rgba(255,255,255,0.05)")
+            st.plotly_chart(fig, use_container_width=True)
+
+            # Volume chart below
+            vfig = go.Figure()
+            vol_clr = ["#10b981" if c["Close"].iloc[i] >= c["Open"].iloc[i]
+                       else "#ef4444" for i in range(len(c))]
+            vfig.add_trace(go.Bar(x=c.index, y=c["Volume"], marker_color=vol_clr,
+                                  name="Volume"))
+            vfig.update_layout(height=160, margin=dict(l=10, r=10, t=10, b=10),
+                               paper_bgcolor="rgba(0,0,0,0)", plot_bgcolor="rgba(0,0,0,0)",
+                               font=dict(color=theme_t.get("text", "#fff")), showlegend=False)
+            vfig.update_xaxes(gridcolor="rgba(255,255,255,0.05)")
+            vfig.update_yaxes(gridcolor="rgba(255,255,255,0.05)")
+            st.plotly_chart(vfig, use_container_width=True)
+
+            # Quick stats row
+            last_close = float(c["Close"].iloc[-1])
+            prev_close = float(c["Close"].iloc[-2]) if len(c) >= 2 else last_close
+            chg = (last_close / prev_close - 1) * 100
+            sc1, sc2, sc3, sc4 = st.columns(4)
+            sc1.metric("Close", f"₹{last_close:.2f}", f"{chg:+.2f}%")
+            sc2.metric("Support", f"₹{support:.2f}")
+            sc3.metric("Resistance", f"₹{resistance:.2f}")
+            sc4.metric("Bars", f"{len(c)}")
+
+# ── Trade Journal ──────────────────────────────────────────────────────────────
+elif _page == 'journal':
+    st.markdown('<div class="sec">📓 Trade Journal</div>', unsafe_allow_html=True)
+    st.caption("Log why you entered each trade and what you learned. Over time this "
+               "becomes your most valuable asset — you'll spot patterns in your own decisions.")
+
+    with st.expander("➕ New Journal Entry", expanded=False):
+        jc1, jc2, jc3 = st.columns(3)
+        with jc1:
+            j_stock = st.text_input("Stock", key="j_stock", placeholder="RELIANCE")
+            j_date = st.date_input("Trade date", key="j_date")
+            j_dir = st.selectbox("Direction", ["Long", "Short"], key="j_dir")
+        with jc2:
+            j_entry = st.number_input("Entry ₹", min_value=0.0, step=1.0, key="j_entry")
+            j_exit = st.number_input("Exit ₹ (0 if open)", min_value=0.0, step=1.0, key="j_exit")
+            j_setup = st.selectbox("Setup", ["Breakout", "Pullback", "Reversal", "Trend-follow",
+                                   "SMC / Order Block", "Trap reversal", "Sector rotation",
+                                   "News-based", "Other"], key="j_setup")
+        with jc3:
+            j_emotion = st.selectbox("Emotion at entry", ["Confident", "Neutral", "FOMO",
+                                     "Fearful", "Greedy", "Revenge", "Disciplined"], key="j_emotion")
+            j_outcome = st.selectbox("Outcome", ["Open", "Win", "Loss", "Breakeven"], key="j_outcome")
+            j_rating = st.slider("Execution rating", 1, 5, 3, key="j_rating",
+                                 help="How well did you follow your plan? (not P&L)")
+        j_rationale = st.text_area("Why did you enter? (your thesis)", key="j_rationale",
+                                   placeholder="e.g. broke 200-DMA on volume, sector rotating in…")
+        j_lesson = st.text_area("Lesson learned / notes", key="j_lesson",
+                                placeholder="e.g. exited too early out of fear, should have trusted the stop")
+        if st.button("💾 Save Entry", width="stretch"):
+            if j_stock:
+                add_journal_entry(UID, j_stock, str(j_date), j_dir, j_entry,
+                                  j_exit if j_exit > 0 else None, j_setup, j_rationale,
+                                  j_emotion, j_outcome, j_lesson, j_rating)
+                st.success(f"Journal entry saved for {j_stock.upper()}")
+                st.rerun()
+            else:
+                st.error("Enter at least a stock symbol.")
+
+    entries = get_journal_entries(UID)
+    if not entries:
+        st.info("No journal entries yet. Log your first trade above — your future self will thank you.")
+    else:
+        # Insight summary
+        wins = sum(1 for e in entries if e[9] == "Win")
+        losses = sum(1 for e in entries if e[9] == "Loss")
+        closed = wins + losses
+        avg_rating = sum(e[11] or 0 for e in entries) / len(entries) if entries else 0
+        # Most common setup & emotion
+        from collections import Counter
+        setups = Counter(e[6] for e in entries if e[6])
+        emotions = Counter(e[8] for e in entries if e[8])
+        top_setup = setups.most_common(1)[0][0] if setups else "—"
+        top_emotion = emotions.most_common(1)[0][0] if emotions else "—"
+
+        ic1, ic2, ic3, ic4 = st.columns(4)
+        ic1.metric("Entries", len(entries))
+        ic2.metric("Win Rate", f"{(wins/closed*100):.0f}%" if closed else "—",
+                   f"{wins}W / {losses}L")
+        ic3.metric("Avg Execution", f"{avg_rating:.1f}/5")
+        ic4.metric("Top Setup", top_setup)
+
+        # Win rate by setup — the real insight
+        st.markdown("##### 📊 Win Rate by Setup")
+        setup_stats = {}
+        for e in entries:
+            s, oc = e[6], e[9]
+            if oc in ("Win", "Loss"):
+                setup_stats.setdefault(s, {"w": 0, "l": 0})
+                setup_stats[s]["w" if oc == "Win" else "l"] += 1
+        if setup_stats:
+            rows = []
+            for s, st_ in setup_stats.items():
+                tot = st_["w"] + st_["l"]
+                wr = st_["w"] / tot * 100 if tot else 0
+                rows.append({"Setup": s, "Trades": tot, "Wins": st_["w"],
+                             "Losses": st_["l"], "Win %": round(wr, 0)})
+            sdf = pd.DataFrame(rows).sort_values("Win %", ascending=False)
+            st.dataframe(sdf, width="stretch", hide_index=True)
+            st.caption("💡 Focus on the setups where you actually win. Cut the ones that lose.")
+
+        # Entry cards
+        st.markdown("##### 📒 Entries")
+        for e in entries:
+            (jid, stock, tdate, direction, entry_p, exit_p, setup, rationale,
+             emotion, outcome, lesson, rating, created) = e
+            oc_clr = {"Win": "#10b981", "Loss": "#ef4444",
+                      "Breakeven": "#f59e0b", "Open": "#8e8e93"}.get(outcome, "#8e8e93")
+            pnl_str = ""
+            if entry_p and exit_p:
+                pnl = ((exit_p / entry_p - 1) * 100) if direction == "Long" else ((entry_p / exit_p - 1) * 100)
+                pnl_str = f" · {pnl:+.1f}%"
+            jcol1, jcol2 = st.columns([6, 1])
+            with jcol1:
+                st.markdown(f"""
+<div style="background:var(--card);border:1px solid var(--border);border-left:3px solid {oc_clr};
+            border-radius:8px;padding:.8rem 1rem;margin-bottom:.6rem">
+  <div style="display:flex;justify-content:space-between;flex-wrap:wrap">
+    <b style="font-size:.95rem">{stock} <span style="color:var(--muted);font-weight:400">
+       {direction} · {setup}</span></b>
+    <span style="color:{oc_clr};font-weight:700;font-size:.85rem">{outcome}{pnl_str}</span>
+  </div>
+  <div style="font-size:.78rem;color:var(--muted);margin-top:.2rem">
+    {tdate} · Entry ₹{entry_p or '—'} → Exit ₹{exit_p or '—'} · Emotion: {emotion} · ⭐{rating}/5</div>
+  {('<div style="font-size:.82rem;margin-top:.4rem"><b>Thesis:</b> ' + rationale + '</div>') if rationale else ''}
+  {('<div style="font-size:.82rem;margin-top:.3rem;color:var(--accent)"><b>Lesson:</b> ' + lesson + '</div>') if lesson else ''}
+</div>""", unsafe_allow_html=True)
+            with jcol2:
+                if st.button("🗑", key=f"del_journal_{jid}"):
+                    delete_journal_entry(jid, UID)
+                    st.rerun()
 
 # ── Post-render background deep scan ───────────────────────────────────────────
 # The ENTIRE page has now rendered — you can see and interact with everything.
