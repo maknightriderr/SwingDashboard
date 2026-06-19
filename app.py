@@ -592,6 +592,7 @@ for k, v in [("user_id", None), ("username", None), ("edit_id", None), ("close_i
              ("smc_scan_cache", None),
              ("etf_scan_cache", None), ("mf_search_results", []),
              ("mf_selected", None), ("mf_compare_list", []),
+             ("_earnings_cache", None), ("_ipo_watch", []),
              ("first_render_done", False), ("_kickoff_scan", False),
              ("_scan_stage", "done"), ("_deep_stage", "sector"),
              ("_deep_running", False), ("_manual_deep_request", False),
@@ -1162,6 +1163,49 @@ def fetch_price(symbol):
         except Exception:
             continue
     return None
+
+
+@st.cache_data(ttl=120, show_spinner=False)
+def fetch_chart_data(symbol, period, interval):
+    """Fetch OHLCV for the chart at any interval (intraday or daily).
+    Yahoo intraday limits: 1m→7d max, 5m/15m→60d max, 1h→730d.
+    auto_adjust=False for accurate actual prices. Returns DataFrame or None."""
+    import yfinance as _yf
+    clean = str(symbol).upper().strip()
+    for sfx in [".NS", ".BO", ".NSE", ".BSE"]:
+        if clean.endswith(sfx):
+            clean = clean[:-len(sfx)]
+    for sfx in [".NS", ".BO"]:
+        for _attempt in range(2):
+            try:
+                t = _yf.Ticker(clean + sfx)
+                df = t.history(period=period, interval=interval, auto_adjust=False)
+                if df is not None and not df.empty and "Close" in df.columns:
+                    return df.dropna(subset=["Close"])
+            except Exception:
+                pass
+            try:
+                df = _yf.download(clean + sfx, period=period, interval=interval,
+                                  auto_adjust=False, progress=False, threads=False)
+                if df is not None and not df.empty:
+                    if isinstance(df.columns, pd.MultiIndex):
+                        df.columns = df.columns.get_level_values(0)
+                    if "Close" in df.columns:
+                        return df.dropna(subset=["Close"])
+            except Exception:
+                pass
+            time.sleep(0.3)
+    return None
+
+
+# Valid (period, interval) combinations for Yahoo intraday data
+_CHART_TIMEFRAMES = {
+    "5 min":  ("5d",  "5m"),
+    "15 min": ("1mo", "15m"),
+    "1 hour": ("3mo", "1h"),
+    "Daily":  ("6mo", "1d"),
+    "Weekly": ("2y",  "1wk"),
+}
 
 
 def enrich(df):
@@ -1776,7 +1820,11 @@ with st.sidebar:
         "🔄 Market Intelligence": [
             ("🔄 Sector Rotation",   "sector"),
             ("🌌 Universe Scanner",  "scanner"),
+            ("📊 Market Breadth",    "breadth"),
+            ("🔬 Custom Screener",   "screener"),
             ("📅 Corporate Actions", "corp_actions"),
+            ("📆 Earnings Calendar", "earnings"),
+            ("🆕 IPO Tracker",       "ipo"),
         ],
         "💰 Funds & ETFs": [
             ("📈 ETF Tracker",       "etfs"),
@@ -4074,7 +4122,9 @@ elif _page == 'chart':
     with cc2:
         _typed = st.text_input("Or NSE symbol", key="chart_typed", placeholder="e.g. TCS")
     with cc3:
-        _period = st.selectbox("Period", ["3mo", "6mo", "1y", "2y"], index=1, key="chart_period")
+        _tf_label = st.selectbox("Timeframe", list(_CHART_TIMEFRAMES.keys()),
+                                 index=3, key="chart_tf")
+    _period, _interval = _CHART_TIMEFRAMES[_tf_label]
 
     chart_sym = (_typed.strip().upper() if _typed.strip()
                  else (_picked if _picked != "— type below —" else None))
@@ -4082,28 +4132,31 @@ elif _page == 'chart':
     if not chart_sym:
         st.info("Select or type a stock symbol to view its chart.")
     else:
-        with st.spinner(f"Loading {chart_sym} chart…"):
-            cdf = None
-            for sfx in [".NS", ".BO"]:
-                try:
-                    bulk = _bulk_fetch_history([chart_sym], period=_period)
-                    cdf = bulk.get(chart_sym)
-                    if cdf is not None and not cdf.empty:
-                        break
-                except Exception:
-                    continue
+        with st.spinner(f"Loading {chart_sym} {_tf_label} chart…"):
+            cdf = fetch_chart_data(chart_sym, _period, _interval)
+            # Live CMP (real-time last price, same source as portfolio)
+            live_cmp = None
+            try:
+                _lp = _cached_prices((chart_sym,))
+                live_cmp = _lp.get(chart_sym)
+            except Exception:
+                pass
 
         if cdf is None or cdf.empty or len(cdf) < 5:
-            st.error(f"Couldn't load chart data for {chart_sym}. Verify the NSE symbol, "
-                     "or it may be newly listed / Yahoo rate-limited.")
+            st.error(f"Couldn't load {_tf_label} data for {chart_sym}. "
+                     f"Intraday data may be unavailable (markets closed / newly listed), "
+                     f"or Yahoo is rate-limited. Try the Daily timeframe.")
         else:
             c = cdf.copy()
             # Indicators for overlay
             close = c["Close"]
-            c["EMA20"] = close.ewm(span=20, adjust=False).mean()
-            c["EMA50"] = close.ewm(span=50, adjust=False).mean()
-            bb_mid = close.rolling(20).mean()
-            bb_std = close.rolling(20).std()
+            _ema_fast = 20 if len(c) >= 20 else max(2, len(c) // 2)
+            _ema_slow = 50 if len(c) >= 50 else max(3, len(c) // 2)
+            c["EMA20"] = close.ewm(span=_ema_fast, adjust=False).mean()
+            c["EMA50"] = close.ewm(span=_ema_slow, adjust=False).mean()
+            _bb_win = min(20, len(c))
+            bb_mid = close.rolling(_bb_win).mean()
+            bb_std = close.rolling(_bb_win).std()
             c["BB_up"] = bb_mid + 2 * bb_std
             c["BB_dn"] = bb_mid - 2 * bb_std
             support = float(c["Low"].rolling(min(20, len(c))).min().iloc[-1])
@@ -4122,15 +4175,22 @@ elif _page == 'chart':
                 name=chart_sym, increasing_line_color="#10b981",
                 decreasing_line_color="#ef4444"))
             # EMAs
-            fig.add_trace(go.Scatter(x=c.index, y=c["EMA20"], line=dict(color="#f59e0b", width=1.3),
-                                     name="EMA 20"))
-            fig.add_trace(go.Scatter(x=c.index, y=c["EMA50"], line=dict(color="#3b82f6", width=1.3),
-                                     name="EMA 50"))
+            fig.add_trace(go.Scatter(x=c.index, y=c["EMA20"],
+                                     line=dict(color="#f59e0b", width=1.3),
+                                     name=f"EMA {_ema_fast}"))
+            fig.add_trace(go.Scatter(x=c.index, y=c["EMA50"],
+                                     line=dict(color="#3b82f6", width=1.3),
+                                     name=f"EMA {_ema_slow}"))
             # S/R lines
             fig.add_hline(y=resistance, line=dict(color="#ef4444", width=1, dash="dash"),
                           annotation_text=f"R ₹{resistance:.1f}", annotation_position="right")
             fig.add_hline(y=support, line=dict(color="#10b981", width=1, dash="dash"),
                           annotation_text=f"S ₹{support:.1f}", annotation_position="right")
+            # Live CMP line (real-time, distinct from last candle close)
+            if live_cmp:
+                fig.add_hline(y=live_cmp, line=dict(color="#d4af37", width=1.2, dash="dot"),
+                              annotation_text=f"CMP ₹{live_cmp:.1f}",
+                              annotation_position="left")
 
             fig.update_layout(
                 height=520, margin=dict(l=10, r=10, t=30, b=10),
@@ -4156,15 +4216,21 @@ elif _page == 'chart':
             vfig.update_yaxes(gridcolor="rgba(255,255,255,0.05)")
             st.plotly_chart(vfig, use_container_width=True)
 
-            # Quick stats row
+            # Quick stats row — lead with LIVE CMP, not stale candle close
             last_close = float(c["Close"].iloc[-1])
             prev_close = float(c["Close"].iloc[-2]) if len(c) >= 2 else last_close
-            chg = (last_close / prev_close - 1) * 100
+            display_price = live_cmp if live_cmp else last_close
+            chg = (display_price / prev_close - 1) * 100 if prev_close else 0
             sc1, sc2, sc3, sc4 = st.columns(4)
-            sc1.metric("Close", f"₹{last_close:.2f}", f"{chg:+.2f}%")
+            sc1.metric("CMP (live)" if live_cmp else "Last Close",
+                       f"₹{display_price:.2f}", f"{chg:+.2f}%")
             sc2.metric("Support", f"₹{support:.2f}")
             sc3.metric("Resistance", f"₹{resistance:.2f}")
             sc4.metric("Bars", f"{len(c)}")
+            if live_cmp and abs(live_cmp - last_close) > 0.01:
+                st.caption(f"💡 Gold dotted line = live CMP ₹{live_cmp:.2f}. "
+                           f"Last {_tf_label} candle closed at ₹{last_close:.2f} "
+                           f"(candles lag live price, especially intraday/after-hours).")
 
 # ── Trade Journal ──────────────────────────────────────────────────────────────
 elif _page == 'journal':
@@ -4276,6 +4342,271 @@ elif _page == 'journal':
                 if st.button("🗑", key=f"del_journal_{jid}"):
                     delete_journal_entry(jid, UID)
                     st.rerun()
+
+# ── Market Breadth ─────────────────────────────────────────────────────────────
+elif _page == 'breadth':
+    st.markdown('<div class="sec">📊 Market Breadth</div>', unsafe_allow_html=True)
+    st.caption("Overall market health from the universe scan. Strong breadth = broad "
+               "participation (safer for longs). Weak breadth = narrow/risky market.")
+
+    scan_df = st.session_state.get("scanner_cache")
+    if scan_df is None or (hasattr(scan_df, "empty") and scan_df.empty):
+        st.info("Breadth needs universe scan data. Click below to run it "
+                "(or it fills automatically via the background deep scan).")
+        if st.button("🔍 Run Universe Scan for Breadth"):
+            with st.spinner("Scanning universe…"):
+                st.session_state.scanner_cache = generate_market_scanner()
+            st.rerun()
+    else:
+        total = len(scan_df)
+        # Breadth metrics from scanner columns
+        uptrend = len(scan_df[scan_df["Trend"].isin(["Uptrend", "Strong Uptrend"])])
+        downtrend = len(scan_df[scan_df["Trend"].isin(["Downtrend", "Strong Downtrend"])])
+        bullish_pct = round(uptrend / total * 100, 1) if total else 0
+        bearish_pct = round(downtrend / total * 100, 1) if total else 0
+        # RSI-based
+        overbought = len(scan_df[scan_df["RSI"] >= 70])
+        oversold = len(scan_df[scan_df["RSI"] <= 30])
+        # Signal distribution
+        strong_buy = len(scan_df[scan_df["Signal"].str.contains("STRONG BUY", na=False)])
+        avoid = len(scan_df[scan_df["Signal"].str.contains("AVOID", na=False)])
+
+        # Overall breadth verdict
+        if bullish_pct >= 60:
+            verdict, vclr = "STRONG — broad participation, favorable for longs", "#10b981"
+        elif bullish_pct >= 40:
+            verdict, vclr = "NEUTRAL — mixed market, be selective", "#f59e0b"
+        else:
+            verdict, vclr = "WEAK — narrow market, longs carry extra risk", "#ef4444"
+
+        st.markdown(f"""
+<div style="background:var(--card);border:1px solid {vclr};border-radius:12px;
+            padding:1.2rem 1.5rem;margin:.5rem 0">
+  <div style="font-size:.75rem;color:var(--muted);text-transform:uppercase;
+              letter-spacing:.08em">Market Breadth Verdict</div>
+  <div style="font-size:1.2rem;font-weight:800;color:{vclr};margin-top:.3rem">{verdict}</div>
+  <div style="font-size:.8rem;color:var(--muted);margin-top:.3rem">
+       Based on {total:,} liquid stocks scanned</div>
+</div>""", unsafe_allow_html=True)
+
+        b1, b2, b3, b4 = st.columns(4)
+        b1.metric("🟢 In Uptrend", f"{bullish_pct}%", f"{uptrend} stocks")
+        b2.metric("🔴 In Downtrend", f"{bearish_pct}%", f"{downtrend} stocks")
+        b3.metric("⚠️ Overbought (RSI≥70)", overbought)
+        b4.metric("💧 Oversold (RSI≤30)", oversold)
+
+        # Advance/decline style bar
+        st.markdown("##### 📈 Trend Distribution")
+        trend_counts = scan_df["Trend"].value_counts()
+        tfig = go.Figure(go.Bar(
+            x=trend_counts.values, y=trend_counts.index, orientation="h",
+            marker_color=["#10b981" if "Up" in str(t) else "#ef4444" if "Down" in str(t)
+                          else "#8e8e93" for t in trend_counts.index]))
+        tfig.update_layout(height=280, margin=dict(l=10, r=10, t=10, b=10),
+                           paper_bgcolor="rgba(0,0,0,0)", plot_bgcolor="rgba(0,0,0,0)",
+                           font=dict(color=theme_t.get("text", "#fff")))
+        tfig.update_xaxes(gridcolor="rgba(255,255,255,0.05)")
+        st.plotly_chart(tfig, use_container_width=True)
+
+        # Sector breadth
+        st.markdown("##### 🏭 Sector Breadth (% of sector in uptrend)")
+        sec_breadth = []
+        for sec in scan_df["Sector"].unique():
+            sub = scan_df[scan_df["Sector"] == sec]
+            up = len(sub[sub["Trend"].isin(["Uptrend", "Strong Uptrend"])])
+            pct = round(up / len(sub) * 100, 0) if len(sub) else 0
+            sec_breadth.append({"Sector": sec, "Stocks": len(sub),
+                                "In Uptrend": up, "Bullish %": pct})
+        sb_df = pd.DataFrame(sec_breadth).sort_values("Bullish %", ascending=False)
+        st.dataframe(sb_df, width="stretch", hide_index=True)
+        st.caption("💡 Sectors at the top have the strongest internal breadth — "
+                   "where the buying is concentrated right now.")
+
+# ── Custom Screener ────────────────────────────────────────────────────────────
+elif _page == 'screener':
+    st.markdown('<div class="sec">🔬 Custom Screener</div>', unsafe_allow_html=True)
+    st.caption("Filter the universe by your own criteria. Runs on the latest universe "
+               "scan data (no extra fetch needed).")
+
+    scan_df = st.session_state.get("scanner_cache")
+    if scan_df is None or (hasattr(scan_df, "empty") and scan_df.empty):
+        st.info("Screener needs universe scan data first.")
+        if st.button("🔍 Run Universe Scan"):
+            with st.spinner("Scanning universe…"):
+                st.session_state.scanner_cache = generate_market_scanner()
+            st.rerun()
+    else:
+        st.markdown(f"##### Filters ({len(scan_df):,} stocks in universe)")
+        f1, f2, f3 = st.columns(3)
+        with f1:
+            rsi_range = st.slider("RSI range", 0, 100, (40, 70), key="scr_rsi")
+            min_score = st.slider("Min signal score", -10, 20, 2, key="scr_score")
+        with f2:
+            trend_filter = st.multiselect(
+                "Trend", ["Strong Uptrend", "Uptrend", "Sideways",
+                          "Downtrend", "Strong Downtrend", "Recovery"],
+                default=["Strong Uptrend", "Uptrend"], key="scr_trend")
+            min_turnover = st.number_input("Min turnover (₹ Cr)", 0.0, 1000.0, 1.0,
+                                           key="scr_turnover")
+        with f3:
+            sectors_avail = sorted(scan_df["Sector"].unique().tolist())
+            sector_filter = st.multiselect("Sectors (blank = all)", sectors_avail,
+                                           default=[], key="scr_sector")
+            signal_filter = st.multiselect(
+                "Signal", ["🔥 STRONG BUY", "🟢 BUY SETUP", "🟡 ACCUMULATE",
+                           "⚪ NEUTRAL", "🔴 AVOID"],
+                default=[], key="scr_signal")
+
+        # Apply filters
+        res = scan_df.copy()
+        res = res[(res["RSI"] >= rsi_range[0]) & (res["RSI"] <= rsi_range[1])]
+        res = res[res["Score"] >= min_score]
+        if trend_filter:
+            res = res[res["Trend"].isin(trend_filter)]
+        if "Turnover_Cr" in res.columns:
+            res = res[res["Turnover_Cr"] >= min_turnover]
+        if sector_filter:
+            res = res[res["Sector"].isin(sector_filter)]
+        if signal_filter:
+            res = res[res["Signal"].isin(signal_filter)]
+
+        st.markdown(f"##### 🎯 {len(res)} matches")
+        if res.empty:
+            st.warning("No stocks match these filters. Try loosening them.")
+        else:
+            show_cols = ["Stock", "Sector", "Signal", "Score", "CMP", "RSI",
+                         "Trend", "Entry", "Target", "SL", "Turnover_Cr"]
+            show_cols = [c for c in show_cols if c in res.columns]
+            res_show = res[show_cols].sort_values("Score", ascending=False)
+            _h = min(max(len(res_show) * 36 + 40, 200), 600)
+            st.dataframe(res_show, width="stretch", height=_h, hide_index=True,
+                         column_config={"Stock": st.column_config.TextColumn(pinned=True)})
+            st.download_button(
+                "⬇️ Export Screener Results CSV",
+                res_show.to_csv(index=False).encode("utf-8"),
+                file_name=f"screener_{datetime.now().strftime('%Y%m%d_%H%M')}.csv",
+                mime="text/csv")
+
+# ── Earnings Calendar ──────────────────────────────────────────────────────────
+elif _page == 'earnings':
+    st.markdown('<div class="sec">📆 Earnings Calendar</div>', unsafe_allow_html=True)
+    st.caption("Upcoming results & key dates for your holdings. Helps you avoid being "
+               "caught holding through a risky earnings event.")
+
+    if df.empty:
+        st.info("Add holdings to see their upcoming earnings dates.")
+    else:
+        hold_syms = sorted(df[df["status"] == "Open"]["stock"].unique().tolist())
+        if not hold_syms:
+            st.info("No open positions. Earnings calendar tracks your active holdings.")
+        else:
+            if st.button("📅 Fetch Earnings Dates", width="stretch"):
+                import yfinance as _yf
+                rows = []
+                prog = st.progress(0.0)
+                for i, sym in enumerate(hold_syms):
+                    try:
+                        t = _yf.Ticker(sym + ".NS")
+                        cal = None
+                        try:
+                            cal = t.calendar
+                        except Exception:
+                            cal = None
+                        edate = None
+                        if isinstance(cal, dict):
+                            ev = cal.get("Earnings Date")
+                            if ev:
+                                edate = ev[0] if isinstance(ev, list) else ev
+                        elif cal is not None and hasattr(cal, "loc"):
+                            try:
+                                edate = cal.loc["Earnings Date"][0]
+                            except Exception:
+                                edate = None
+                        rows.append({"Stock": sym,
+                                     "Next Earnings": str(edate)[:10] if edate else "—"})
+                    except Exception:
+                        rows.append({"Stock": sym, "Next Earnings": "—"})
+                    prog.progress((i + 1) / len(hold_syms))
+                prog.empty()
+                st.session_state._earnings_cache = pd.DataFrame(rows)
+
+            ecache = st.session_state.get("_earnings_cache")
+            if ecache is not None and not ecache.empty:
+                st.dataframe(ecache, width="stretch", hide_index=True)
+                st.caption("⚠️ Earnings dates from Yahoo can be estimates and aren't "
+                           "always available for every NSE stock. Verify with the "
+                           "company / exchange before trading around results.")
+            else:
+                st.info("Click **Fetch Earnings Dates** to load upcoming results for "
+                        "your holdings.")
+
+# ── IPO Tracker ────────────────────────────────────────────────────────────────
+elif _page == 'ipo':
+    st.markdown('<div class="sec">🆕 IPO Tracker</div>', unsafe_allow_html=True)
+    st.caption("Recently listed stocks and their performance since listing.")
+
+    st.info("📌 **Honest note:** Reliable free IPO/GMP data is hard to get "
+            "programmatically (NSE blocks cloud IPs; GMP sources are unofficial). "
+            "This tracker lets you manually add stocks you're watching and tracks "
+            "their performance via Yahoo once they're listed.")
+
+    # Manual IPO watchlist using a session list
+    if "_ipo_watch" not in st.session_state:
+        st.session_state._ipo_watch = []
+
+    ic1, ic2 = st.columns([3, 1])
+    with ic1:
+        _ipo_sym = st.text_input("Add newly listed stock (NSE symbol)", key="ipo_sym",
+                                 placeholder="e.g. VEDPOWER")
+    with ic2:
+        st.markdown("<br>", unsafe_allow_html=True)
+        if st.button("➕ Track", width="stretch"):
+            if _ipo_sym and _ipo_sym.upper() not in st.session_state._ipo_watch:
+                st.session_state._ipo_watch.append(_ipo_sym.upper().strip())
+                st.rerun()
+
+    if st.session_state._ipo_watch:
+        if st.button("🔄 Refresh IPO Performance"):
+            st.session_state._ipo_refresh = True
+
+        rows = []
+        for sym in st.session_state._ipo_watch:
+            try:
+                hist = fetch_chart_data(sym, "1mo", "1d")
+                if hist is not None and not hist.empty:
+                    listing_price = float(hist["Open"].iloc[0])
+                    cur = float(hist["Close"].iloc[-1])
+                    # live CMP if available
+                    try:
+                        lp = _cached_prices((sym,)).get(sym)
+                        if lp: cur = lp
+                    except Exception:
+                        pass
+                    chg = (cur / listing_price - 1) * 100 if listing_price else 0
+                    rows.append({"Stock": sym, "Listing ~Price": round(listing_price, 2),
+                                 "CMP": round(cur, 2), "Since Listing %": round(chg, 1),
+                                 "Days": len(hist)})
+                else:
+                    rows.append({"Stock": sym, "Listing ~Price": "—", "CMP": "—",
+                                 "Since Listing %": "—", "Days": 0})
+            except Exception:
+                rows.append({"Stock": sym, "Listing ~Price": "—", "CMP": "—",
+                             "Since Listing %": "—", "Days": 0})
+
+        ipo_df = pd.DataFrame(rows)
+        st.dataframe(ipo_df, width="stretch", hide_index=True)
+
+        # Remove option
+        _rm = st.selectbox("Remove from tracker", ["—"] + st.session_state._ipo_watch,
+                           key="ipo_rm")
+        if _rm != "—" and st.button("🗑 Remove"):
+            st.session_state._ipo_watch.remove(_rm)
+            st.rerun()
+        st.caption("💡 'Listing ~Price' is the first available open from Yahoo, which "
+                   "approximates the listing-day open. Newly listed stocks need ~20 "
+                   "trading days before full technical signals work (see Active Signals).")
+    else:
+        st.info("Add a recently listed stock above to start tracking its performance.")
 
 # ── Post-render background deep scan ───────────────────────────────────────────
 # The ENTIRE page has now rendered — you can see and interact with everything.
