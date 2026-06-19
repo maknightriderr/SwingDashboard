@@ -4194,27 +4194,39 @@ elif _page == 'chart':
 
             fig.update_layout(
                 height=520, margin=dict(l=10, r=10, t=30, b=10),
-                xaxis_rangeslider_visible=False,
+                dragmode="pan",   # drag = pan (smooth), not the clunky zoom-box default
+                xaxis_rangeslider_visible=True,   # bottom mini-slider for left/right scroll
+                xaxis_rangeslider_thickness=0.06,
                 paper_bgcolor="rgba(0,0,0,0)", plot_bgcolor="rgba(0,0,0,0)",
                 font=dict(color=theme_t.get("text", "#fff")),
                 legend=dict(orientation="h", yanchor="bottom", y=1.0, x=0),
                 hovermode="x unified")
-            fig.update_xaxes(gridcolor="rgba(255,255,255,0.05)")
-            fig.update_yaxes(gridcolor="rgba(255,255,255,0.05)")
-            st.plotly_chart(fig, use_container_width=True)
+            fig.update_xaxes(gridcolor="rgba(255,255,255,0.05)", rangeslider_thickness=0.06)
+            fig.update_yaxes(gridcolor="rgba(255,255,255,0.05)", fixedrange=False)
+            _chart_config = {
+                "scrollZoom": True,        # mouse wheel / pinch zoom — smooth in/out
+                "displaylogo": False,
+                "modeBarButtonsToRemove": ["lasso2d", "select2d"],
+                "doubleClick": "autosize", # double-click resets zoom
+            }
+            st.plotly_chart(fig, use_container_width=True, config=_chart_config)
 
-            # Volume chart below
+            # Volume chart below — x-axis matched to price chart range for sync scroll
             vfig = go.Figure()
             vol_clr = ["#10b981" if c["Close"].iloc[i] >= c["Open"].iloc[i]
                        else "#ef4444" for i in range(len(c))]
             vfig.add_trace(go.Bar(x=c.index, y=c["Volume"], marker_color=vol_clr,
                                   name="Volume"))
             vfig.update_layout(height=160, margin=dict(l=10, r=10, t=10, b=10),
+                               dragmode="pan",
                                paper_bgcolor="rgba(0,0,0,0)", plot_bgcolor="rgba(0,0,0,0)",
                                font=dict(color=theme_t.get("text", "#fff")), showlegend=False)
-            vfig.update_xaxes(gridcolor="rgba(255,255,255,0.05)")
+            vfig.update_xaxes(gridcolor="rgba(255,255,255,0.05)",
+                              range=[c.index[0], c.index[-1]])
             vfig.update_yaxes(gridcolor="rgba(255,255,255,0.05)")
-            st.plotly_chart(vfig, use_container_width=True)
+            st.plotly_chart(vfig, use_container_width=True, config=_chart_config)
+            st.caption("🖱️ Scroll to zoom · Drag to pan · Double-click to reset · "
+                       "Use the slider strip below the chart to jump left/right")
 
             # Quick stats row — lead with LIVE CMP, not stale candle close
             last_close = float(c["Close"].iloc[-1])
