@@ -1111,6 +1111,133 @@ ul[role="listbox"] li[aria-selected="true"] {{
     box-shadow: 0 15px 35px -10px rgba(0,0,0,0.6); border: 1px solid var(--border);
     backdrop-filter: blur(20px); -webkit-backdrop-filter: blur(20px);
 }}
+
+/* ════════════════════════════════════════════════════════════════════
+   ✦ PREMIUM POLISH LAYER — refined typography, buttons, inputs, sidebar
+   ════════════════════════════════════════════════════════════════════ */
+
+/* Display serif for major headings — adds an editorial, private-bank feel */
+@import url('https://fonts.googleapis.com/css2?family=Fraunces:opsz,wght@9..144,400;9..144,500;9..144,600&display=swap');
+
+.dash-title, .sec {{
+    font-family: 'Fraunces', 'Plus Jakarta Sans', serif !important;
+    font-weight: 500 !important; letter-spacing: -0.02em !important;
+}}
+
+/* Section headers get a refined gold tick + tighter rhythm */
+.sec {{
+    font-size: 1.35rem !important; font-weight: 600 !important;
+    margin: 1.8rem 0 1.1rem !important; padding-left: .9rem !important;
+    position: relative; line-height: 1.2;
+}}
+.sec::before {{
+    content: ""; position: absolute; left: 0; top: 50%; transform: translateY(-50%);
+    width: 4px; height: 70%; border-radius: 3px;
+    background: linear-gradient(180deg, var(--accent), transparent);
+}}
+
+/* ✦ Buttons — premium gradient, lift, gold glow on hover */
+.stButton > button, .stDownloadButton > button {{
+    background: var(--card2) !important;
+    border: 1px solid var(--border) !important;
+    border-radius: 10px !important;
+    color: var(--text) !important;
+    font-weight: 600 !important; font-family: 'Plus Jakarta Sans', sans-serif !important;
+    letter-spacing: -0.01em !important;
+    transition: all .25s cubic-bezier(0.175,0.885,0.32,1.275) !important;
+}}
+.stButton > button:hover, .stDownloadButton > button:hover {{
+    border-color: var(--accent) !important;
+    color: var(--accent) !important;
+    transform: translateY(-2px) !important;
+    box-shadow: 0 8px 24px -8px var(--glow) !important;
+}}
+.stButton > button:active, .stDownloadButton > button:active {{
+    transform: translateY(0) !important;
+}}
+/* Primary buttons (form submit) get the gold fill */
+.stButton > button[kind="primary"], .stForm button[kind="primaryFormSubmit"] {{
+    background: linear-gradient(145deg, var(--accent), var(--accent)) !important;
+    color: var(--bg) !important; border: none !important;
+    box-shadow: 0 4px 20px -6px var(--glow) !important;
+}}
+.stButton > button[kind="primary"]:hover {{
+    color: var(--bg) !important; filter: brightness(1.08);
+}}
+
+/* ✦ Inputs / selects — frosted with gold focus ring */
+.stTextInput input, .stNumberInput input, .stDateInput input,
+[data-baseweb="select"] > div, [data-baseweb="input"] > div {{
+    background: var(--card2) !important;
+    border: 1px solid var(--border) !important;
+    border-radius: 10px !important;
+    color: var(--text) !important;
+    transition: border-color .2s, box-shadow .2s !important;
+}}
+.stTextInput input:focus, .stNumberInput input:focus, .stDateInput input:focus {{
+    border-color: var(--accent) !important;
+    box-shadow: 0 0 0 3px var(--glow) !important;
+}}
+
+/* ✦ Tabs — underline slides, gold active */
+.stTabs [data-baseweb="tab-list"] {{ gap: .3rem; border-bottom: 1px solid var(--border); }}
+.stTabs [data-baseweb="tab"] {{
+    font-family: 'Plus Jakarta Sans', sans-serif !important;
+    font-weight: 600 !important; color: var(--muted) !important;
+    border-radius: 8px 8px 0 0 !important; transition: color .2s !important;
+}}
+.stTabs [aria-selected="true"] {{ color: var(--accent) !important; }}
+.stTabs [data-baseweb="tab-highlight"] {{ background: var(--accent) !important; }}
+
+/* ✦ Sidebar — deeper glass, refined nav radio */
+[data-testid="stSidebar"] {{
+    background: linear-gradient(180deg, rgba(0,0,0,.25), transparent), var(--card) !important;
+    border-right: 1px solid var(--border) !important;
+    backdrop-filter: blur(24px) !important; -webkit-backdrop-filter: blur(24px) !important;
+}}
+[data-testid="stSidebar"] .stRadio label {{
+    transition: all .2s !important; border-radius: 8px !important;
+    padding: .15rem .4rem !important;
+}}
+[data-testid="stSidebar"] .stRadio label:hover {{
+    background: var(--glow) !important;
+}}
+
+/* ✦ Metric cards (st.metric) — give them the glass treatment */
+[data-testid="stMetric"] {{
+    background: var(--gradient) !important;
+    border: 1px solid var(--border) !important;
+    border-radius: 14px !important; padding: 1rem 1.2rem !important;
+    box-shadow: 0 8px 24px -12px rgba(0,0,0,.5) !important;
+    transition: transform .3s, border-color .3s !important;
+}}
+[data-testid="stMetric"]:hover {{
+    transform: translateY(-3px) !important; border-color: var(--accent) !important;
+}}
+[data-testid="stMetricValue"] {{
+    font-variant-numeric: tabular-nums !important; letter-spacing: -.02em !important;
+}}
+
+/* ✦ Dataframes — softer, rounded, bordered */
+[data-testid="stDataFrame"] {{
+    border: 1px solid var(--border) !important; border-radius: 12px !important;
+    overflow: hidden !important;
+}}
+
+/* ✦ Expanders — refined */
+[data-testid="stExpander"] {{
+    border: 1px solid var(--border) !important; border-radius: 12px !important;
+    background: var(--card) !important; overflow: hidden;
+}}
+
+/* ✦ Smooth fade-in for the whole view on load */
+.block-container > div {{ animation: viewfade .5s ease both; }}
+@keyframes viewfade {{ from {{ opacity: 0; transform: translateY(8px); }} to {{ opacity: 1; transform: none; }} }}
+
+/* Respect reduced motion */
+@media (prefers-reduced-motion: reduce) {{
+    *, ::before, ::after {{ animation: none !important; transition: none !important; }}
+}}
 </style>
 """
 
