@@ -575,6 +575,107 @@ def _fetch_index_history(symbol, period="1y"):
     return None
 
 
+# ==============================================================================
+# RELATIVE STRENGTH (RS) vs NIFTY  —  IBD / Minervini style leadership ranking
+# ==============================================================================
+# RS answers: "Is this stock a leader or a laggard versus the broad market?"
+# Two layers:
+#   1. RS Ratio  — a weighted blend of the stock's return vs Nifty's return over
+#                  multiple lookbacks (recent weighted heaviest). >1.0 = leading.
+#   2. RS Rating — that ratio converted to a 1-99 PERCENTILE across the scanned
+#                  universe (IBD-style: 80+ = strong leader, <30 = laggard).
+#
+# A high-RS stock in a VCP base near a pivot is the classic Minervini long.
+# ==============================================================================
+
+_NIFTY_BENCH_CACHE = {"ts": 0, "data": None}
+
+
+def _get_nifty_benchmark():
+    """Return Nifty's trailing returns over standard lookbacks (cached 15 min).
+    Returns dict {'21': r, '63': r, '126': r, '252': r} of % returns, or None."""
+    now = time.time()
+    if _NIFTY_BENCH_CACHE["data"] and (now - _NIFTY_BENCH_CACHE["ts"]) < _CACHE_TTL:
+        return _NIFTY_BENCH_CACHE["data"]
+    df = _fetch_index_history("^NSEI", period="1y")
+    if df is None or df.empty or len(df) < 30:
+        return None
+    closes = df["Close"].dropna().values.astype(float)
+    bench = {}
+    for lb in (21, 63, 126, 252):
+        if len(closes) > lb:
+            past = closes[-lb - 1]
+            bench[str(lb)] = (closes[-1] / past - 1) * 100 if past > 0 else 0.0
+        else:
+            # Not enough history for this window — use the longest available
+            past = closes[0]
+            bench[str(lb)] = (closes[-1] / past - 1) * 100 if past > 0 else 0.0
+    _NIFTY_BENCH_CACHE["data"] = bench
+    _NIFTY_BENCH_CACHE["ts"] = now
+    return bench
+
+
+def compute_relative_strength(close, bench=None):
+    """Compute a stock's RS ratio versus Nifty.
+
+    Uses IBD-style weighting: the most recent quarter counts double.
+    RS ratio > 1.0 means the stock is OUTPERFORMING Nifty; < 1.0 underperforming.
+
+    Returns dict: {rs_ratio, rs_line, outperforming, periods:{...}} or None.
+    """
+    if bench is None:
+        bench = _get_nifty_benchmark()
+    if bench is None:
+        return None
+    if close is None or len(close) < 30:
+        return None
+
+    c = close.values.astype(float) if hasattr(close, "values") else np.asarray(close, float)
+    c = c[~np.isnan(c)]
+    if len(c) < 30:
+        return None
+
+    # Stock returns over the same lookbacks
+    periods = {}
+    weights = {"21": 0.4, "63": 0.2, "126": 0.2, "252": 0.2}   # recent weighted 2x
+    rs_components = []
+    total_w = 0.0
+    for lb_str, w in weights.items():
+        lb = int(lb_str)
+        if len(c) > lb:
+            past = c[-lb - 1]
+        else:
+            past = c[0]
+        stock_ret = (c[-1] / past - 1) * 100 if past > 0 else 0.0
+        nifty_ret = bench.get(lb_str, 0.0)
+        periods[lb_str] = {"stock": round(stock_ret, 1), "nifty": round(nifty_ret, 1)}
+        # RS component = (1+stock%) / (1+nifty%) — ratio of growth factors
+        sf = 1 + stock_ret / 100.0
+        nf = 1 + nifty_ret / 100.0
+        if nf > 0:
+            rs_components.append((sf / nf) * w)
+            total_w += w
+
+    if total_w == 0:
+        return None
+    rs_ratio = sum(rs_components) / total_w
+
+    return {
+        "rs_ratio": round(rs_ratio, 3),
+        "outperforming": rs_ratio > 1.0,
+        "periods": periods,
+    }
+
+
+def _rs_ratio_to_rating(ratio, all_ratios):
+    """Convert an RS ratio to a 1-99 percentile rating within the universe."""
+    if not all_ratios:
+        return None
+    below = sum(1 for r in all_ratios if r < ratio)
+    pct = below / len(all_ratios) * 100
+    return max(1, min(99, int(round(pct))))
+
+
 def get_market_regime():
     now = time.time()
     if _market_regime_cache["data"] and (now - _market_regime_cache["ts"]) < _CACHE_TTL:
@@ -665,8 +766,12 @@ def _compute_indicators_raw(symbol, period="1y", prefetched_df=None):
             if df is not None:
                 break
 
-    if df is None or len(df) < 50:
+    # Minimum bars: need ~20 for the rolling-20 indicators (BB, S/R, vol avg).
+    # Newly listed stocks with 20-49 bars get computed but flagged as limited.
+    # Below 20 bars there isn't enough to compute anything reliable.
+    if df is None or len(df) < 20:
         return None
+    _limited_history = len(df) < 50   # newly listed → some long-period signals N/A
 
     open_p = df["Open"]; high = df["High"]; low = df["Low"]
     close = df["Close"]; vol = df["Volume"]
@@ -722,6 +827,8 @@ def _compute_indicators_raw(symbol, period="1y", prefetched_df=None):
     # ── FIX 3: Bollinger — clamped bb_pos + bandwidth + squeeze ──────────────
     bb_sma = float(close.rolling(20).mean().iloc[-1])
     bb_std = float(close.rolling(20).std().iloc[-1])
+    if pd.isna(bb_sma): bb_sma = float(close.mean())
+    if pd.isna(bb_std): bb_std = float(close.std()) if len(close) > 1 else 0.0
     bb_upper, bb_lower = bb_sma + 2 * bb_std, bb_sma - 2 * bb_std
     bb_range = bb_upper - bb_lower
     bb_pos = round(max(0.0, min(1.0, (cmp - bb_lower) / bb_range)), 2) if bb_range > 0 else 0.5
@@ -749,8 +856,11 @@ def _compute_indicators_raw(symbol, period="1y", prefetched_df=None):
     liquidity_ok = avg_turnover >= 10_000_000   # ₹1 Cr daily turnover
 
     # ── 20-day S/R ─────────────────────────────────────────────────────────────
-    support    = float(low.rolling(20).min().iloc[-1])
-    resistance = float(high.rolling(20).max().iloc[-1])
+    _sr_window = min(20, len(close))
+    support    = float(low.rolling(_sr_window).min().iloc[-1])
+    resistance = float(high.rolling(_sr_window).max().iloc[-1])
+    if pd.isna(support):    support = float(low.min())
+    if pd.isna(resistance): resistance = float(high.max())
     high52, low52 = float(high.max()), float(low.min())
 
     # ── Trend with slope guard ────────────────────────────────────────────────
@@ -862,8 +972,22 @@ def _compute_indicators_raw(symbol, period="1y", prefetched_df=None):
     except Exception:
         smc = {}
 
+    # ── VCP — Volatility Contraction Pattern (Minervini) ─────────────────────
+    try:
+        vcp = detect_vcp(close, high, low, vol, atr, lookback=80)
+    except Exception:
+        vcp = {"is_vcp": False, "vcp_ready": False, "contractions": [],
+               "pivot": None, "quality": None, "detail": ""}
+
+    # ── Relative Strength vs Nifty ───────────────────────────────────────────
+    try:
+        rs = compute_relative_strength(close)
+    except Exception:
+        rs = None
+
     return {
         "symbol": symbol, "cmp": round(cmp, 2), "rsi": rsi,
+        "limited_history": _limited_history, "bars": len(df),
 
         # EMAs — v12 adds slope flags + ema200
         "ema9": round(ema9, 2), "ema21": round(ema21, 2), "ema50": round(ema50, 2),
@@ -903,6 +1027,18 @@ def _compute_indicators_raw(symbol, period="1y", prefetched_df=None):
         "bear_trap_conf": traps["bear_trap_conf"],
         "bull_trap_detail": traps["bull_trap_detail"],
         "bear_trap_detail": traps["bear_trap_detail"],
+        # VCP — Volatility Contraction Pattern
+        "vcp": vcp.get("is_vcp", False),
+        "vcp_ready": vcp.get("vcp_ready", False),
+        "vcp_quality": vcp.get("quality"),
+        "vcp_pivot": vcp.get("pivot"),
+        "vcp_pivot_dist": vcp.get("pivot_distance_pct"),
+        "vcp_contractions": vcp.get("contractions", []),
+        "vcp_detail": vcp.get("detail", ""),
+        # Relative Strength vs Nifty
+        "rs_ratio": rs.get("rs_ratio") if rs else None,
+        "rs_outperforming": rs.get("outperforming") if rs else None,
+        "rs_periods": rs.get("periods") if rs else None,
         # Smart Money Concepts — merged via **smc
         **smc,
     }
@@ -976,7 +1112,9 @@ def generate_signals(trades_df):
         if ind is None:
             signals.append({
                 "id": tid, "stock": symbol, "sector": get_sector(symbol),
-                "action": "⚪ WATCH", "reason": "Could not fetch data — verify NSE symbol",
+                "action": "⚪ WATCH",
+                "reason": "No usable data — either the NSE symbol is wrong, or it's "
+                          "newly listed with under 20 trading days of history",
                 "strength": 0, "cmp": None, "rsi": None, "pct_from_buy": None,
                 "target": None, "stop_loss": None, "avg_price": None,
                 "new_avg": None, "new_sl": None, "macd_signal": "—",
@@ -1142,6 +1280,13 @@ def generate_signals(trades_df):
                 "23.6%": ind.get("fib_236"), "38.2%": ind.get("fib_382"),
                 "50%": ind.get("fib_500"), "61.8%": ind.get("fib_618")
             },
+            "limited_history": ind.get("limited_history", False),
+            "bars": ind.get("bars"),
+            "vcp": ind.get("vcp", False),
+            "vcp_ready": ind.get("vcp_ready", False),
+            "vcp_quality": ind.get("vcp_quality"),
+            "rs_ratio": ind.get("rs_ratio"),
+            "rs_outperforming": ind.get("rs_outperforming"),
         })
     return signals
 
@@ -1270,6 +1415,23 @@ def find_sector_picks(selected_sectors=None, max_per_sector=3):
             if ind.get("supertrend_bullish"): score += 10; reasons.append("Supertrend bullish")
             if ind["bb_pos"] < 0.3: score += 8; reasons.append("Lower BB bounce")
             if ind.get("bb_squeeze"): score += 8; reasons.append("BB squeeze (pre-breakout)")
+            # VCP — Volatility Contraction Pattern (Minervini). Strong base = high conviction.
+            if ind.get("vcp"):
+                if ind.get("vcp_ready"):
+                    score += 22
+                    reasons.append(f"🎯 VCP pivot-ready ({ind.get('vcp_quality','')})")
+                else:
+                    score += 12
+                    reasons.append(f"📐 VCP base ({ind.get('vcp_quality','')})")
+            # Relative Strength vs Nifty — leaders get a conviction boost
+            _rs = ind.get("rs_ratio")
+            if _rs is not None:
+                if _rs >= 1.15:
+                    score += 12; reasons.append(f"💪 Strong leader (RS {_rs:.2f})")
+                elif _rs >= 1.0:
+                    score += 6; reasons.append(f"Outperforming Nifty (RS {_rs:.2f})")
+                elif _rs < 0.85:
+                    score -= 8   # laggard — reduce conviction for new longs
             if ind["vol_ratio"] > 1.3: score += 8; reasons.append(f"Vol surge ({ind['vol_ratio']:.1f}x)")
             if ind.get("bear_trap"): score += 20; reasons.append(f"🪤 Bear Trap (conf {ind.get('bear_trap_conf',0)}%)")
             if ind.get("bull_trap"): score -= 25  # avoid buying into a bull trap
@@ -1492,6 +1654,139 @@ def fetch_portfolio_news(open_trades_df):
 #   4. Supertrend direction alignment
 #   5. Candle confirmation on the reversal bar
 # ==============================================================================
+
+
+# ==============================================================================
+# VCP — VOLATILITY CONTRACTION PATTERN  (Mark Minervini)
+# ==============================================================================
+# A proper VCP base, not just a Bollinger squeeze. We look for:
+#   1. A prior uptrend (the stock must be a leader, not a falling knife).
+#   2. A sequence of 2-4 pullbacks ("contractions") inside a base.
+#   3. Each contraction SHALLOWER than the one before (e.g. -25% -> -13% -> -7%).
+#   4. Volume drying up through the base (right side quieter than left).
+#   5. Price coiled near the top of the base, close to the pivot (breakout point).
+#   6. A "ready" flag when the final contraction is tight and price hugs pivot.
+#
+# Returns a dict with is_vcp, vcp_ready, contractions, pivot, quality, detail.
+# ==============================================================================
+def detect_vcp(close, high, low, vol, atr, lookback=80):
+    out = {
+        "is_vcp": False, "vcp_ready": False, "contractions": [],
+        "n_contractions": 0, "pivot": None, "pivot_distance_pct": None,
+        "volume_dryup": False, "base_length": 0, "quality": None, "detail": ""
+    }
+    n = len(close)
+    if n < 30:
+        return out
+
+    c = close.values.astype(float)
+    h = high.values.astype(float)
+    l = low.values.astype(float)
+    v = vol.values.astype(float)
+
+    start = max(0, n - lookback)
+    seg_c = c[start:]; seg_h = h[start:]; seg_l = l[start:]; seg_v = v[start:]
+    m = len(seg_c)
+    if m < 25:
+        return out
+
+    cmp = float(c[-1])
+
+    # 1. Prior uptrend / leadership gate: must be basing in the top of its range
+    seg_hi = float(seg_h.max()); seg_lo = float(seg_l.min())
+    if seg_hi <= seg_lo:
+        return out
+    pos_in_range = (cmp - seg_lo) / (seg_hi - seg_lo)
+    if pos_in_range < 0.55:
+        out["detail"] = "Not near base highs"
+        return out
+
+    # 2. Find swing pivots (fractal highs & lows) with ATR prominence
+    prom = max(atr * 0.5, cmp * 0.005)
+    swing_hi_idx = []; swing_lo_idx = []
+    for i in range(2, m - 2):
+        if (seg_h[i] >= seg_h[i-1] and seg_h[i] >= seg_h[i-2]
+                and seg_h[i] >= seg_h[i+1] and seg_h[i] >= seg_h[i+2]
+                and (seg_h[i] - min(seg_l[i-2:i+3])) >= prom):
+            swing_hi_idx.append(i)
+        if (seg_l[i] <= seg_l[i-1] and seg_l[i] <= seg_l[i-2]
+                and seg_l[i] <= seg_l[i+1] and seg_l[i] <= seg_l[i+2]
+                and (max(seg_h[i-2:i+3]) - seg_l[i]) >= prom):
+            swing_lo_idx.append(i)
+
+    if len(swing_hi_idx) < 2 or len(swing_lo_idx) < 1:
+        out["detail"] = "Not enough swings for a base"
+        return out
+
+    # 3. Measure contractions: each peak -> following trough drawdown
+    contractions = []
+    for pk in swing_hi_idx:
+        later_lows = [lo for lo in swing_lo_idx if lo > pk]
+        if not later_lows:
+            continue
+        tr = later_lows[0]
+        peak_price = seg_h[pk]; trough_price = seg_l[tr]
+        if peak_price > 0:
+            depth = (peak_price - trough_price) / peak_price * 100.0
+            if depth > 0.5:
+                contractions.append(round(depth, 1))
+
+    contractions = contractions[-4:]          # most recent base, up to 4 legs
+    # Collapse consecutive near-duplicates (same peak caught by adjacent fractals)
+    deduped = []
+    for d in contractions:
+        if not deduped or abs(deduped[-1] - d) > 1.0:
+            deduped.append(d)
+    contractions = deduped[-4:]
+    if len(contractions) < 2:
+        out["detail"] = "Fewer than 2 contractions"
+        return out
+
+    out["contractions"] = contractions
+    out["n_contractions"] = len(contractions)
+
+    # 4. Each contraction shallower than the previous (allow one noise violation)
+    violations = sum(1 for i in range(1, len(contractions))
+                     if contractions[i] > contractions[i-1] + 1.0)
+    tightening = violations <= 1 and contractions[-1] < contractions[0]
+    final_tight = contractions[-1] <= 12.0
+
+    # 5. Volume dry-up: right third quieter than left third
+    third = max(3, m // 3)
+    left_vol = float(np.mean(seg_v[:third])) if third < m else float(np.mean(seg_v))
+    right_vol = float(np.mean(seg_v[-third:]))
+    volume_dryup = right_vol < left_vol * 0.85 if left_vol > 0 else False
+    out["volume_dryup"] = volume_dryup
+
+    # 6. Pivot = highest high of base; distance from current price
+    pivot = float(seg_h.max())
+    pivot_distance_pct = (pivot - cmp) / cmp * 100.0 if cmp > 0 else 999
+    out["pivot"] = round(pivot, 2)
+    out["pivot_distance_pct"] = round(pivot_distance_pct, 2)
+    out["base_length"] = m
+
+    is_vcp = bool(tightening and len(contractions) >= 2 and pos_in_range >= 0.55)
+    out["is_vcp"] = is_vcp
+
+    if is_vcp:
+        vcp_ready = bool(final_tight and 0 <= pivot_distance_pct <= 6.0)
+        out["vcp_ready"] = vcp_ready
+        score = 0
+        if len(contractions) >= 3: score += 1
+        if tightening and violations == 0: score += 1
+        if final_tight: score += 1
+        if volume_dryup: score += 1
+        if pivot_distance_pct <= 8: score += 1
+        out["quality"] = "A+" if score >= 5 else "A" if score >= 4 else "B" if score >= 3 else "C"
+        seq = " -> ".join(f"-{x}%" for x in contractions)
+        ready_txt = "PIVOT-READY" if vcp_ready else f"{pivot_distance_pct:.1f}% below pivot"
+        vdry = " · vol dry-up" if volume_dryup else ""
+        out["detail"] = f"{len(contractions)} contractions ({seq}){vdry} · {ready_txt}"
+    else:
+        out["detail"] = "Contractions not tightening"
+
+    return out
+
 
 def detect_trap_signals(close, high, low, vol, vol_avg, rsi_series,
                         supertrend_bullish, resistance, support,
@@ -2755,5 +3050,165 @@ def scan_for_smc_setups(min_quality="B", action_filter="All"):
         "buy_setups": buy_setups, "sell_setups": sell_setups,
         "scanned": len(all_symbols), "liquid": liquid,
         "buy_count": len(buy_setups), "sell_count": len(sell_setups),
+        "timestamp": datetime.now().strftime("%d %b %Y %H:%M"),
+    }
+
+def scan_for_vcp(min_quality="B", ready_only=False):
+    """
+    Sweeps the universe for stocks forming a Volatility Contraction Pattern.
+
+    Args:
+        min_quality : 'A+', 'A', 'B', or 'C' — minimum base grade to include
+        ready_only  : if True, only return pivot-ready bases (coiled at breakout)
+
+    Returns:
+        {
+          "vcp_setups": list[dict] sorted by quality then pivot proximity,
+          "scanned": int, "liquid": int, "count": int, "ready_count": int,
+          "timestamp": str,
+        }
+    Each setup: stock, sector, cmp, pivot, pivot_distance_pct, quality,
+                contractions, vcp_ready, detail, entry, target, stop_loss
+    """
+    quality_rank = {"A+": 4, "A": 3, "B": 2, "C": 1}
+    min_rank = quality_rank.get(min_quality, 2)
+
+    all_symbols = []
+    for stocks in SECTOR_STOCKS.values():
+        all_symbols.extend(stocks)
+
+    bulk = _bulk_fetch_history(all_symbols, period="6mo")
+
+    vcp_setups = []
+    liquid = 0
+    ready_count = 0
+
+    for symbol in all_symbols:
+        df  = bulk.get(symbol)
+        ind = compute_indicators(symbol, period="6mo", prefetched_df=df)
+        if not ind:
+            continue
+        if not ind.get("liquidity_ok", True):
+            continue
+        liquid += 1
+
+        if not ind.get("vcp"):
+            continue
+        quality = ind.get("vcp_quality")
+        if quality_rank.get(quality, 0) < min_rank:
+            continue
+        is_ready = ind.get("vcp_ready", False)
+        if ready_only and not is_ready:
+            continue
+        if is_ready:
+            ready_count += 1
+
+        cmp   = ind.get("cmp")
+        pivot = ind.get("vcp_pivot")
+        atr   = ind.get("atr", 0)
+        # Entry just above pivot; stop below last contraction low (~1.5 ATR);
+        # target a measured move (pivot + the first/biggest contraction depth).
+        entry = round(pivot * 1.002, 2) if pivot else cmp
+        stop  = round(entry - 1.5 * atr, 2) if atr else (round(entry * 0.93, 2) if entry else None)
+        contractions = ind.get("vcp_contractions", [])
+        move_pct = (max(contractions) / 100.0) if contractions else 0.10
+        target = round(entry * (1 + max(move_pct, 0.08)), 2) if entry else None
+        rr = round((target - entry) / (entry - stop), 2) if (entry and stop and entry > stop) else None
+
+        vcp_setups.append({
+            "stock": symbol, "sector": get_sector(symbol), "cmp": cmp,
+            "pivot": pivot, "pivot_distance_pct": ind.get("vcp_pivot_dist"),
+            "quality": quality, "contractions": contractions,
+            "vcp_ready": is_ready, "detail": ind.get("vcp_detail", ""),
+            "entry": entry, "target": target, "stop_loss": stop, "risk_reward": rr,
+        })
+
+    def _sort_key(s):
+        # ready first, then quality, then closest to pivot
+        return (1 if s["vcp_ready"] else 0,
+                quality_rank.get(s["quality"], 0),
+                -(s.get("pivot_distance_pct") or 999))
+    vcp_setups.sort(key=_sort_key, reverse=True)
+
+    return {
+        "vcp_setups": vcp_setups,
+        "scanned": len(all_symbols), "liquid": liquid,
+        "count": len(vcp_setups), "ready_count": ready_count,
+        "timestamp": datetime.now().strftime("%d %b %Y %H:%M"),
+    }
+
+def scan_relative_strength(top_n=None, min_rating=0):
+    """
+    Rank the entire universe by Relative Strength versus Nifty.
+
+    Computes each liquid stock's RS ratio, then converts to a 1-99 percentile
+    RS Rating (IBD-style): 99 = strongest leader, 1 = weakest laggard.
+
+    Args:
+        top_n      : if set, return only the top N leaders
+        min_rating : only include stocks with RS Rating >= this (0-99)
+
+    Returns:
+        {
+          "leaders": list[dict] sorted by RS rating desc,
+          "scanned": int, "liquid": int, "count": int,
+          "nifty_returns": dict, "timestamp": str,
+        }
+    Each row: stock, sector, cmp, rs_ratio, rs_rating, ret_21d, ret_63d,
+              ret_252d, nifty_21d, outperforming, trend
+    """
+    bench = _get_nifty_benchmark()
+    if bench is None:
+        return {"leaders": [], "scanned": 0, "liquid": 0, "count": 0,
+                "nifty_returns": {}, "timestamp": datetime.now().strftime("%d %b %Y %H:%M"),
+                "error": "Could not fetch Nifty benchmark data"}
+
+    all_symbols = []
+    for stocks in SECTOR_STOCKS.values():
+        all_symbols.extend(stocks)
+
+    bulk = _bulk_fetch_history(all_symbols, period="1y")
+
+    rows = []
+    ratios = []
+    liquid = 0
+    for symbol in all_symbols:
+        df  = bulk.get(symbol)
+        ind = compute_indicators(symbol, period="1y", prefetched_df=df)
+        if not ind:
+            continue
+        if not ind.get("liquidity_ok", True):
+            continue
+        liquid += 1
+        rs_ratio = ind.get("rs_ratio")
+        if rs_ratio is None:
+            continue
+        ratios.append(rs_ratio)
+        periods = ind.get("rs_periods") or {}
+        rows.append({
+            "stock": symbol, "sector": get_sector(symbol), "cmp": ind.get("cmp"),
+            "rs_ratio": rs_ratio, "outperforming": ind.get("rs_outperforming"),
+            "trend": ind.get("trend"),
+            "ret_21d": periods.get("21", {}).get("stock"),
+            "ret_63d": periods.get("63", {}).get("stock"),
+            "ret_252d": periods.get("252", {}).get("stock"),
+            "nifty_21d": periods.get("21", {}).get("nifty"),
+            "vcp": ind.get("vcp", False), "vcp_ready": ind.get("vcp_ready", False),
+        })
+
+    # Assign 1-99 percentile rating across all measured stocks
+    for r in rows:
+        r["rs_rating"] = _rs_ratio_to_rating(r["rs_ratio"], ratios)
+
+    # Filter + sort
+    rows = [r for r in rows if (r["rs_rating"] or 0) >= min_rating]
+    rows.sort(key=lambda r: r["rs_rating"] or 0, reverse=True)
+    if top_n:
+        rows = rows[:top_n]
+
+    return {
+        "leaders": rows,
+        "scanned": len(all_symbols), "liquid": liquid, "count": len(rows),
+        "nifty_returns": bench,
         "timestamp": datetime.now().strftime("%d %b %Y %H:%M"),
     }
