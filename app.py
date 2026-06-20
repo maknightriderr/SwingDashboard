@@ -45,6 +45,18 @@ except ImportError:
     scan_for_smc_setups = None
 
 try:
+    from signals import scan_for_vcp as _scan_for_vcp
+    scan_for_vcp = _scan_for_vcp
+except ImportError:
+    scan_for_vcp = None
+
+try:
+    from signals import scan_relative_strength as _scan_rs
+    scan_relative_strength = _scan_rs
+except ImportError:
+    scan_relative_strength = None
+
+try:
     from signals import (
         fetch_corporate_actions,
         fetch_bulk_corporate_actions,
@@ -589,7 +601,7 @@ for k, v in [("user_id", None), ("username", None), ("edit_id", None), ("close_i
              ("outlook_cache", None), ("scanner_cache", None), ("trap_scan_cache", None),
              ("corp_actions_cache", None), ("selected_scanner_sector", "All Sectors"),
              ("custom_stocks_input", ""), ("active_page", "portfolio"),
-             ("smc_scan_cache", None),
+             ("smc_scan_cache", None), ("vcp_scan_cache", None), ("rs_scan_cache", None),
              ("etf_scan_cache", None), ("mf_search_results", []),
              ("mf_selected", None), ("mf_compare_list", []),
              ("_earnings_cache", None), ("_ipo_watch", []),
@@ -1563,6 +1575,14 @@ def render_signals(signals, theme_t):
     {('<span style="font-size:.62rem;background:rgba(245,158,11,.15);color:#f59e0b;'
       'padding:.1rem .4rem;border-radius:4px;font-weight:700;margin-left:.3rem">'
       '🆕 ' + str(s.get('bars','')) + 'd history</span>') if s.get('limited_history') else ''}
+    {('<span style="font-size:.62rem;background:rgba(16,185,129,.18);color:#10b981;'
+      'padding:.1rem .4rem;border-radius:4px;font-weight:700;margin-left:.3rem">'
+      '🎯 VCP ' + str(s.get('vcp_quality','')) + ('▸READY' if s.get('vcp_ready') else '') +
+      '</span>') if s.get('vcp') else ''}
+    {('<span style="font-size:.62rem;background:rgba(59,130,246,.18);color:#3b82f6;'
+      'padding:.1rem .4rem;border-radius:4px;font-weight:700;margin-left:.3rem">'
+      '💪 RS ' + (f"{s.get('rs_ratio'):.2f}" if s.get('rs_ratio') else '') +
+      '</span>') if s.get('rs_outperforming') else ''}
   </div>
   <div class="sig-meta">CMP {cmp_str} · RSI {rsi_str} · {pct_str}</div>
   <div class="sig-reason">{reason}</div>
@@ -1943,9 +1963,11 @@ with st.sidebar:
             ("🔔 Active Signals",    "signals"),
             ("🪤 Trap Scanner",      "traps"),
             ("🏦 Smart Money (SMC)", "smc"),
+            ("📐 VCP Scanner",       "vcp"),
         ],
         "🔄 Market Intelligence": [
             ("🔄 Sector Rotation",   "sector"),
+            ("💪 RS Leaders",        "rs"),
             ("🌌 Universe Scanner",  "scanner"),
             ("📊 Market Breadth",    "breadth"),
             ("🔬 Custom Screener",   "screener"),
@@ -4746,6 +4768,182 @@ elif _page == 'ipo':
                    "trading days before full technical signals work (see Active Signals).")
     else:
         st.info("Add a recently listed stock above to start tracking its performance.")
+
+# ── VCP Scanner ────────────────────────────────────────────────────────────────
+elif _page == 'vcp':
+    st.markdown('<div class="sec">📐 VCP Scanner — Volatility Contraction Pattern</div>',
+                unsafe_allow_html=True)
+    st.caption("Minervini's VCP: a leader basing through progressively tighter pullbacks "
+               "with volume drying up, coiled under a pivot. Ready bases are near breakout.")
+
+    if scan_for_vcp is None:
+        st.warning("⚠️ VCP scanner not available — make sure the latest `signals.py` is deployed.")
+    else:
+        vc1, vc2, vc3 = st.columns([1, 1, 1])
+        with vc1:
+            _vcp_quality = st.selectbox("Min base quality", ["C", "B", "A", "A+"],
+                                        index=1, key="vcp_q")
+        with vc2:
+            _vcp_ready = st.checkbox("Pivot-ready only", value=False, key="vcp_ready_only",
+                                     help="Only bases coiled right under the breakout pivot")
+        with vc3:
+            st.markdown("<br>", unsafe_allow_html=True)
+            _run_vcp = st.button("🔍 Scan for VCP", width="stretch")
+
+        if _run_vcp:
+            with st.spinner("Scanning universe for VCP bases… (this can take a minute)"):
+                st.session_state.vcp_scan_cache = scan_for_vcp(
+                    min_quality=_vcp_quality, ready_only=_vcp_ready)
+
+        vres = st.session_state.get("vcp_scan_cache")
+        if vres is None:
+            st.info("Click **Scan for VCP** to find contraction bases across the universe.")
+        elif not vres.get("vcp_setups"):
+            st.warning(f"No VCP bases found at {_vcp_quality}+ quality. "
+                       f"Scanned {vres.get('liquid',0)} liquid stocks. "
+                       "Try lowering the quality filter or unchecking pivot-ready.")
+        else:
+            setups = vres["vcp_setups"]
+            st.markdown(f"##### 🎯 {len(setups)} VCP bases "
+                        f"({vres.get('ready_count',0)} pivot-ready) · "
+                        f"scanned {vres.get('liquid',0)} liquid stocks")
+
+            for s in setups:
+                q = s["quality"]
+                q_clr = {"A+": "#10b981", "A": "#22c55e",
+                         "B": "#f59e0b", "C": "#8e8e93"}.get(q, "#8e8e93")
+                ready_badge = ('<span style="background:rgba(16,185,129,.2);color:#10b981;'
+                               'padding:.15rem .5rem;border-radius:5px;font-size:.7rem;'
+                               'font-weight:800;margin-left:.5rem">⚡ PIVOT-READY</span>'
+                               if s["vcp_ready"] else '')
+                contractions_str = " → ".join(f"-{x}%" for x in s.get("contractions", []))
+                rr_str = f"1:{s['risk_reward']}" if s.get("risk_reward") else "—"
+                st.markdown(f"""
+<div style="background:var(--card);border:1px solid var(--border);
+            border-left:3px solid {q_clr};border-radius:10px;
+            padding:1rem 1.2rem;margin-bottom:.7rem">
+  <div style="display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:.4rem">
+    <div>
+      <b style="font-size:1.02rem">{s['stock']}</b>
+      <span style="color:var(--muted);font-size:.78rem;margin-left:.4rem">{s['sector']}</span>
+      <span style="background:{q_clr}22;color:{q_clr};padding:.12rem .5rem;border-radius:5px;
+            font-size:.72rem;font-weight:800;margin-left:.5rem">VCP {q}</span>{ready_badge}
+    </div>
+    <div style="font-family:'JetBrains Mono',monospace;font-size:.82rem;color:var(--muted)">
+      CMP ₹{s['cmp']} · Pivot ₹{s['pivot']}
+    </div>
+  </div>
+  <div style="font-size:.82rem;color:var(--muted);margin-top:.5rem">
+    📉 Contractions: <b style="color:var(--text)">{contractions_str}</b>
+    &nbsp;·&nbsp; {s.get('detail','')}
+  </div>
+  <div style="font-size:.85rem;margin-top:.5rem">
+    <b>Entry</b> ₹{s.get('entry','—')} &nbsp;·&nbsp;
+    <b>Target</b> ₹{s.get('target','—')} &nbsp;·&nbsp;
+    <b>Stop</b> ₹{s.get('stop_loss','—')} &nbsp;·&nbsp;
+    <b>R:R</b> {rr_str}
+  </div>
+</div>""", unsafe_allow_html=True)
+
+            # CSV export
+            import pandas as _pd
+            exp_df = _pd.DataFrame([{
+                "Stock": s["stock"], "Sector": s["sector"], "Quality": s["quality"],
+                "Ready": s["vcp_ready"], "CMP": s["cmp"], "Pivot": s["pivot"],
+                "Pivot Dist %": s.get("pivot_distance_pct"),
+                "Contractions": " → ".join(f"-{x}%" for x in s.get("contractions", [])),
+                "Entry": s.get("entry"), "Target": s.get("target"),
+                "Stop": s.get("stop_loss"), "R:R": s.get("risk_reward"),
+            } for s in setups])
+            st.download_button(
+                "⬇️ Export VCP Results CSV",
+                exp_df.to_csv(index=False).encode("utf-8"),
+                file_name=f"vcp_{datetime.now().strftime('%Y%m%d_%H%M')}.csv",
+                mime="text/csv")
+            st.caption("⚠️ VCP works best on liquid leaders in an uptrend. A base forming "
+                       "is not a buy by itself — the classic entry is a breakout ABOVE the "
+                       "pivot on a volume surge. Always confirm before entering.")
+
+# ── Relative Strength Leaders ──────────────────────────────────────────────────
+elif _page == 'rs':
+    st.markdown('<div class="sec">💪 Relative Strength Leaders</div>',
+                unsafe_allow_html=True)
+    st.caption("How each stock performs versus Nifty. RS Rating is a 1-99 percentile "
+               "(IBD-style): 80+ = market leader, under 30 = laggard. Leaders tend to "
+               "keep leading — the best longs are high-RS stocks, not cheap laggards.")
+
+    if scan_relative_strength is None:
+        st.warning("⚠️ RS scanner not available — make sure the latest `signals.py` is deployed.")
+    else:
+        rc1, rc2, rc3 = st.columns([1, 1, 1])
+        with rc1:
+            _rs_min = st.slider("Min RS Rating", 0, 99, 70, key="rs_min",
+                                help="80+ = strong leaders. Filter out laggards.")
+        with rc2:
+            _rs_top = st.selectbox("Show top", ["All", "20", "50", "100"], index=2, key="rs_top")
+        with rc3:
+            st.markdown("<br>", unsafe_allow_html=True)
+            _run_rs = st.button("🔍 Rank Universe by RS", width="stretch")
+
+        if _run_rs:
+            top_n = None if _rs_top == "All" else int(_rs_top)
+            with st.spinner("Ranking the universe by relative strength… (takes a minute)"):
+                st.session_state.rs_scan_cache = scan_relative_strength(
+                    top_n=top_n, min_rating=_rs_min)
+
+        rres = st.session_state.get("rs_scan_cache")
+        if rres is None:
+            st.info("Click **Rank Universe by RS** to find the market leaders.")
+        elif rres.get("error"):
+            st.error(f"⚠️ {rres['error']}. Nifty data may be temporarily unavailable — try again.")
+        elif not rres.get("leaders"):
+            st.warning(f"No stocks at RS Rating ≥ {_rs_min}. Lower the filter to see more.")
+        else:
+            leaders = rres["leaders"]
+            nifty = rres.get("nifty_returns", {})
+            # Nifty benchmark context
+            st.markdown(
+                f'<div style="background:var(--card);border:1px solid var(--border);'
+                f'border-radius:10px;padding:.8rem 1.1rem;margin-bottom:1rem;'
+                f'font-family:\'JetBrains Mono\',monospace;font-size:.82rem;color:var(--muted)">'
+                f'📊 Nifty benchmark — 1M: <b style="color:var(--text)">{nifty.get("21",0):+.1f}%</b> · '
+                f'3M: <b style="color:var(--text)">{nifty.get("63",0):+.1f}%</b> · '
+                f'6M: <b style="color:var(--text)">{nifty.get("126",0):+.1f}%</b> · '
+                f'1Y: <b style="color:var(--text)">{nifty.get("252",0):+.1f}%</b></div>',
+                unsafe_allow_html=True)
+
+            st.markdown(f"##### 🏆 {len(leaders)} leaders (RS ≥ {_rs_min}) · "
+                        f"scanned {rres.get('liquid',0)} liquid stocks")
+
+            # Build a clean table
+            import pandas as _pd
+            tbl = _pd.DataFrame([{
+                "Stock": l["stock"],
+                "RS Rating": l["rs_rating"],
+                "RS Ratio": l["rs_ratio"],
+                "Sector": l["sector"],
+                "CMP": l["cmp"],
+                "1M %": l.get("ret_21d"),
+                "3M %": l.get("ret_63d"),
+                "1Y %": l.get("ret_252d"),
+                "Trend": l.get("trend"),
+                "VCP": "🎯" if l.get("vcp") else "",
+            } for l in leaders])
+            _h = min(max(len(tbl) * 36 + 40, 200), 640)
+            st.dataframe(tbl, width="stretch", height=_h, hide_index=True,
+                         column_config={
+                             "Stock": st.column_config.TextColumn(pinned=True),
+                             "RS Rating": st.column_config.ProgressColumn(
+                                 "RS Rating", min_value=0, max_value=99, format="%d"),
+                         })
+            st.download_button(
+                "⬇️ Export RS Rankings CSV",
+                tbl.to_csv(index=False).encode("utf-8"),
+                file_name=f"rs_leaders_{datetime.now().strftime('%Y%m%d_%H%M')}.csv",
+                mime="text/csv")
+            st.caption("💡 The sweet spot: a high-RS leader (80+) forming a VCP base (🎯) "
+                       "near its pivot. That's the classic Minervini long setup — strength "
+                       "plus a low-risk entry point.")
 
 # ── Post-render background deep scan ───────────────────────────────────────────
 # The ENTIRE page has now rendered — you can see and interact with everything.
