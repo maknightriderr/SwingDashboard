@@ -1531,6 +1531,17 @@ def generate_market_scanner():
         if "🚩 Bull Flag Breakout" in patterns: score += 4
         if "☕ Cup & Handle Breakout" in patterns: score += 4
         if "🟩 Bullish Engulfing" in candles: score += 2
+        # VCP base adds conviction (pivot-ready more so)
+        if ind.get("vcp"):
+            score += 4 if ind.get("vcp_ready") else 2
+        # Relative strength leadership
+        _rs_sc = ind.get("rs_ratio")
+        if _rs_sc is not None:
+            if _rs_sc >= 1.15: score += 2
+            elif _rs_sc < 0.85: score -= 2
+        # Active trap is a warning — penalise
+        if ind.get("bull_trap") or ind.get("bear_trap"):
+            score -= 3
         if ("📈 Double Top" in patterns or "🏔️ Head & Shoulders (Top)" in patterns or
                 "🟥 Bearish Engulfing" in candles):
             score -= 5
@@ -1547,12 +1558,29 @@ def generate_market_scanner():
         atr = ind["atr"]
         tgt, sl, _rr = _calc_risk_params(cmp, atr, ind["resistance"], action="PICK")
 
+        # ── VCP / Trap / RS columns (all from the same indicator computation) ──
+        if ind.get("vcp"):
+            vcp_str = f"🎯 {ind.get('vcp_quality','')}" + ("▸READY" if ind.get("vcp_ready") else "")
+        else:
+            vcp_str = "—"
+        if ind.get("bull_trap"):
+            trap_str = f"🐂 Bull trap ({ind.get('bull_trap_conf',0)}%)"
+        elif ind.get("bear_trap"):
+            trap_str = f"🐻 Bear trap ({ind.get('bear_trap_conf',0)}%)"
+        else:
+            trap_str = "—"
+        _rs_ratio = ind.get("rs_ratio")
+        rs_str = round(float(_rs_ratio), 2) if _rs_ratio is not None else None
+
         results.append({
             "Generated": datetime.now().strftime("%d %b %H:%M"), "Sector": sector,
             "Stock": symbol, "CMP": float(cmp), "Entry": float(cmp),
             "Target": float(tgt), "SL": float(sl), "Support": float(ind["support"]),
             "Resist": float(ind["resistance"]), "Signal": signal, "Score": score,
-            "RSI": round(float(rsi), 2) if rsi else 0.0, "Trend": trend, "Patterns": pat_str,
+            "RSI": round(float(rsi), 2) if rsi else 0.0, "Trend": trend,
+            "VCP": vcp_str, "Trap": trap_str, "RS": rs_str,
+            "RS_Lead": "💪" if ind.get("rs_outperforming") else "",
+            "Patterns": pat_str,
             "Turnover_Cr": round(ind.get("avg_turnover", 0) / 1e7, 1),
             "Liquid": "✅" if ind.get("liquidity_ok", True) else "⚠️ Low",
         })
