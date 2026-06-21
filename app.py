@@ -1723,6 +1723,8 @@ def render_score_dashboard():
         ("Unified Risk Engine",     9, "Scanner, picks, and portfolio signals all use one engine"),
         ("Bull/Bear Trap Scanner",  9, "5-factor confluence: geometry · volume quality · RSI extreme · Supertrend · reversal candle. Proactive sweep of full Nifty 500."),
         ("Smart Money Concepts",    8, "FVG · Order Blocks · Liquidity Pools · Premium/Discount · Displacement. NSE circuit-filter aware, ATR-normalised thresholds."),
+        ("VCP (Volatility Contraction)", 8, "Minervini base detection: 2-4 tightening contractions, volume dry-up, pivot proximity, A+/A/B/C quality grading. Pivot-ready flag + dedicated scanner."),
+        ("Relative Strength vs Nifty",   8, "IBD-style RS ratio (multi-period weighted) + 1-99 percentile rating across universe. Leaders boost conviction; laggards penalised. Dedicated RS Leaders ranking."),
     ]
     avg = sum(s[1] for s in scores) / len(scores)
 
@@ -1730,12 +1732,13 @@ def render_score_dashboard():
     <div style="background:var(--card);border:1px solid var(--border);border-radius:12px;
          padding:1.2rem 1.5rem;margin-bottom:1.5rem">
       <div style="font-size:.75rem;color:var(--muted);text-transform:uppercase;
-           letter-spacing:.08em;margin-bottom:.5rem">signals.py v12 — Overall Score</div>
+           letter-spacing:.08em;margin-bottom:.5rem">signals.py — Overall Score</div>
       <div style="font-size:2.5rem;font-weight:800;color:var(--accent)">{avg:.1f}<span
            style="font-size:1rem;color:var(--muted);font-weight:400"> / 10</span></div>
       <div style="font-size:.8rem;color:var(--muted);margin-top:.3rem">
-        v11 (6.6) → v12 (8.4). Every component now ≥ 8: Wilder ATR/RSI, numpy
-        Supertrend, 20-day VWAP, swing-peak Fibonacci, unified risk engine.
+        Core engine v12 (Wilder ATR/RSI, numpy Supertrend, 20-day VWAP, swing-peak
+        Fibonacci, unified risk engine) plus momentum stack: Trap detection, Smart
+        Money Concepts, VCP base detection, and Relative Strength leadership ranking.
       </div>
     </div>
     """, unsafe_allow_html=True)
@@ -2789,6 +2792,26 @@ elif _page == 'scanner':
         if min_score_f > 0:
             fdf = fdf[fdf["Score"] >= min_score_f]
 
+        # ── Strategy quick-filters (VCP / RS leaders / hide traps) ──────────────
+        if any(col in fdf.columns for col in ("VCP", "RS", "Trap")):
+            qf1, qf2, qf3, qf4 = st.columns(4)
+            with qf1:
+                only_vcp = st.checkbox("📐 VCP bases only", value=False, key="scn_vcp")
+            with qf2:
+                only_rs = st.checkbox("💪 RS leaders only", value=False, key="scn_rs")
+            with qf3:
+                ready_only = st.checkbox("🎯 VCP pivot-ready", value=False, key="scn_ready")
+            with qf4:
+                hide_traps = st.checkbox("🚫 Hide traps", value=False, key="scn_notrap")
+            if only_vcp and "VCP" in fdf.columns:
+                fdf = fdf[fdf["VCP"] != "—"]
+            if ready_only and "VCP" in fdf.columns:
+                fdf = fdf[fdf["VCP"].str.contains("READY", na=False)]
+            if only_rs and "RS_Lead" in fdf.columns:
+                fdf = fdf[fdf["RS_Lead"] == "💪"]
+            if hide_traps and "Trap" in fdf.columns:
+                fdf = fdf[fdf["Trap"] == "—"]
+
         display_df = fdf.drop(columns=["Sector"]) if sel_sector != "All Sectors" else fdf
 
         liq_count = int((fdf["Liquid"]=="✅").sum()) if "Liquid" in fdf.columns else 0
@@ -2818,6 +2841,10 @@ elif _page == 'scanner':
                 "Resist":  st.column_config.NumberColumn("Resist", format="₹%.2f"),
                 "RSI":     st.column_config.NumberColumn("RSI",    format="%.1f"),
                 "Trend":   st.column_config.TextColumn("Trend",   width="medium"),
+                "VCP":     st.column_config.TextColumn("📐 VCP",  width="small"),
+                "Trap":    st.column_config.TextColumn("🪤 Trap", width="medium"),
+                "RS":      st.column_config.NumberColumn("💪 RS", format="%.2f"),
+                "RS_Lead": st.column_config.TextColumn("Lead",    width="small"),
                 "Patterns":st.column_config.TextColumn("Patterns",width="large"),
             })
 
@@ -2935,21 +2962,21 @@ elif _page == 'export':
 
 # ── Signal Scores ────────────────────────────────────────────────────────────
 elif _page == 'scores':
-    st.markdown('<div class="sec">🎯 signals.py v12 — Component Scorecard</div>',
+    st.markdown('<div class="sec">🎯 signals.py — Component Scorecard</div>',
                 unsafe_allow_html=True)
     render_score_dashboard()
     st.markdown("""
 <div style="margin-top:1rem;padding:1rem;background:rgba(16,185,129,.08);
      border:1px solid rgba(16,185,129,.3);border-radius:8px;font-size:.85rem;
      color:var(--muted);line-height:1.8">
-<b style="color:var(--text)">✅ All v12 priority fixes shipped:</b><br>
-1. <b>MACD</b> — single-pass crossover + histogram momentum flags<br>
-2. <b>Supertrend</b> — numpy array loop, Wilder ATR(10), mult 2.5<br>
-3. <b>ATR</b> — Wilder's EWM smoothing (matches Zerodha/TradingView)<br>
-4. <b>RSI</b> — adjust=False on all ewm() + explicit 100/0 edges<br>
-5. <b>VWAP</b> — 20-day rolling + price_vs_vwap deviation<br>
-6. <b>Fibonacci</b> — scipy swing-peak detection, not fixed window<br>
-7. <b>Risk Engine</b> — unified across signals, picks, and scanner
+<b style="color:var(--text)">✅ Engine capabilities:</b><br>
+1. <b>Core indicators</b> — Wilder RSI/ATR, single-pass MACD, numpy Supertrend, clamped Bollinger, 20-day VWAP, swing-peak Fibonacci<br>
+2. <b>Risk engine</b> — unified <code>_calc_risk_params</code> across signals, picks, and scanner (zero phantom RR)<br>
+3. <b>Trap scanner</b> — 5-factor bull/bear trap confluence across the full universe<br>
+4. <b>Smart Money (SMC)</b> — FVG, order blocks, liquidity pools, premium/discount, displacement<br>
+5. <b>VCP</b> — Minervini volatility-contraction base detection with pivot-ready flagging<br>
+6. <b>Relative Strength</b> — IBD-style RS ratio + 1-99 percentile leadership rating vs Nifty<br>
+7. <b>Unified in scanner</b> — VCP, Trap, and RS now surface as columns + filters in the Universe Scanner
 </div>""", unsafe_allow_html=True)
 
 # ── Trap Scanner ─────────────────────────────────────────────────────────────
@@ -4636,7 +4663,7 @@ elif _page == 'screener':
             st.warning("No stocks match these filters. Try loosening them.")
         else:
             show_cols = ["Stock", "Sector", "Signal", "Score", "CMP", "RSI",
-                         "Trend", "Entry", "Target", "SL", "Turnover_Cr"]
+                         "Trend", "VCP", "Trap", "RS", "Entry", "Target", "SL", "Turnover_Cr"]
             show_cols = [c for c in show_cols if c in res.columns]
             res_show = res[show_cols].sort_values("Score", ascending=False)
             _h = min(max(len(res_show) * 36 + 40, 200), 600)
