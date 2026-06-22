@@ -1581,8 +1581,8 @@ def render_signals(signals, theme_t):
       '</span>') if s.get('vcp') else ''}
     {('<span style="font-size:.62rem;background:rgba(59,130,246,.18);color:#3b82f6;'
       'padding:.1rem .4rem;border-radius:4px;font-weight:700;margin-left:.3rem">'
-      '💪 RS ' + (f"{s.get('rs_ratio'):.2f}" if s.get('rs_ratio') else '') +
-      '</span>') if s.get('rs_outperforming') else ''}
+      '💪 RS ' + (f"{s.get('rs_ratio'):.2f}" if isinstance(s.get('rs_ratio'), (int, float)) else '') +
+      '</span>') if s.get('rs_outperforming') and s.get('rs_ratio') is not None else ''}
   </div>
   <div class="sig-meta">CMP {cmp_str} · RSI {rsi_str} · {pct_str}</div>
   <div class="sig-reason">{reason}</div>
