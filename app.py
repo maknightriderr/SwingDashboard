@@ -821,7 +821,7 @@ def theme_css(t):
     bg_fx = t.get("bg_fx", "none")
     return f"""
 <style>
-@import url('https://fonts.googleapis.com/css2?family=Plus+Jakarta+Sans:wght@400;500;600;700;800&family=JetBrains+Mono:wght@500;700&display=swap');
+@import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&family=Fraunces:opsz,wght@9..144,400;9..144,500;9..144,600;9..144,700&family=JetBrains+Mono:wght@400;500;700&display=swap');
 
 :root {{
   --bg:{t['bg']}; --card:{t['card']}; --input:{t['input']};
@@ -834,8 +834,18 @@ def theme_css(t):
 /* ═══ Base canvas with ambient light bloom ═══ */
 html, body, .stApp, [data-testid="stAppViewContainer"], [data-testid="stApp"] {{
     background: var(--bg) !important; color: var(--text) !important;
-    font-family: 'Plus Jakarta Sans', sans-serif !important;
+    font-family: 'Inter', -apple-system, BlinkMacSystemFont, sans-serif !important;
     -webkit-font-smoothing: antialiased;
+    -moz-osx-font-smoothing: grayscale;
+    font-feature-settings: 'cv02','cv03','cv04','cv11','ss01';
+    letter-spacing: -0.011em;
+    text-rendering: optimizeLegibility;
+}}
+/* Tabular figures — numbers align in neat columns (premium finance look) */
+.sig-meta, .sig-price, .kpi-value, [data-testid="stMetricValue"],
+.dataframe, code, .mono, [data-testid="stMetric"] {{
+    font-feature-settings: 'tnum' 1, 'cv02','cv03';
+    font-variant-numeric: tabular-nums;
 }}
 [data-testid="stAppViewContainer"]::before {{
     content: ""; position: fixed; inset: 0; pointer-events: none; z-index: 0;
@@ -1053,7 +1063,7 @@ div[data-baseweb="input"]:focus-within, div[data-baseweb="select"]:focus-within,
 div[data-baseweb="input"] input, [data-testid="stNumberInputContainer"] input {{
     color: var(--text) !important; -webkit-text-fill-color: var(--text) !important;
     background-color: transparent !important;
-    font-family: 'Plus Jakarta Sans', sans-serif !important; font-weight: 600 !important;
+    font-family: 'Inter', -apple-system, BlinkMacSystemFont, sans-serif !important; font-weight: 600 !important;
 }}
 button[data-testid="stNumberInputStepDown"], button[data-testid="stNumberInputStepUp"] {{
     background-color: var(--card2) !important; color: var(--text) !important; border: none !important;
@@ -1128,12 +1138,11 @@ ul[role="listbox"] li[aria-selected="true"] {{
    ✦ PREMIUM POLISH LAYER — refined typography, buttons, inputs, sidebar
    ════════════════════════════════════════════════════════════════════ */
 
-/* Display serif for major headings — adds an editorial, private-bank feel */
-@import url('https://fonts.googleapis.com/css2?family=Fraunces:opsz,wght@9..144,400;9..144,500;9..144,600&display=swap');
-
+/* Display serif for major headings — adds an editorial, private-bank feel.
+   (Fraunces is already loaded in the main @import at the top of this stylesheet.) */
 .dash-title, .sec {{
-    font-family: 'Fraunces', 'Plus Jakarta Sans', serif !important;
-    font-weight: 500 !important; letter-spacing: -0.02em !important;
+    font-family: 'Fraunces', Georgia, serif !important;
+    font-weight: 600 !important; letter-spacing: -0.02em !important;
 }}
 
 /* Section headers get a refined gold tick + tighter rhythm */
@@ -1154,7 +1163,7 @@ ul[role="listbox"] li[aria-selected="true"] {{
     border: 1px solid var(--border) !important;
     border-radius: 10px !important;
     color: var(--text) !important;
-    font-weight: 600 !important; font-family: 'Plus Jakarta Sans', sans-serif !important;
+    font-weight: 600 !important; font-family: 'Inter', -apple-system, BlinkMacSystemFont, sans-serif !important;
     letter-spacing: -0.01em !important;
     transition: all .25s cubic-bezier(0.175,0.885,0.32,1.275) !important;
 }}
@@ -1194,7 +1203,7 @@ ul[role="listbox"] li[aria-selected="true"] {{
 /* ✦ Tabs — underline slides, gold active */
 .stTabs [data-baseweb="tab-list"] {{ gap: .3rem; border-bottom: 1px solid var(--border); }}
 .stTabs [data-baseweb="tab"] {{
-    font-family: 'Plus Jakarta Sans', sans-serif !important;
+    font-family: 'Inter', -apple-system, BlinkMacSystemFont, sans-serif !important;
     font-weight: 600 !important; color: var(--muted) !important;
     border-radius: 8px 8px 0 0 !important; transition: color .2s !important;
 }}
