@@ -1564,25 +1564,38 @@ def render_signals(signals, theme_t):
             ph = (f"🎯 Target: {tgt_str} | 🛑 SL: {sl_str}<br>"
                   f"📊 R:R {rr_html} | {trend_v}")
 
+        # ── Build badges as clean single-line strings (no multi-line f-string
+        #    expressions, which can break Streamlit's HTML rendering) ──────────
+        badge_new = ""
+        if s.get("limited_history"):
+            badge_new = (f'<span style="font-size:.62rem;background:rgba(245,158,11,.15);'
+                         f'color:#f59e0b;padding:.1rem .4rem;border-radius:4px;'
+                         f'font-weight:700;margin-left:.3rem">🆕 {s.get("bars","")}d history</span>')
+
+        badge_vcp = ""
+        if s.get("vcp"):
+            _vq = s.get("vcp_quality") or ""
+            _vr = "▸READY" if s.get("vcp_ready") else ""
+            badge_vcp = (f'<span style="font-size:.62rem;background:rgba(16,185,129,.18);'
+                         f'color:#10b981;padding:.1rem .4rem;border-radius:4px;'
+                         f'font-weight:700;margin-left:.3rem">🎯 VCP {_vq}{_vr}</span>')
+
+        badge_rs = ""
+        _rsr = s.get("rs_ratio")
+        if s.get("rs_outperforming") and isinstance(_rsr, (int, float)):
+            badge_rs = (f'<span style="font-size:.62rem;background:rgba(59,130,246,.18);'
+                        f'color:#3b82f6;padding:.1rem .4rem;border-radius:4px;'
+                        f'font-weight:700;margin-left:.3rem">💪 RS {_rsr:.2f}</span>')
+
+        badges = badge_new + badge_vcp + badge_rs
+
         html += f"""
 <div class="sig-card {c}">
   <div class="sig-action" style="color:{clr}">{action}</div>
   <div style="font-size:.9rem;font-weight:800;margin-bottom:.3rem">
     {s.get('stock','')}
-    <span style="font-size:.7rem;color:var(--muted);font-weight:400">
-      {s.get('sector','')}
-    </span>
-    {('<span style="font-size:.62rem;background:rgba(245,158,11,.15);color:#f59e0b;'
-      'padding:.1rem .4rem;border-radius:4px;font-weight:700;margin-left:.3rem">'
-      '🆕 ' + str(s.get('bars','')) + 'd history</span>') if s.get('limited_history') else ''}
-    {('<span style="font-size:.62rem;background:rgba(16,185,129,.18);color:#10b981;'
-      'padding:.1rem .4rem;border-radius:4px;font-weight:700;margin-left:.3rem">'
-      '🎯 VCP ' + str(s.get('vcp_quality','')) + ('▸READY' if s.get('vcp_ready') else '') +
-      '</span>') if s.get('vcp') else ''}
-    {('<span style="font-size:.62rem;background:rgba(59,130,246,.18);color:#3b82f6;'
-      'padding:.1rem .4rem;border-radius:4px;font-weight:700;margin-left:.3rem">'
-      '💪 RS ' + (f"{s.get('rs_ratio'):.2f}" if isinstance(s.get('rs_ratio'), (int, float)) else '') +
-      '</span>') if s.get('rs_outperforming') and s.get('rs_ratio') is not None else ''}
+    <span style="font-size:.7rem;color:var(--muted);font-weight:400">{s.get('sector','')}</span>
+    {badges}
   </div>
   <div class="sig-meta">CMP {cmp_str} · RSI {rsi_str} · {pct_str}</div>
   <div class="sig-reason">{reason}</div>
@@ -1592,7 +1605,11 @@ def render_signals(signals, theme_t):
   </div>
 </div>"""
 
-    st.markdown(html + "</div>", unsafe_allow_html=True)
+    # Collapse leading whitespace on each line — prevents Streamlit's markdown
+    # parser from ever treating indented HTML as a code block (which would show
+    # the raw <span> tags as literal text).
+    html_clean = "\n".join(line.lstrip() for line in (html + "</div>").split("\n"))
+    st.markdown(html_clean, unsafe_allow_html=True)
 
 
 # ── Sector table renderer ─────────────────────────────────────────────────────
