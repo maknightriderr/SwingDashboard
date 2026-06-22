@@ -301,16 +301,161 @@ def sanitize_ticker(sym):
     return clean
 
 
+# ==============================================================================
+# MARKET REGISTRY  —  multi-market support (NSE / US)
+# ==============================================================================
+# Each market knows: its Yahoo ticker suffixes, currency symbol, RS benchmark,
+# and which set of stocks belongs to it. A symbol is mapped to its market via
+# _SYMBOL_MARKET (populated as universes load). US tickers take NO suffix on
+# Yahoo (AAPL), NSE tickers take .NS / .BO.
+# ==============================================================================
+MARKETS = {
+    "NSE": {
+        "label": "🇮🇳 NSE (India)", "suffixes": [".NS", ".BO"],
+        "currency": "₹", "benchmark": "^NSEI", "benchmark_name": "Nifty 50",
+    },
+    "US": {
+        "label": "🇺🇸 US (NYSE/NASDAQ)", "suffixes": [""],
+        "currency": "$", "benchmark": "^GSPC", "benchmark_name": "S&P 500",
+    },
+}
+
+# Symbol → market lookup. Populated by the universe loaders. Default NSE.
+_SYMBOL_MARKET = {}
+
+
+def get_market(symbol):
+    """Return 'NSE' or 'US' for a symbol. Defaults to NSE if unknown."""
+    return _SYMBOL_MARKET.get(sanitize_ticker(symbol), "NSE")
+
+
+def market_suffixes(symbol):
+    """Return the list of Yahoo suffixes to try for this symbol's market."""
+    return MARKETS[get_market(symbol)]["suffixes"]
+
+
+def currency_symbol(symbol):
+    """Return ₹ or $ for the symbol's market."""
+    return MARKETS[get_market(symbol)]["currency"]
+
+
+def _yahoo_candidates(symbol):
+    """Yahoo ticker strings to try, in order, for any market."""
+    clean = sanitize_ticker(symbol)
+    out = []
+    for sfx in market_suffixes(symbol):
+        out.append(clean + sfx)
+    return out
+
+
+# ── US universe storage (parallel to NSE's SECTOR_STOCKS) ────────────────────
+US_SECTOR_STOCKS = {}        # sector -> [symbols]   (US only)
+US_SECTOR_MAP    = {}        # symbol -> sector      (US only)
+US_UNIVERSE_SOURCES = []     # [(label, loaded, skipped, err)]
+US_UNIVERSE_TOTAL = 0
+
+
+def _load_us_universe():
+    """Load the US stock universe from CSV files in the repo root.
+
+    Expected files (any that exist are used; missing ones skipped gracefully):
+      - nasdaq_listed.csv  / us_stocks.csv  (Symbol[,Sector/Industry] columns)
+      - nyse_listed.csv
+
+    Falls back to a curated mega-cap list if no CSV is present, so the US
+    market is always usable even before you upload the full lists.
+    """
+    global US_SECTOR_STOCKS, US_SECTOR_MAP, US_UNIVERSE_SOURCES, US_UNIVERSE_TOTAL
+    import os
+    candidates = [
+        ("us_stocks.csv",      "US All Listed"),
+        ("nasdaq_listed.csv",  "NASDAQ Listed"),
+        ("nyse_listed.csv",    "NYSE Listed"),
+        ("sp500.csv",          "S&P 500"),
+    ]
+    seen = set()
+    any_loaded = False
+    for fn, lbl in candidates:
+        if not os.path.exists(fn):
+            US_UNIVERSE_SOURCES.append((lbl, 0, 0, "not found"))
+            continue
+        try:
+            df = pd.read_csv(fn)
+            df = _norm_cols(df)
+            sym_col = _find_col(df.columns, _SYM_CANDIDATES + ["ACT Symbol", "Ticker", "TICKER"])
+            sec_col = _find_col(df.columns, _SEC_CANDIDATES + ["Sector", "GICS Sector"])
+            if sym_col is None:
+                US_UNIVERSE_SOURCES.append((lbl, 0, 0, "no symbol column"))
+                continue
+            loaded = skipped = 0
+            for _, row in df.iterrows():
+                raw = str(row[sym_col]).strip().upper()
+                # Skip junk / non-common-stock rows
+                if (not raw or raw in seen or "$" in raw or "." in raw
+                        or len(raw) > 6 or not raw.isalpha()):
+                    skipped += 1
+                    continue
+                sector = (str(row[sec_col]).strip() if sec_col and pd.notna(row.get(sec_col))
+                          else "US Equity")
+                if sector in ("", "nan", "N/A"):
+                    sector = "US Equity"
+                US_SECTOR_STOCKS.setdefault(sector, []).append(raw)
+                US_SECTOR_MAP[raw] = sector
+                _SYMBOL_MARKET[raw] = "US"
+                seen.add(raw)
+                loaded += 1
+            US_UNIVERSE_SOURCES.append((lbl, loaded, skipped, None))
+            if loaded > 0:
+                any_loaded = True
+        except Exception as e:
+            US_UNIVERSE_SOURCES.append((lbl, 0, 0, str(e)[:60]))
+
+    if not any_loaded:
+        # Curated mega-cap fallback so US works before CSVs are uploaded
+        US_SECTOR_STOCKS = {
+            "Technology": ["AAPL","MSFT","NVDA","AVGO","ORCL","CRM","ADBE","AMD","CSCO","INTC"],
+            "Communication": ["GOOGL","META","NFLX","DIS","TMUS","VZ"],
+            "Consumer": ["AMZN","TSLA","HD","MCD","NKE","SBUX","COST","WMT"],
+            "Financials": ["JPM","BAC","WFC","GS","MS","V","MA","AXP"],
+            "Healthcare": ["UNH","JNJ","LLY","PFE","ABBV","MRK","TMO"],
+            "Energy": ["XOM","CVX","COP"],
+            "Industrials": ["BA","CAT","GE","HON","UPS"],
+        }
+        for sec, stks in US_SECTOR_STOCKS.items():
+            for s in stks:
+                US_SECTOR_MAP[s] = sec
+                _SYMBOL_MARKET[s] = "US"
+        US_UNIVERSE_SOURCES.append(("US Mega-cap (fallback)", len(US_SECTOR_MAP), 0, None))
+
+    US_UNIVERSE_TOTAL = sum(len(v) for v in US_SECTOR_STOCKS.values())
+    return US_UNIVERSE_TOTAL
+
+
+# Load US universe at import (after market registry exists)
+try:
+    _load_us_universe()
+except Exception:
+    pass
+
+
+def get_universe(market="NSE"):
+    """Return (SECTOR_STOCKS, SECTOR_MAP) for the requested market."""
+    if market == "US":
+        return US_SECTOR_STOCKS, US_SECTOR_MAP
+    return SECTOR_STOCKS, SECTOR_MAP
+
+
 def _bulk_fetch_history(symbols, period="1y"):
     results = {}
     with ThreadPoolExecutor(max_workers=5) as executor:
         def fetch_single(sym):
             if sym.startswith("^"):
                 return sym, _fetch_history(sym, period)
-            clean_sym = sanitize_ticker(sym)
-            df = _fetch_history(clean_sym + ".NS", period)
-            if df is None:
-                df = _fetch_history(clean_sym + ".BO", period)
+            df = None
+            for cand in _yahoo_candidates(sym):
+                df = _fetch_history(cand, period)
+                if df is not None:
+                    break
             return sym, df
 
         future_to_sym = {executor.submit(fetch_single, sym): sym for sym in symbols}
