@@ -2013,10 +2013,10 @@ with st.sidebar:
         try:
             _mkt_universe, _ = get_universe(st.session_state.active_market)
             _mkt_count = sum(len(v) for v in _mkt_universe.values())
-            _cur = MARKETS[st.session_state.active_market]["currency"]
+            _mkt_cur = MARKETS[st.session_state.active_market]["currency"]
             st.markdown(
                 f'<div style="font-size:.68rem;color:var(--muted);margin-top:.3rem">'
-                f'{_mkt_count:,} stocks · {_cur} · '
+                f'{_mkt_count:,} stocks · {_mkt_cur} · '
                 f'{MARKETS[st.session_state.active_market].get("benchmark_name","")}</div>',
                 unsafe_allow_html=True)
         except Exception:
@@ -2228,8 +2228,8 @@ with st.sidebar:
                     "smc": "SMC setups", "traps": "Trap scan",
                     "vcp": "VCP bases", "rs": "RS leaders"}
     if st.session_state.get("_deep_running", False):
-        _cur = st.session_state.get("_deep_stage", "sector")
-        _deep_status = f'⏳ {_stage_names.get(_cur, _cur)}…'
+        _stg = st.session_state.get("_deep_stage", "sector")
+        _deep_status = f'⏳ {_stage_names.get(_stg, _stg)}…'
     else:
         _deep_status = f'{_nxt_slow}m' if st.session_state.auto_deep else 'manual'
     _fast_status = f'{_nxt_fast}m' if st.session_state.auto_fast else 'manual'
