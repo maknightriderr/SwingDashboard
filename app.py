@@ -383,6 +383,14 @@ def init_db():
                 conn.commit()
             except Exception:
                 conn.rollback()
+        # ── Migration: add 'market' column to separate NSE / US holdings ──────
+        for _tbl in ("trades", "watchlist", "price_alerts", "trade_journal"):
+            try:
+                cur.execute(f"ALTER TABLE {_tbl} ADD COLUMN IF NOT EXISTS "
+                            f"market TEXT DEFAULT 'NSE'")
+                conn.commit()
+            except Exception:
+                conn.rollback()
         cur.close(); conn.close()
     else:
         c = sqlite3.connect(DB)
@@ -413,6 +421,14 @@ def init_db():
             trade_date TEXT, direction TEXT, entry_price REAL, exit_price REAL,
             setup TEXT, rationale TEXT, emotion TEXT, outcome TEXT,
             lesson TEXT, rating INTEGER, created_date TEXT DEFAULT(date('now')))""")
+        # ── Migration: add 'market' column to separate NSE / US holdings ──────
+        for _tbl in ("trades", "watchlist", "price_alerts", "trade_journal"):
+            try:
+                _cols = [r[1] for r in c.execute(f"PRAGMA table_info({_tbl})").fetchall()]
+                if "market" not in _cols:
+                    c.execute(f"ALTER TABLE {_tbl} ADD COLUMN market TEXT DEFAULT 'NSE'")
+            except Exception:
+                pass
         c.commit(); c.close()
 
 def register_user(username, password):
@@ -502,11 +518,13 @@ def save_tg_config(user_id, token, chat):
         db("INSERT OR REPLACE INTO tg_config(user_id,bot_token,chat_id) VALUES(?,?,?)",
            (user_id, token, chat))
 
-def add_trade(user_id, stock, qty, buy, sell=None):
+def add_trade(user_id, stock, qty, buy, sell=None, market="NSE"):
     status = "Closed" if sell else "Open"
     closed = datetime.now().strftime("%Y-%m-%d") if sell else None
-    db("INSERT INTO trades(user_id,stock,quantity,buy_at,sell_at,status,closed_date) VALUES(?,?,?,?,?,?,?)",
-       (user_id, stock.upper().strip(), qty, buy, sell, status, closed))
+    _sym = stock.upper().strip()
+    db("INSERT INTO trades(user_id,stock,quantity,buy_at,sell_at,status,closed_date,market) "
+       "VALUES(?,?,?,?,?,?,?,?)",
+       (user_id, _sym, qty, buy, sell, status, closed, market))
 
 def update_trade(tid, user_id, stock, qty, buy, sell, status):
     closed = datetime.now().strftime("%Y-%m-%d") if status == "Closed" else None
@@ -531,9 +549,9 @@ def save_snapshot(user_id, invested, value):
     except Exception:
         pass   # snapshot is non-essential; never block the dashboard on it
 
-def add_watchlist(user_id, stock, target=None, notes=""):
-    db("INSERT INTO watchlist(user_id,stock,target_price,notes) VALUES(?,?,?,?)",
-       (user_id, stock.upper().strip(), target, notes))
+def add_watchlist(user_id, stock, target=None, notes="", market="NSE"):
+    db("INSERT INTO watchlist(user_id,stock,target_price,notes,market) VALUES(?,?,?,?,?)",
+       (user_id, stock.upper().strip(), target, notes, market))
 
 def delete_watchlist_item(wid, user_id):
     db("DELETE FROM watchlist WHERE id=? AND user_id=?", (wid, user_id))
@@ -1818,6 +1836,23 @@ def render_score_dashboard():
 raw = get_trades(UID)
 df  = enrich(raw) if not raw.empty else raw.copy()
 
+# ── Separate holdings by market (NSE stocks → NSE dashboard, US → US) ──────────
+# Trades carry a stored 'market' column (added via migration). New trades are
+# tagged at creation; legacy rows default to 'NSE'. We also re-detect US symbols
+# so any mislabeled legacy US holding still routes correctly.
+_active_mkt = st.session_state.get("active_market", "NSE")
+if not df.empty and "stock" in df.columns:
+    if "market" in df.columns:
+        _mkt_series = df["market"].fillna("NSE")
+    else:
+        _mkt_series = pd.Series(["NSE"] * len(df), index=df.index)
+    # Re-detect: if a stock is known to be US in the universe, trust that
+    if _MARKETS_AVAILABLE:
+        _detected = df["stock"].apply(lambda s: get_market(str(s)))
+        # A row is US if either stored OR detected says US
+        _mkt_series = _mkt_series.where(_detected != "US", "US")
+    df = df[_mkt_series == _active_mkt].reset_index(drop=True)
+
 if (st.session_state.last_refresh is None or
         (datetime.now() - st.session_state.last_refresh).seconds >= _TTL):
     st.session_state.last_refresh = datetime.now()
@@ -2148,8 +2183,8 @@ with st.sidebar:
                     st.session_state.edit_id = None
                     st.success("Updated!")
                 else:
-                    add_trade(UID, s_in, q_in, b_in, sv)
-                    st.success(f"Added {s_in.upper()}")
+                    add_trade(UID, s_in, q_in, b_in, sv, market=MARKET)
+                    st.success(f"Added {s_in.upper()} to {MARKET}")
                 _CACHE.clear()
                 st.session_state.last_auto_scan = 0.0
                 st.rerun()
@@ -2974,11 +3009,19 @@ elif _page == 'watchlist':
                 label_visibility="collapsed").upper().strip()
         with col_btn:
             if st.form_submit_button("➕ Add", width="stretch") and new_stock:
-                add_watchlist(UID, new_stock)
+                add_watchlist(UID, new_stock, market=MARKET)
                 st.toast(f"🚀 {new_stock} added!")
                 st.rerun()
 
     wdf = get_watchlist(UID)
+    # Separate watchlist by market (same logic as holdings)
+    if not wdf.empty and "stock" in wdf.columns:
+        _wmkt = wdf["market"].fillna("NSE") if "market" in wdf.columns \
+            else pd.Series(["NSE"] * len(wdf), index=wdf.index)
+        if _MARKETS_AVAILABLE:
+            _wdet = wdf["stock"].apply(lambda s: get_market(str(s)))
+            _wmkt = _wmkt.where(_wdet != "US", "US")
+        wdf = wdf[_wmkt == MARKET].reset_index(drop=True)
     if not wdf.empty:
         st.markdown('<div class="sec" style="margin-top:1rem">Live Monitored Assets</div>',
                     unsafe_allow_html=True)
