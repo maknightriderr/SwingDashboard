@@ -2116,7 +2116,7 @@ with st.sidebar:
 
     # Deep scan controls
     st.markdown('<div style="font-size:.72rem;color:var(--muted);font-weight:700;'
-                'margin:.7rem 0 .2rem">🔄 Deep scan (sector · universe · SMC)</div>',
+                'margin:.7rem 0 .2rem">🔄 Deep scan (sector · universe · SMC · trap · VCP · RS)</div>',
                 unsafe_allow_html=True)
     dc1, dc2 = st.columns([1, 1])
     with dc1:
@@ -2139,7 +2139,8 @@ with st.sidebar:
     _nxt_fast = max(0, int((st.session_state.fast_interval_sec - _elapsed_fast) // 60))
     _nxt_slow = max(0, int((st.session_state.deep_interval_sec - _elapsed_slow) // 60))
     _stage_names = {"sector": "Sector rotation", "universe": "Universe scan",
-                    "smc": "SMC setups", "traps": "Trap scan"}
+                    "smc": "SMC setups", "traps": "Trap scan",
+                    "vcp": "VCP bases", "rs": "RS leaders"}
     if st.session_state.get("_deep_running", False):
         _cur = st.session_state.get("_deep_stage", "sector")
         _deep_status = f'⏳ {_stage_names.get(_cur, _cur)}…'
@@ -5096,6 +5097,24 @@ if st.session_state.get("_run_deep_now", False):
         try:
             if scan_for_traps is not None:
                 st.session_state.trap_scan_cache = scan_for_traps(min_confidence=55)
+        except Exception:
+            pass
+        st.session_state._deep_stage = "vcp"
+
+    elif _stage == "vcp":
+        try:
+            if scan_for_vcp is not None:
+                st.session_state.vcp_scan_cache = scan_for_vcp(
+                    min_quality="B", ready_only=False)
+        except Exception:
+            pass
+        st.session_state._deep_stage = "rs"
+
+    elif _stage == "rs":
+        try:
+            if scan_relative_strength is not None:
+                st.session_state.rs_scan_cache = scan_relative_strength(
+                    top_n=None, min_rating=0)
         except Exception:
             pass
         st.session_state._deep_stage = "sector"        # reset for next cycle
