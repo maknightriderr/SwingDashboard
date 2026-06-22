@@ -1430,8 +1430,14 @@ def calc_analytics(df):
 
 
 # ── Formatting helpers ─────────────────────────────────────────────────────────
-def fi(v):   return f"₹{v:,.0f}"    if not pd.isna(v) else "—"
-def fi2(v):  return f"₹{v:,.2f}"   if not pd.isna(v) else "—"
+def _cur():
+    """Active currency symbol — resolves at call time from session market."""
+    try:
+        return MARKETS.get(st.session_state.get("active_market", "NSE"), {}).get("currency", "₹")
+    except Exception:
+        return "₹"
+def fi(v):   return f"{_cur()}{v:,.0f}"    if not pd.isna(v) else "—"
+def fi2(v):  return f"{_cur()}{v:,.2f}"   if not pd.isna(v) else "—"
 def fp(v):   return f"{'+' if v >= 0 else ''}{v:.2f}%" if not pd.isna(v) else "—"
 
 def cv_cell(v, fn):
@@ -1486,7 +1492,7 @@ def chart_pnl(df):
         textposition="outside", textfont=dict(color="#f8fafc", size=10)
     )), "P&L by Stock")
     fig.update_layout(showlegend=False, margin=dict(l=8, r=55, t=45, b=8))
-    fig.update_xaxes(tickprefix="₹")
+    fig.update_xaxes(tickprefix=_cur())
     return fig
 
 
@@ -1525,7 +1531,7 @@ def chart_growth(hist, cur_val, cur_inv):
                    name="Invested", line=dict(color="#3b82f6", width=2, dash="dash"))
     ]), "Portfolio Growth")
     fig.update_layout(hovermode="x unified")
-    fig.update_yaxes(tickprefix="₹")
+    fig.update_yaxes(tickprefix=_cur())
     return fig
 
 
@@ -1566,11 +1572,12 @@ def render_signals(signals, theme_t):
         reason  = s.get("reason", "")
         strength = s.get("strength", 30)
 
-        cmp_str = f"₹{cmp_v}" if cmp_v is not None else "—"
+        _c = _cur()
+        cmp_str = f"{_c}{cmp_v}" if cmp_v is not None else "—"
         rsi_str = str(rsi_v)  if rsi_v is not None else "—"
         pct_str = f"{pct:+.1f}%" if pct is not None else "—%"
-        tgt_str = f"₹{target}" if target is not None else "—"
-        sl_str  = f"₹{sl}"    if sl  is not None else "—"
+        tgt_str = f"{_c}{target}" if target is not None else "—"
+        sl_str  = f"{_c}{sl}"    if sl  is not None else "—"
         rr_html = _fmt_rr(rr)
 
         if c == "sell":
@@ -1580,9 +1587,9 @@ def render_signals(signals, theme_t):
             avg_p   = s.get("avg_price")
             new_avg = s.get("new_avg")
             new_sl  = s.get("new_sl")
-            ph = (f"💰 Avg: {'₹'+str(avg_p) if avg_p else '—'} | "
-                  f"New Avg: {'₹'+str(new_avg) if new_avg else '—'}<br>"
-                  f"🛑 SL: {'₹'+str(new_sl) if new_sl else '—'} | 🎯 Target: {tgt_str}")
+            ph = (f"💰 Avg: {_c+str(avg_p) if avg_p else '—'} | "
+                  f"New Avg: {_c+str(new_avg) if new_avg else '—'}<br>"
+                  f"🛑 SL: {_c+str(new_sl) if new_sl else '—'} | 🎯 Target: {tgt_str}")
         else:
             ph = (f"🎯 Target: {tgt_str} | 🛑 SL: {sl_str}<br>"
                   f"📊 R:R {rr_html} | {trend_v}")
@@ -1719,11 +1726,11 @@ def render_picks(picks, t):
             f"<div style='font-weight:800'>{p['stock']} "
             f"<span class='pick-sector'>{p['sector']}</span></div>"
             f"<div style='font-size:.8rem;color:var(--muted);font-weight:600;margin-top:3px'>"
-            f"CMP ₹{p['cmp']} · RSI {p['rsi']} · {p['trend']}</div>"
+            f"CMP {_cur()}{p['cmp']} · RSI {p['rsi']} · {p['trend']}</div>"
             f"<div class='pick-prices'>"
-            f"🎯 Entry: ₹{p['entry']}<br>"
-            f"🚀 Target: ₹{p['target']}<br>"
-            f"🛑 SL: ₹{p['stop_loss']}<br>"
+            f"🎯 Entry: {_cur()}{p['entry']}<br>"
+            f"🚀 Target: {_cur()}{p['target']}<br>"
+            f"🛑 SL: {_cur()}{p['stop_loss']}<br>"
             f"📊 R:R: {_fmt_rr(p['risk_reward'])} · Score: {p['score']}</div>"
             f"<div class='pick-reason'>{p['reason']}</div>"
             f"</div>"
@@ -2119,11 +2126,11 @@ with st.sidebar:
                                placeholder="CDSL, IRFC…")
         q_in   = st.number_input("Quantity", min_value=1, step=1,
                                  value=int(erow["quantity"]) if erow is not None else 1)
-        b_in   = st.number_input("Buy At ₹", min_value=0.01, step=0.05,
+        b_in   = st.number_input("Buy At " + _cur(), min_value=0.01, step=0.05,
                                  value=float(erow["buy_at"]) if erow is not None else 0.01,
                                  format="%.2f")
         sel_in = st.number_input(
-            "Sell At ₹ (optional)", min_value=0.0, step=0.05,
+            "Sell At " + _cur() + " (optional)", min_value=0.0, step=0.05,
             value=float(erow["sell_at"]) if (erow is not None and erow["sell_at"]) else 0.0,
             format="%.2f")
 
@@ -2287,7 +2294,7 @@ _idx_items = market.get("indices", {})
 for name, d in _idx_items.items():
     price = d.get("price")
     chg   = d.get("chg_pct", 0)
-    price_str = f"₹{price:,.0f}" if price else "—"
+    price_str = f"{_cur()}{price:,.0f}" if price else "—"
     if name == "India VIX":
         chg_clr = "var(--red)" if chg > 0 else "var(--green)"
     else:
@@ -2306,8 +2313,8 @@ if not _idx_items:
         'refreshes automatically)</span>'
     )
 
-sup_str = f"₹{market.get('support'):,.0f}" if market.get("support") else "—"
-res_str = f"₹{market.get('resistance'):,.0f}" if market.get("resistance") else "—"
+sup_str = f"{_cur()}{market.get('support'):,.0f}" if market.get("support") else "—"
+res_str = f"{_cur()}{market.get('resistance'):,.0f}" if market.get("resistance") else "—"
 
 st.markdown(
     f'<div class="regime-banner" style="background:{rc_bg};{rc_border};'
@@ -2455,7 +2462,7 @@ if _page == 'portfolio':
         if st.session_state.close_id:
             st.markdown("---")
             st.markdown("**Execute Close — Confirm Exit Price**")
-            sp = st.number_input("Exit Price ₹", min_value=0.01, step=0.05, format="%.2f")
+            sp = st.number_input("Exit Price " + _cur(), min_value=0.01, step=0.05, format="%.2f")
             x1, x2 = st.columns(2)
             with x1:
                 if st.button("✅ Confirm Exit", width="stretch"):
@@ -2773,7 +2780,7 @@ elif _page == 'scanner':
                 st.info("Custom list cleared.")
 
     if st.button("⚡ Execute Global Scan", width="stretch"):
-        with st.spinner(f"Scanning {len(SECTOR_MAP)} tickers..."):
+        with st.spinner(f"Scanning {len(get_universe(MARKET)[1])} {MARKET} tickers..."):
             sd = generate_market_scanner(market=MARKET)
             st.session_state.scanner_cache = sd if (sd is not None and not sd.empty) \
                 else pd.DataFrame()
@@ -3005,10 +3012,10 @@ elif _page == 'watchlist':
   <div style="font-size:.75rem;color:var(--muted);margin-bottom:.5rem;
        text-transform:uppercase">{get_sector(stock)}</div>
   <div style="font-size:.8rem;line-height:1.6;color:var(--text)">
-    <b>CMP:</b> ₹{cmp_v}<br>
+    <b>CMP:</b> {_cur()}{cmp_v}<br>
     <b>RSI:</b> {rsi_v} | <b>Trend:</b> {trend}<br>
-    <b>EMA9:</b> ₹{ema9} | <b>EMA21:</b> ₹{ema21}<br>
-    <b>Sup:</b> ₹{sup} | <b>Res:</b> ₹{res}
+    <b>EMA9:</b> {_cur()}{ema9} | <b>EMA21:</b> {_cur()}{ema21}<br>
+    <b>Sup:</b> {_cur()}{sup} | <b>Res:</b> {_cur()}{res}
   </div>
 </div>""", unsafe_allow_html=True)
                 else:
@@ -3100,7 +3107,7 @@ elif _page == 'traps':
         run_trap_scan = st.button("🪤 Run Trap Scan", width="stretch")
 
     if run_trap_scan:
-        total_sym = len(SECTOR_MAP)
+        total_sym = len(get_universe(MARKET)[1])
         with st.spinner(f"🔍 Scanning {total_sym} stocks for trap patterns…"):
             st.session_state.trap_scan_cache = scan_for_traps(min_confidence=min_conf, market=MARKET)
             trap_data = st.session_state.trap_scan_cache
@@ -3151,7 +3158,7 @@ elif _page == 'traps':
     </span>
   </div>
   <div style="font-size:.75rem;color:var(--muted);margin-bottom:.5rem">
-    {bt['sector']} · CMP ₹{bt['cmp']} · RSI {bt['rsi'] if bt['rsi'] else '—'}
+    {bt['sector']} · CMP {_cur()}{bt['cmp']} · RSI {bt['rsi'] if bt['rsi'] else '—'}
   </div>
   <div style="font-size:.8rem;color:var(--red);font-weight:600;margin-bottom:.5rem">
     ⚠️ {bt['detail']}
@@ -3162,9 +3169,9 @@ elif _page == 'traps':
   <div style="font-size:.78rem;color:var(--muted);display:grid;grid-template-columns:1fr 1fr;gap:.2rem">
     <span>📊 Trend: {bt['trend']}</span>
     <span>📦 Vol: {bt['vol_ratio']:.1f}x avg</span>
-    <span>🛡 Support: ₹{bt['support']}</span>
-    <span>🚧 Resist: ₹{bt['resistance']}</span>
-    <span>🔁 Re-entry SL: ₹{bt['re_entry_sl']}</span>
+    <span>🛡 Support: {_cur()}{bt['support']}</span>
+    <span>🚧 Resist: {_cur()}{bt['resistance']}</span>
+    <span>🔁 Re-entry SL: {_cur()}{bt['re_entry_sl']}</span>
     <span>ST: {'🟢 Bull' if bt.get('supertrend_bullish') else '🔴 Bear'}</span>
   </div>
   {('<div style="font-size:.72rem;color:var(--muted);margin-top:.4rem">📐 ' + bt['patterns'] + '</div>') if bt.get('patterns') else ''}
@@ -3209,7 +3216,7 @@ elif _page == 'traps':
     </span>
   </div>
   <div style="font-size:.75rem;color:var(--muted);margin-bottom:.5rem">
-    {brt['sector']} · CMP ₹{brt['cmp']} · RSI {brt['rsi'] if brt['rsi'] else '—'}
+    {brt['sector']} · CMP {_cur()}{brt['cmp']} · RSI {brt['rsi'] if brt['rsi'] else '—'}
   </div>
   <div style="font-size:.8rem;color:var(--green);font-weight:600;margin-bottom:.5rem">
     🪤 {brt['detail']}
@@ -3220,15 +3227,15 @@ elif _page == 'traps':
   <div style="background:rgba(16,185,129,.06);border-radius:6px;
        padding:.6rem .8rem;margin-bottom:.5rem;
        display:grid;grid-template-columns:1fr 1fr 1fr;gap:.3rem;font-size:.8rem;font-weight:700">
-    <span>🎯 Entry<br><b>₹{brt['entry']}</b></span>
-    <span>🚀 Target<br><b style="color:var(--green)">₹{brt['target']}</b></span>
-    <span>🛑 SL<br><b style="color:var(--red)">₹{brt['stop_loss']}</b></span>
+    <span>🎯 Entry<br><b>{_cur()}{brt['entry']}</b></span>
+    <span>🚀 Target<br><b style="color:var(--green)">{_cur()}{brt['target']}</b></span>
+    <span>🛑 SL<br><b style="color:var(--red)">{_cur()}{brt['stop_loss']}</b></span>
   </div>
   <div style="font-size:.78rem;color:var(--muted);display:grid;grid-template-columns:1fr 1fr;gap:.2rem">
     <span>📊 {rr_str}</span>
     <span>📦 Vol: {brt['vol_ratio']:.1f}x avg</span>
-    <span>🛡 Support: ₹{brt['support']}</span>
-    <span>🚧 Resist: ₹{brt['resistance']}</span>
+    <span>🛡 Support: {_cur()}{brt['support']}</span>
+    <span>🚧 Resist: {_cur()}{brt['resistance']}</span>
     <span>📈 Trend: {brt['trend']}</span>
     <span>ST: {'🟢 Bull' if brt.get('supertrend_bullish') else '🔴 Bear'}</span>
   </div>
@@ -3334,7 +3341,7 @@ elif _page == 'corp_actions':
         run_ca_scan = st.button("📅 Scan Corporate Actions", width="stretch")
 
     if run_ca_scan:
-        total_sym = len(SECTOR_MAP)
+        total_sym = len(get_universe(MARKET)[1])
         with st.spinner(f"Fetching corporate actions for {total_sym} stocks… (may take 60–90s)"):
             st.session_state.corp_actions_cache = scan_corporate_actions_universe()
             ca = st.session_state.corp_actions_cache
@@ -3541,17 +3548,17 @@ elif _page == 'smc':
                     f'text-align:center"><div style="font-size:.7rem;color:var(--muted);'
                     f'font-weight:700;text-transform:uppercase">Entry</div>'
                     f'<div style="font-size:1.3rem;font-weight:800;color:var(--text)">'
-                    f'₹{entry}</div></div>'
+                    f'{_cur()}{entry}</div></div>'
                     f'<div style="background:var(--card);border-radius:10px;padding:.9rem;'
                     f'text-align:center"><div style="font-size:.7rem;color:var(--muted);'
                     f'font-weight:700;text-transform:uppercase">Target</div>'
                     f'<div style="font-size:1.3rem;font-weight:800;color:{theme_t["green"]}">'
-                    f'₹{target}</div></div>'
+                    f'{_cur()}{target}</div></div>'
                     f'<div style="background:var(--card);border-radius:10px;padding:.9rem;'
                     f'text-align:center"><div style="font-size:.7rem;color:var(--muted);'
                     f'font-weight:700;text-transform:uppercase">Stop Loss</div>'
                     f'<div style="font-size:1.3rem;font-weight:800;color:{theme_t["red"]}">'
-                    f'₹{sl}</div></div>'
+                    f'{_cur()}{sl}</div></div>'
                     f'<div style="background:var(--card);border-radius:10px;padding:.9rem;'
                     f'text-align:center"><div style="font-size:.7rem;color:var(--muted);'
                     f'font-weight:700;text-transform:uppercase">Risk:Reward</div>'
@@ -3601,9 +3608,9 @@ elif _page == 'smc':
                 f'<div style="font-size:.7rem;color:var(--muted);font-weight:700;'
                 f'text-transform:uppercase;letter-spacing:.08em">CMP</div>'
                 f'<div style="font-size:1.5rem;font-weight:800;color:var(--text);'
-                f'margin:.2rem 0">₹{cmp}</div>'
+                f'margin:.2rem 0">{_cur()}{cmp}</div>'
                 f'<div style="font-size:.8rem;color:var(--muted)">'
-                f'Range ₹{ind.get("smc_range_low","—")}–₹{ind.get("smc_range_high","—")}</div>'
+                f'Range {_cur()}{ind.get("smc_range_low","—")}–{_cur()}{ind.get("smc_range_high","—")}</div>'
                 f'</div>'
                 f'</div>',
                 unsafe_allow_html=True)
@@ -3641,11 +3648,11 @@ elif _page == 'smc':
                                  'margin-bottom:.3rem">📍 Price currently INSIDE a bearish FVG (resistance)</div>')
                 if nbf:
                     fvg_rows += (f'<div style="font-size:.82rem;margin-bottom:.3rem">'
-                                 f'🟢 Nearest bull FVG below: <b>₹{nbf["bottom"]}–₹{nbf["top"]}</b> '
+                                 f'🟢 Nearest bull FVG below: <b>{_cur()}{nbf["bottom"]}–{_cur()}{nbf["top"]}</b> '
                                  f'({nbf["size_atr"]} ATR)</div>')
                 if nbef:
                     fvg_rows += (f'<div style="font-size:.82rem;margin-bottom:.3rem">'
-                                 f'🔴 Nearest bear FVG above: <b>₹{nbef["bottom"]}–₹{nbef["top"]}</b> '
+                                 f'🔴 Nearest bear FVG above: <b>{_cur()}{nbef["bottom"]}–{_cur()}{nbef["top"]}</b> '
                                  f'({nbef["size_atr"]} ATR)</div>')
                 fvg_rows += (f'<div style="font-size:.75rem;color:var(--muted);margin-top:.4rem">'
                              f'Unfilled: {ind.get("smc_bull_fvg_count",0)} bullish · '
@@ -3672,11 +3679,11 @@ elif _page == 'smc':
                                 'margin-bottom:.3rem">📍 Price at a bearish order block (supply)</div>')
                 if nbo:
                     ob_rows += (f'<div style="font-size:.82rem;margin-bottom:.3rem">'
-                                f'🟢 Bull OB (demand): <b>₹{nbo["bottom"]}–₹{nbo["top"]}</b> '
+                                f'🟢 Bull OB (demand): <b>{_cur()}{nbo["bottom"]}–{_cur()}{nbo["top"]}</b> '
                                 f'({nbo["strength_atr"]} ATR move)</div>')
                 if nbeo:
                     ob_rows += (f'<div style="font-size:.82rem;margin-bottom:.3rem">'
-                                f'🔴 Bear OB (supply): <b>₹{nbeo["bottom"]}–₹{nbeo["top"]}</b> '
+                                f'🔴 Bear OB (supply): <b>{_cur()}{nbeo["bottom"]}–{_cur()}{nbeo["top"]}</b> '
                                 f'({nbeo["strength_atr"]} ATR move)</div>')
                 if not (nbo or nbeo or ind.get("smc_at_bull_ob") or ind.get("smc_at_bear_ob")):
                     ob_rows = '<div style="font-size:.82rem;color:var(--muted)">No active order blocks nearby.</div>'
@@ -3696,11 +3703,11 @@ elif _page == 'smc':
                 liq_rows = ""
                 if nbs:
                     liq_rows += (f'<div style="font-size:.82rem;margin-bottom:.3rem">'
-                                 f'🔼 Buy-side liquidity above: <b>₹{nbs["level"]}</b> '
+                                 f'🔼 Buy-side liquidity above: <b>{_cur()}{nbs["level"]}</b> '
                                  f'({nbs["touches"]} equal highs — short stops)</div>')
                 if nss:
                     liq_rows += (f'<div style="font-size:.82rem;margin-bottom:.3rem">'
-                                 f'🔽 Sell-side liquidity below: <b>₹{nss["level"]}</b> '
+                                 f'🔽 Sell-side liquidity below: <b>{_cur()}{nss["level"]}</b> '
                                  f'({nss["touches"]} equal lows — long stops)</div>')
                 if not (nbs or nss):
                     liq_rows = '<div style="font-size:.82rem;color:var(--muted)">No clear liquidity clusters nearby.</div>'
@@ -3886,17 +3893,17 @@ elif _page == 'etfs':
   </div>
   <div style="display:flex;gap:2rem;flex-wrap:wrap;margin-top:.8rem">
     <div><span style="color:var(--muted);font-size:.75rem">CMP</span><br>
-         <b style="font-size:1.3rem">₹{q['cmp']}</b></div>
+         <b style="font-size:1.3rem">{_cur()}{q['cmp']}</b></div>
     <div><span style="color:var(--muted);font-size:.75rem">Day</span><br>
          <b style="font-size:1.3rem;color:{day_clr}">{(q['day_chg'] or 0):+.2f}%</b></div>
     <div><span style="color:var(--muted);font-size:.75rem">50-DMA</span><br>
-         <b style="font-size:1.1rem">₹{q.get('dma50','—')}</b></div>
+         <b style="font-size:1.1rem">{_cur()}{q.get('dma50','—')}</b></div>
     <div><span style="color:var(--muted);font-size:.75rem">200-DMA</span><br>
-         <b style="font-size:1.1rem">₹{q.get('dma200') or '—'}</b></div>
+         <b style="font-size:1.1rem">{_cur()}{q.get('dma200') or '—'}</b></div>
     <div><span style="color:var(--muted);font-size:.75rem">52W High</span><br>
-         <b style="font-size:1.1rem">₹{q['high52']}</b></div>
+         <b style="font-size:1.1rem">{_cur()}{q['high52']}</b></div>
     <div><span style="color:var(--muted);font-size:.75rem">52W Low</span><br>
-         <b style="font-size:1.1rem">₹{q['low52']}</b></div>
+         <b style="font-size:1.1rem">{_cur()}{q['low52']}</b></div>
   </div>
   <div style="margin-top:1rem;display:flex;gap:1.5rem;flex-wrap:wrap">
     {''.join(f'<div><span style="color:var(--muted);font-size:.72rem">{k}</span><br>'
@@ -3910,8 +3917,8 @@ elif _page == 'etfs':
     '<span style="font-size:.82rem">' + ' · '.join(q.get('signal_reasons', [])) + '</span></div>')
    if q.get('signal_reasons') else ''}
   {('<div style="margin-top:.8rem;font-size:.85rem">'
-    f'<b>Entry</b> ₹{q.get("entry")} &nbsp; <b>Target</b> ₹{q.get("target")} &nbsp; '
-    f'<b>Stop</b> ₹{q.get("stop_loss")}</div>')
+    f'<b>Entry</b> {_cur()}{q.get("entry")} &nbsp; <b>Target</b> {_cur()}{q.get("target")} &nbsp; '
+    f'<b>Stop</b> {_cur()}{q.get("stop_loss")}</div>')
    if q.get('signal')=='BUY' and q.get('target') else ''}
 </div>""", unsafe_allow_html=True)
                 st.caption("⚠️ Signals are algorithmic (trend + momentum), not financial advice. "
@@ -4069,7 +4076,7 @@ elif _page == 'sizing':
 
     colA, colB = st.columns(2)
     with colA:
-        _cap = st.number_input("💰 Total Trading Capital (₹)", min_value=1000.0,
+        _cap = st.number_input("💰 Total Trading Capital (" + _cur() + ")", min_value=1000.0,
                                value=float(st.session_state.get("_sz_cap", 100000.0)),
                                step=5000.0, key="sz_cap")
         st.session_state._sz_cap = _cap
@@ -4079,11 +4086,11 @@ elif _page == 'sizing':
                               help="Pros risk 1-2% per trade. Never exceed 2% as a beginner.")
         st.session_state._sz_risk = _risk_pct
     with colB:
-        _entry = st.number_input("📈 Entry Price (₹)", min_value=0.0,
+        _entry = st.number_input("📈 Entry Price (" + _cur() + ")", min_value=0.0,
                                  value=float(st.session_state.get("_sz_entry", 100.0)),
                                  step=1.0, key="sz_entry")
         st.session_state._sz_entry = _entry
-        _stop = st.number_input("🛑 Stop Loss Price (₹)", min_value=0.0,
+        _stop = st.number_input("🛑 Stop Loss Price (" + _cur() + ")", min_value=0.0,
                                 value=float(st.session_state.get("_sz_stop", 95.0)),
                                 step=1.0, key="sz_stop")
         st.session_state._sz_stop = _stop
@@ -4117,12 +4124,12 @@ elif _page == 'sizing':
     <div><span style="color:var(--muted);font-size:.78rem">Shares to Buy</span><br>
          <b style="font-size:1.8rem;color:var(--accent)">{qty:,}</b></div>
     <div><span style="color:var(--muted);font-size:.78rem">Position Value</span><br>
-         <b style="font-size:1.5rem">₹{position_value:,.0f}</b>
+         <b style="font-size:1.5rem">{_cur()}{position_value:,.0f}</b>
          <span style="font-size:.8rem;color:var(--muted)"> ({position_pct:.1f}%)</span></div>
     <div><span style="color:var(--muted);font-size:.78rem">Max Loss (your risk)</span><br>
-         <b style="font-size:1.5rem;color:var(--red)">₹{risk_amount:,.0f}</b></div>
+         <b style="font-size:1.5rem;color:var(--red)">{_cur()}{risk_amount:,.0f}</b></div>
     <div><span style="color:var(--muted);font-size:.78rem">Risk / Share</span><br>
-         <b style="font-size:1.5rem">₹{risk_per_share:.2f}</b></div>
+         <b style="font-size:1.5rem">{_cur()}{risk_per_share:.2f}</b></div>
   </div>
 </div>""", unsafe_allow_html=True)
         if warn:
@@ -4142,8 +4149,8 @@ elif _page == 'sizing':
 <div style="background:var(--card);border:1px solid var(--border);border-radius:8px;
             padding:.7rem;text-align:center">
   <div style="font-size:.7rem;color:var(--muted)">{rmult}R Target</div>
-  <div style="font-size:1.1rem;font-weight:800;color:var(--green)">₹{tgt:.2f}</div>
-  <div style="font-size:.72rem;color:var(--muted)">+₹{reward:,.0f}</div>
+  <div style="font-size:1.1rem;font-weight:800;color:var(--green)">{_cur()}{tgt:.2f}</div>
+  <div style="font-size:.72rem;color:var(--muted)">+{_cur()}{reward:,.0f}</div>
 </div>""", unsafe_allow_html=True)
 
         st.caption("💡 Quantity is calculated so that IF your stop loss hits, you lose "
@@ -4162,7 +4169,7 @@ elif _page == 'risk':
     if odf_risk.empty:
         st.info("No open positions to analyze. Add trades to see your risk profile.")
     else:
-        total_cap = st.number_input("💰 Total Trading Capital (₹) — for risk context",
+        total_cap = st.number_input("💰 Total Trading Capital (" + _cur() + ") — for risk context",
                                     min_value=1000.0,
                                     value=float(st.session_state.get("_sz_cap", 100000.0)),
                                     step=5000.0, key="risk_cap")
@@ -4202,7 +4209,7 @@ elif _page == 'risk':
                 border-radius:10px;padding:1rem;text-align:center">
                 <div style="font-size:.72rem;color:var(--muted)">Capital Deployed</div>
                 <div style="font-size:1.6rem;font-weight:800;color:{clr}">{deployed_pct:.0f}%</div>
-                <div style="font-size:.7rem;color:var(--muted)">₹{total_invested:,.0f}</div>
+                <div style="font-size:.7rem;color:var(--muted)">{_cur()}{total_invested:,.0f}</div>
                 </div>""", unsafe_allow_html=True)
         with m2:
             clr = _risk_badge(largest_pct, 25, 40)
@@ -4276,13 +4283,13 @@ elif _page == 'alerts':
         with ac2:
             _al_cond = st.selectbox("Condition", ["above", "below"], key="al_cond")
         with ac3:
-            _al_price = st.number_input("Target ₹", min_value=0.0, step=1.0, key="al_price")
+            _al_price = st.number_input("Target " + _cur(), min_value=0.0, step=1.0, key="al_price")
         _al_note = st.text_input("Note (optional)", key="al_note",
                                  placeholder="e.g. breakout level / support")
         if st.button("🔔 Create Alert", width="stretch"):
             if _al_stock and _al_price > 0:
                 add_price_alert(UID, _al_stock, _al_cond, _al_price, _al_note)
-                st.success(f"Alert set: {_al_stock.upper()} {_al_cond} ₹{_al_price}")
+                st.success(f"Alert set: {_al_stock.upper()} {_al_cond} {_cur()}{_al_price}")
                 st.rerun()
             else:
                 st.error("Enter a stock symbol and a target price above 0.")
@@ -4305,7 +4312,7 @@ elif _page == 'alerts':
                 elif cond == "below" and cur_price <= target:
                     triggered = True
 
-            cur_str = f"₹{cur_price}" if cur_price is not None else "—"
+            cur_str = f"{_cur()}{cur_price}" if cur_price is not None else "—"
             arrow = "▲" if cond == "above" else "▼"
             row_clr = "#10b981" if triggered else "var(--border)"
 
@@ -4317,7 +4324,7 @@ elif _page == 'alerts':
                 st.markdown(f"""
 <div style="background:var(--card);border:1px solid {row_clr};border-radius:8px;
             padding:.7rem 1rem;margin-bottom:.5rem">
-  <b style="font-size:.95rem">{stock}</b> {arrow} ₹{target}
+  <b style="font-size:.95rem">{stock}</b> {arrow} {_cur()}{target}
   <span style="color:var(--muted);font-size:.8rem">· now {cur_str}</span>{trig_html}
   {('<br><span style="font-size:.72rem;color:var(--muted)">📝 ' + note + '</span>') if note else ''}
 </div>""", unsafe_allow_html=True)
@@ -4333,7 +4340,7 @@ elif _page == 'alerts':
                     try:
                         send_telegram(saved_tok, saved_cid,
                             f"🎯 <b>PRICE ALERT</b>\n{stock} is now {cur_str} "
-                            f"({arrow} target ₹{target})\n{note}")
+                            f"({arrow} target {_cur()}{target})\n{note}")
                     except Exception:
                         pass
     else:
@@ -4348,7 +4355,7 @@ elif _page == 'alerts':
                 arrow = "▲" if cond == "above" else "▼"
                 tc1, tc2 = st.columns([5, 1])
                 with tc1:
-                    st.markdown(f"**{stock}** {arrow} ₹{target} · triggered {trig_date or '—'}")
+                    st.markdown(f"**{stock}** {arrow} {_cur()}{target} · triggered {trig_date or '—'}")
                 with tc2:
                     if st.button("🗑", key=f"del_trig_{aid}"):
                         delete_price_alert(aid, UID)
@@ -4439,13 +4446,13 @@ elif _page == 'chart':
                                      name=f"EMA {_ema_slow}"))
             # S/R lines
             fig.add_hline(y=resistance, line=dict(color="#ef4444", width=1, dash="dash"),
-                          annotation_text=f"R ₹{resistance:.1f}", annotation_position="right")
+                          annotation_text=f"R {_cur()}{resistance:.1f}", annotation_position="right")
             fig.add_hline(y=support, line=dict(color="#10b981", width=1, dash="dash"),
-                          annotation_text=f"S ₹{support:.1f}", annotation_position="right")
+                          annotation_text=f"S {_cur()}{support:.1f}", annotation_position="right")
             # Live CMP line (real-time, distinct from last candle close)
             if live_cmp:
                 fig.add_hline(y=live_cmp, line=dict(color="#d4af37", width=1.2, dash="dot"),
-                              annotation_text=f"CMP ₹{live_cmp:.1f}",
+                              annotation_text=f"CMP {_cur()}{live_cmp:.1f}",
                               annotation_position="left")
 
             fig.update_layout(
@@ -4491,13 +4498,13 @@ elif _page == 'chart':
             chg = (display_price / prev_close - 1) * 100 if prev_close else 0
             sc1, sc2, sc3, sc4 = st.columns(4)
             sc1.metric("CMP (live)" if live_cmp else "Last Close",
-                       f"₹{display_price:.2f}", f"{chg:+.2f}%")
-            sc2.metric("Support", f"₹{support:.2f}")
-            sc3.metric("Resistance", f"₹{resistance:.2f}")
+                       f"{_cur()}{display_price:.2f}", f"{chg:+.2f}%")
+            sc2.metric("Support", f"{_cur()}{support:.2f}")
+            sc3.metric("Resistance", f"{_cur()}{resistance:.2f}")
             sc4.metric("Bars", f"{len(c)}")
             if live_cmp and abs(live_cmp - last_close) > 0.01:
-                st.caption(f"💡 Gold dotted line = live CMP ₹{live_cmp:.2f}. "
-                           f"Last {_tf_label} candle closed at ₹{last_close:.2f} "
+                st.caption(f"💡 Gold dotted line = live CMP {_cur()}{live_cmp:.2f}. "
+                           f"Last {_tf_label} candle closed at {_cur()}{last_close:.2f} "
                            f"(candles lag live price, especially intraday/after-hours).")
 
 # ── Trade Journal ──────────────────────────────────────────────────────────────
@@ -4513,8 +4520,8 @@ elif _page == 'journal':
             j_date = st.date_input("Trade date", key="j_date")
             j_dir = st.selectbox("Direction", ["Long", "Short"], key="j_dir")
         with jc2:
-            j_entry = st.number_input("Entry ₹", min_value=0.0, step=1.0, key="j_entry")
-            j_exit = st.number_input("Exit ₹ (0 if open)", min_value=0.0, step=1.0, key="j_exit")
+            j_entry = st.number_input("Entry " + _cur(), min_value=0.0, step=1.0, key="j_entry")
+            j_exit = st.number_input("Exit " + _cur() + " (0 if open)", min_value=0.0, step=1.0, key="j_exit")
             j_setup = st.selectbox("Setup", ["Breakout", "Pullback", "Reversal", "Trend-follow",
                                    "SMC / Order Block", "Trap reversal", "Sector rotation",
                                    "News-based", "Other"], key="j_setup")
@@ -4602,7 +4609,7 @@ elif _page == 'journal':
     <span style="color:{oc_clr};font-weight:700;font-size:.85rem">{outcome}{pnl_str}</span>
   </div>
   <div style="font-size:.78rem;color:var(--muted);margin-top:.2rem">
-    {tdate} · Entry ₹{entry_p or '—'} → Exit ₹{exit_p or '—'} · Emotion: {emotion} · ⭐{rating}/5</div>
+    {tdate} · Entry {_cur()}{entry_p or '—'} → Exit {_cur()}{exit_p or '—'} · Emotion: {emotion} · ⭐{rating}/5</div>
   {('<div style="font-size:.82rem;margin-top:.4rem"><b>Thesis:</b> ' + rationale + '</div>') if rationale else ''}
   {('<div style="font-size:.82rem;margin-top:.3rem;color:var(--accent)"><b>Lesson:</b> ' + lesson + '</div>') if lesson else ''}
 </div>""", unsafe_allow_html=True)
@@ -4928,7 +4935,7 @@ elif _page == 'vcp':
                         f'<b>{s["stock"]}</b> {rdy} '
                         f'<span style="color:var(--muted);font-size:.78rem">{s["sector"]}</span></span>'
                         f'<span style="font-family:monospace;font-size:.82rem">'
-                        f'VCP {s["quality"]} · pivot ₹{s["pivot"]} '
+                        f'VCP {s["quality"]} · pivot {_cur()}{s["pivot"]} '
                         f'({s.get("pivot_distance_pct",0):+.1f}%)</span></div>')
                 st.markdown(
                     f'<div style="background:var(--gradient);border:1px solid var(--accent);'
@@ -4963,7 +4970,7 @@ elif _page == 'vcp':
             font-size:.72rem;font-weight:800;margin-left:.5rem">VCP {q}</span>{ready_badge}
     </div>
     <div style="font-family:'JetBrains Mono',monospace;font-size:.82rem;color:var(--muted)">
-      CMP ₹{s['cmp']} · Pivot ₹{s['pivot']}
+      CMP {_cur()}{s['cmp']} · Pivot {_cur()}{s['pivot']}
     </div>
   </div>
   <div style="font-size:.82rem;color:var(--muted);margin-top:.5rem">
@@ -4971,9 +4978,9 @@ elif _page == 'vcp':
     &nbsp;·&nbsp; {s.get('detail','')}
   </div>
   <div style="font-size:.85rem;margin-top:.5rem">
-    <b>Entry</b> ₹{s.get('entry','—')} &nbsp;·&nbsp;
-    <b>Target</b> ₹{s.get('target','—')} &nbsp;·&nbsp;
-    <b>Stop</b> ₹{s.get('stop_loss','—')} &nbsp;·&nbsp;
+    <b>Entry</b> {_cur()}{s.get('entry','—')} &nbsp;·&nbsp;
+    <b>Target</b> {_cur()}{s.get('target','—')} &nbsp;·&nbsp;
+    <b>Stop</b> {_cur()}{s.get('stop_loss','—')} &nbsp;·&nbsp;
     <b>R:R</b> {rr_str}
   </div>
 </div>""", unsafe_allow_html=True)
