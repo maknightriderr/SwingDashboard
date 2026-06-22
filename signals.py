@@ -733,16 +733,19 @@ def _fetch_index_history(symbol, period="1y"):
 # A high-RS stock in a VCP base near a pivot is the classic Minervini long.
 # ==============================================================================
 
-_NIFTY_BENCH_CACHE = {"ts": 0, "data": None}
+_BENCH_CACHE = {}   # market -> {"ts":..., "data":...}
 
 
-def _get_nifty_benchmark():
-    """Return Nifty's trailing returns over standard lookbacks (cached 15 min).
+def _get_nifty_benchmark(market="NSE"):
+    """Return the market benchmark's trailing returns over standard lookbacks
+    (cached 15 min). NSE → Nifty 50 (^NSEI); US → S&P 500 (^GSPC).
     Returns dict {'21': r, '63': r, '126': r, '252': r} of % returns, or None."""
     now = time.time()
-    if _NIFTY_BENCH_CACHE["data"] and (now - _NIFTY_BENCH_CACHE["ts"]) < _CACHE_TTL:
-        return _NIFTY_BENCH_CACHE["data"]
-    df = _fetch_index_history("^NSEI", period="1y")
+    cached = _BENCH_CACHE.get(market)
+    if cached and cached["data"] and (now - cached["ts"]) < _CACHE_TTL:
+        return cached["data"]
+    bench_symbol = MARKETS.get(market, {}).get("benchmark", "^NSEI")
+    df = _fetch_index_history(bench_symbol, period="1y")
     if df is None or df.empty or len(df) < 30:
         return None
     closes = df["Close"].dropna().values.astype(float)
@@ -752,24 +755,23 @@ def _get_nifty_benchmark():
             past = closes[-lb - 1]
             bench[str(lb)] = (closes[-1] / past - 1) * 100 if past > 0 else 0.0
         else:
-            # Not enough history for this window — use the longest available
             past = closes[0]
             bench[str(lb)] = (closes[-1] / past - 1) * 100 if past > 0 else 0.0
-    _NIFTY_BENCH_CACHE["data"] = bench
-    _NIFTY_BENCH_CACHE["ts"] = now
+    _BENCH_CACHE[market] = {"data": bench, "ts": now}
     return bench
 
 
-def compute_relative_strength(close, bench=None):
-    """Compute a stock's RS ratio versus Nifty.
+def compute_relative_strength(close, bench=None, market="NSE"):
+    """Compute a stock's RS ratio versus its market benchmark.
 
     Uses IBD-style weighting: the most recent quarter counts double.
-    RS ratio > 1.0 means the stock is OUTPERFORMING Nifty; < 1.0 underperforming.
+    RS ratio > 1.0 means OUTPERFORMING the benchmark; < 1.0 underperforming.
+    NSE stocks are compared to Nifty 50; US stocks to the S&P 500.
 
     Returns dict: {rs_ratio, rs_line, outperforming, periods:{...}} or None.
     """
     if bench is None:
-        bench = _get_nifty_benchmark()
+        bench = _get_nifty_benchmark(market)
     if bench is None:
         return None
     if close is None or len(close) < 30:
@@ -1124,9 +1126,9 @@ def _compute_indicators_raw(symbol, period="1y", prefetched_df=None):
         vcp = {"is_vcp": False, "vcp_ready": False, "contractions": [],
                "pivot": None, "quality": None, "detail": ""}
 
-    # ── Relative Strength vs Nifty ───────────────────────────────────────────
+    # ── Relative Strength vs market benchmark (Nifty / S&P 500) ──────────────
     try:
-        rs = compute_relative_strength(close)
+        rs = compute_relative_strength(close, market=get_market(symbol))
     except Exception:
         rs = None
 
@@ -1649,9 +1651,10 @@ def build_telegram_message(signals, sector_df, picks=None):
 
 
 # ─── Master Universe Scanner — FIX 9: unified engine + liquidity gate ─────────
-def generate_market_scanner():
+def generate_market_scanner(market="NSE"):
+    _univ, _ = get_universe(market)
     all_symbols = []
-    for sector, stocks in SECTOR_STOCKS.items():
+    for sector, stocks in _univ.items():
         all_symbols.extend(stocks)
     bulk_data = _bulk_fetch_history(all_symbols, period="6mo")
     results = []
@@ -2207,7 +2210,7 @@ def detect_trap_signals(close, high, low, vol, vol_avg, rsi_series,
     return result
 
 
-def scan_for_traps(min_confidence=55):
+def scan_for_traps(min_confidence=55, market="NSE"):
     """
     Proactively sweeps all Nifty 500 stocks for live bull trap and bear trap
     patterns. Unlike the embedded flags in generate_signals() which only cover
@@ -2235,8 +2238,9 @@ def scan_for_traps(min_confidence=55):
         support, resistance, atr, entry, target,
         stop_loss, risk_reward, trend, vol_ratio, supertrend_bullish
     """
+    _univ, _ = get_universe(market)
     all_symbols = []
-    for sector, stocks in SECTOR_STOCKS.items():
+    for sector, stocks in _univ.items():
         all_symbols.extend(stocks)
 
     # Bulk fetch — single network pass for the whole universe
@@ -3151,7 +3155,7 @@ def compute_smc(open_, high, low, close, vol, atr):
 # ==============================================================================
 # SMC SETUP SCANNER — sweeps universe for actionable SMC trade setups
 # ==============================================================================
-def scan_for_smc_setups(min_quality="B", action_filter="All"):
+def scan_for_smc_setups(min_quality="B", action_filter="All", market="NSE"):
     """
     Sweeps the full universe for stocks with an actionable SMC trade setup
     (BUY or SELL) with concrete Entry/Target/SL/RR.
@@ -3174,8 +3178,9 @@ def scan_for_smc_setups(min_quality="B", action_filter="All"):
     quality_rank = {"A+": 3, "A": 2, "B": 1}
     min_rank = quality_rank.get(min_quality, 1)
 
+    _univ, _ = get_universe(market)
     all_symbols = []
-    for stocks in SECTOR_STOCKS.values():
+    for stocks in _univ.values():
         all_symbols.extend(stocks)
 
     bulk = _bulk_fetch_history(all_symbols, period="6mo")
@@ -3226,7 +3231,7 @@ def scan_for_smc_setups(min_quality="B", action_filter="All"):
         "timestamp": datetime.now().strftime("%d %b %Y %H:%M"),
     }
 
-def scan_for_vcp(min_quality="B", ready_only=False):
+def scan_for_vcp(min_quality="B", ready_only=False, market="NSE"):
     """
     Sweeps the universe for stocks forming a Volatility Contraction Pattern.
 
@@ -3246,8 +3251,9 @@ def scan_for_vcp(min_quality="B", ready_only=False):
     quality_rank = {"A+": 4, "A": 3, "B": 2, "C": 1}
     min_rank = quality_rank.get(min_quality, 2)
 
+    _univ, _ = get_universe(market)
     all_symbols = []
-    for stocks in SECTOR_STOCKS.values():
+    for stocks in _univ.values():
         all_symbols.extend(stocks)
 
     bulk = _bulk_fetch_history(all_symbols, period="6mo")
@@ -3310,7 +3316,7 @@ def scan_for_vcp(min_quality="B", ready_only=False):
         "timestamp": datetime.now().strftime("%d %b %Y %H:%M"),
     }
 
-def scan_relative_strength(top_n=None, min_rating=0):
+def scan_relative_strength(top_n=None, min_rating=0, market="NSE"):
     """
     Rank the entire universe by Relative Strength versus Nifty.
 
@@ -3330,14 +3336,16 @@ def scan_relative_strength(top_n=None, min_rating=0):
     Each row: stock, sector, cmp, rs_ratio, rs_rating, ret_21d, ret_63d,
               ret_252d, nifty_21d, outperforming, trend
     """
-    bench = _get_nifty_benchmark()
+    bench = _get_nifty_benchmark(market)
+    _bench_name = MARKETS.get(market, {}).get("benchmark_name", "benchmark")
     if bench is None:
         return {"leaders": [], "scanned": 0, "liquid": 0, "count": 0,
                 "nifty_returns": {}, "timestamp": datetime.now().strftime("%d %b %Y %H:%M"),
-                "error": "Could not fetch Nifty benchmark data"}
+                "error": f"Could not fetch {_bench_name} benchmark data"}
 
+    _univ, _ = get_universe(market)
     all_symbols = []
-    for stocks in SECTOR_STOCKS.values():
+    for stocks in _univ.values():
         all_symbols.extend(stocks)
 
     bulk = _bulk_fetch_history(all_symbols, period="1y")
