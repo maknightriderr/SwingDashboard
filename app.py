@@ -32,6 +32,19 @@ from signals import (
 
 # New functions added in signals.py v12+ — imported separately so the app
 # degrades gracefully if an older signals.py is deployed.
+
+# Market layer (NSE / US) — graceful fallback if older signals.py deployed
+try:
+    from signals import (MARKETS, get_market, currency_symbol, get_universe,
+                         US_UNIVERSE_TOTAL, US_UNIVERSE_SOURCES)
+    _MARKETS_AVAILABLE = True
+except ImportError:
+    _MARKETS_AVAILABLE = False
+    MARKETS = {"NSE": {"label": "🇮🇳 NSE (India)", "currency": "₹"}}
+    def get_market(s): return "NSE"
+    def currency_symbol(s): return "₹"
+    def get_universe(m="NSE"): return SECTOR_MAP, SECTOR_MAP
+
 try:
     from signals import scan_for_traps as _scan_for_traps
     scan_for_traps = _scan_for_traps
@@ -601,6 +614,7 @@ for k, v in [("user_id", None), ("username", None), ("edit_id", None), ("close_i
              ("outlook_cache", None), ("scanner_cache", None), ("trap_scan_cache", None),
              ("corp_actions_cache", None), ("selected_scanner_sector", "All Sectors"),
              ("custom_stocks_input", ""), ("active_page", "portfolio"),
+             ("active_market", "NSE"),
              ("smc_scan_cache", None), ("vcp_scan_cache", None), ("rs_scan_cache", None),
              ("etf_scan_cache", None), ("mf_search_results", []),
              ("mf_selected", None), ("mf_compare_list", []),
@@ -1922,6 +1936,10 @@ else:
 theme_t = THEMES[st.session_state.theme]
 st.markdown(theme_css(theme_t), unsafe_allow_html=True)
 
+# ── Active market globals (used across all pages/screeners) ────────────────────
+MARKET = st.session_state.get("active_market", "NSE")
+CUR = MARKETS.get(MARKET, {}).get("currency", "₹")   # currency symbol for display
+
 # ── Sidebar ────────────────────────────────────────────────────────────────────
 with st.sidebar:
     st.markdown(
@@ -1961,6 +1979,41 @@ with st.sidebar:
         controller.set("swing_user_id", "", max_age=0)
         st.session_state.clear()
         st.rerun()
+
+    # ── MARKET SELECTOR (NSE / US) ─────────────────────────────────────────────
+    if _MARKETS_AVAILABLE:
+        st.markdown("<hr style='margin:1rem 0;border-color:var(--border)'>",
+                    unsafe_allow_html=True)
+        st.markdown('<div style="font-size:.8rem;font-weight:800;letter-spacing:.05em;'
+                    'margin-bottom:.5rem">🌍 MARKET</div>', unsafe_allow_html=True)
+        _mkt_keys = list(MARKETS.keys())
+        _mkt_labels = [MARKETS[k]["label"] for k in _mkt_keys]
+        _cur_idx = _mkt_keys.index(st.session_state.active_market) \
+            if st.session_state.active_market in _mkt_keys else 0
+        _picked_label = st.radio("Market", _mkt_labels, index=_cur_idx,
+                                 label_visibility="collapsed", key="market_radio")
+        _picked_market = _mkt_keys[_mkt_labels.index(_picked_label)]
+        if _picked_market != st.session_state.active_market:
+            st.session_state.active_market = _picked_market
+            # Clear all scan caches so they repopulate for the new market
+            for _ck in ("scanner_cache", "smc_scan_cache", "trap_scan_cache",
+                        "vcp_scan_cache", "rs_scan_cache", "sector_cache",
+                        "signals_cache", "picks_cache", "outlook_cache"):
+                if _ck in st.session_state:
+                    st.session_state[_ck] = None
+            st.rerun()
+        # Show universe size for the active market
+        try:
+            _mkt_universe, _ = get_universe(st.session_state.active_market)
+            _mkt_count = sum(len(v) for v in _mkt_universe.values())
+            _cur = MARKETS[st.session_state.active_market]["currency"]
+            st.markdown(
+                f'<div style="font-size:.68rem;color:var(--muted);margin-top:.3rem">'
+                f'{_mkt_count:,} stocks · {_cur} · '
+                f'{MARKETS[st.session_state.active_market].get("benchmark_name","")}</div>',
+                unsafe_allow_html=True)
+        except Exception:
+            pass
 
     st.markdown("<hr style='margin:1rem 0;border-color:var(--border)'>",
                 unsafe_allow_html=True)
@@ -2721,7 +2774,7 @@ elif _page == 'scanner':
 
     if st.button("⚡ Execute Global Scan", width="stretch"):
         with st.spinner(f"Scanning {len(SECTOR_MAP)} tickers..."):
-            sd = generate_market_scanner()
+            sd = generate_market_scanner(market=MARKET)
             st.session_state.scanner_cache = sd if (sd is not None and not sd.empty) \
                 else pd.DataFrame()
             if (st.session_state.scanner_cache is not None and
@@ -3049,7 +3102,7 @@ elif _page == 'traps':
     if run_trap_scan:
         total_sym = len(SECTOR_MAP)
         with st.spinner(f"🔍 Scanning {total_sym} stocks for trap patterns…"):
-            st.session_state.trap_scan_cache = scan_for_traps(min_confidence=min_conf)
+            st.session_state.trap_scan_cache = scan_for_traps(min_confidence=min_conf, market=MARKET)
             trap_data = st.session_state.trap_scan_cache
             st.toast(
                 f"✅ Found {trap_data['bull_count']} bull traps, "
@@ -3721,7 +3774,7 @@ elif _page == 'smc':
         if run_smc_scan:
             with st.spinner(f"Scanning {len(SECTOR_MAP)} stocks for SMC setups…"):
                 st.session_state.smc_scan_cache = scan_for_smc_setups(
-                    min_quality=min_q, action_filter=act_f)
+                    min_quality=min_q, action_filter=act_f, market=MARKET)
                 sc = st.session_state.smc_scan_cache
                 st.toast(f"✅ {sc['buy_count']} BUY · {sc['sell_count']} SELL setups",
                          icon="🎯")
@@ -4570,7 +4623,7 @@ elif _page == 'breadth':
                 "(or it fills automatically via the background deep scan).")
         if st.button("🔍 Run Universe Scan for Breadth"):
             with st.spinner("Scanning universe…"):
-                st.session_state.scanner_cache = generate_market_scanner()
+                st.session_state.scanner_cache = generate_market_scanner(market=MARKET)
             st.rerun()
     else:
         total = len(scan_df)
@@ -4648,7 +4701,7 @@ elif _page == 'screener':
         st.info("Screener needs universe scan data first.")
         if st.button("🔍 Run Universe Scan"):
             with st.spinner("Scanning universe…"):
-                st.session_state.scanner_cache = generate_market_scanner()
+                st.session_state.scanner_cache = generate_market_scanner(market=MARKET)
             st.rerun()
     else:
         st.markdown(f"##### Filters ({len(scan_df):,} stocks in universe)")
@@ -4847,7 +4900,7 @@ elif _page == 'vcp':
         if _run_vcp:
             with st.spinner("Scanning universe for VCP bases… (this can take a minute)"):
                 st.session_state.vcp_scan_cache = scan_for_vcp(
-                    min_quality=_vcp_quality, ready_only=_vcp_ready)
+                    min_quality=_vcp_quality, ready_only=_vcp_ready, market=MARKET)
 
         vres = st.session_state.get("vcp_scan_cache")
         if vres is None:
@@ -4969,7 +5022,7 @@ elif _page == 'rs':
             top_n = None if _rs_top == "All" else int(_rs_top)
             with st.spinner("Ranking the universe by relative strength… (takes a minute)"):
                 st.session_state.rs_scan_cache = scan_relative_strength(
-                    top_n=top_n, min_rating=_rs_min)
+                    top_n=top_n, min_rating=_rs_min, market=MARKET)
 
         rres = st.session_state.get("rs_scan_cache")
         if rres is None:
@@ -5103,7 +5156,7 @@ if st.session_state.get("_run_deep_now", False):
 
     elif _stage == "universe":
         try:
-            _usd = generate_market_scanner()
+            _usd = generate_market_scanner(market=MARKET)
             st.session_state.scanner_cache = (
                 _usd if (_usd is not None and not _usd.empty) else pd.DataFrame())
         except Exception:
@@ -5114,7 +5167,7 @@ if st.session_state.get("_run_deep_now", False):
         try:
             if scan_for_smc_setups is not None:
                 st.session_state.smc_scan_cache = scan_for_smc_setups(
-                    min_quality="B", action_filter="All")
+                    min_quality="B", action_filter="All", market=MARKET)
         except Exception:
             pass
         st.session_state._deep_stage = "traps"
@@ -5122,7 +5175,7 @@ if st.session_state.get("_run_deep_now", False):
     elif _stage == "traps":
         try:
             if scan_for_traps is not None:
-                st.session_state.trap_scan_cache = scan_for_traps(min_confidence=55)
+                st.session_state.trap_scan_cache = scan_for_traps(min_confidence=55, market=MARKET)
         except Exception:
             pass
         st.session_state._deep_stage = "vcp"
@@ -5131,7 +5184,7 @@ if st.session_state.get("_run_deep_now", False):
         try:
             if scan_for_vcp is not None:
                 st.session_state.vcp_scan_cache = scan_for_vcp(
-                    min_quality="B", ready_only=False)
+                    min_quality="B", ready_only=False, market=MARKET)
         except Exception:
             pass
         st.session_state._deep_stage = "rs"
@@ -5140,7 +5193,7 @@ if st.session_state.get("_run_deep_now", False):
         try:
             if scan_relative_strength is not None:
                 st.session_state.rs_scan_cache = scan_relative_strength(
-                    top_n=None, min_rating=0)
+                    top_n=None, min_rating=0, market=MARKET)
         except Exception:
             pass
         st.session_state._deep_stage = "sector"        # reset for next cycle
