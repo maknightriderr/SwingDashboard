@@ -4835,6 +4835,32 @@ elif _page == 'vcp':
                         f"({vres.get('ready_count',0)} pivot-ready) · "
                         f"scanned {vres.get('liquid',0)} liquid stocks")
 
+            # ── Top 5 candidates card (already ranked: ready first, then quality) ──
+            top5 = setups[:5]
+            if top5:
+                cards = ""
+                for i, s in enumerate(top5, 1):
+                    rdy = "⚡" if s["vcp_ready"] else ""
+                    cards += (
+                        f'<div style="display:flex;justify-content:space-between;'
+                        f'padding:.5rem .7rem;border-bottom:1px solid var(--border)">'
+                        f'<span><b style="color:var(--accent)">{i}.</b> '
+                        f'<b>{s["stock"]}</b> {rdy} '
+                        f'<span style="color:var(--muted);font-size:.78rem">{s["sector"]}</span></span>'
+                        f'<span style="font-family:monospace;font-size:.82rem">'
+                        f'VCP {s["quality"]} · pivot ₹{s["pivot"]} '
+                        f'({s.get("pivot_distance_pct",0):+.1f}%)</span></div>')
+                st.markdown(
+                    f'<div style="background:var(--gradient);border:1px solid var(--accent);'
+                    f'border-radius:12px;padding:1rem 1.2rem;margin-bottom:1.2rem">'
+                    f'<div style="font-size:.8rem;font-weight:800;color:var(--accent);'
+                    f'text-transform:uppercase;letter-spacing:.06em;margin-bottom:.5rem">'
+                    f'⭐ Top 5 Candidates to Research</div>{cards}'
+                    f'<div style="font-size:.72rem;color:var(--muted);margin-top:.6rem">'
+                    f'Ranked: pivot-ready first, then base quality. These are research '
+                    f'candidates — confirm the breakout above pivot before entering.</div>'
+                    f'</div>', unsafe_allow_html=True)
+
             for s in setups:
                 q = s["quality"]
                 q_clr = {"A+": "#10b981", "A": "#22c55e",
@@ -4941,6 +4967,56 @@ elif _page == 'rs':
 
             st.markdown(f"##### 🏆 {len(leaders)} leaders (RS ≥ {_rs_min}) · "
                         f"scanned {rres.get('liquid',0)} liquid stocks")
+
+            # ── Top 5 leaders card (already sorted by RS rating desc) ──────────
+            top5 = leaders[:5]
+            if top5:
+                cards = ""
+                for i, l in enumerate(top5, 1):
+                    vcp_mark = "🎯" if l.get("vcp") else ""
+                    cards += (
+                        f'<div style="display:flex;justify-content:space-between;'
+                        f'padding:.5rem .7rem;border-bottom:1px solid var(--border)">'
+                        f'<span><b style="color:var(--accent)">{i}.</b> '
+                        f'<b>{l["stock"]}</b> {vcp_mark} '
+                        f'<span style="color:var(--muted);font-size:.78rem">{l["sector"]}</span></span>'
+                        f'<span style="font-family:monospace;font-size:.82rem">'
+                        f'RS {l["rs_rating"]}/99 · 3M {l.get("ret_63d",0):+.0f}%</span></div>')
+                st.markdown(
+                    f'<div style="background:var(--gradient);border:1px solid var(--accent);'
+                    f'border-radius:12px;padding:1rem 1.2rem;margin-bottom:1.2rem">'
+                    f'<div style="font-size:.8rem;font-weight:800;color:var(--accent);'
+                    f'text-transform:uppercase;letter-spacing:.06em;margin-bottom:.5rem">'
+                    f'⭐ Top 5 Strongest Leaders</div>{cards}'
+                    f'<div style="font-size:.72rem;color:var(--muted);margin-top:.6rem">'
+                    f'Ranked by RS rating. 🎯 = also forming a VCP base. Research '
+                    f'candidates, not buy signals — confirm your entry setup first.</div>'
+                    f'</div>', unsafe_allow_html=True)
+
+            # ── A-TIER OVERLAP: leaders that ALSO have a VCP base (best setups) ──
+            overlap = [l for l in leaders if l.get("vcp")]
+            if overlap:
+                ov_cards = ""
+                for l in overlap[:8]:
+                    rdy = "⚡READY" if l.get("vcp_ready") else "base"
+                    ov_cards += (
+                        f'<div style="display:flex;justify-content:space-between;'
+                        f'padding:.45rem .7rem;border-bottom:1px solid rgba(16,185,129,.2)">'
+                        f'<span><b>{l["stock"]}</b> '
+                        f'<span style="color:var(--muted);font-size:.76rem">{l["sector"]}</span></span>'
+                        f'<span style="font-family:monospace;font-size:.8rem;color:#10b981">'
+                        f'RS {l["rs_rating"]} · VCP {rdy}</span></div>')
+                st.markdown(
+                    f'<div style="background:rgba(16,185,129,.08);border:1px solid #10b981;'
+                    f'border-radius:12px;padding:1rem 1.2rem;margin-bottom:1.2rem">'
+                    f'<div style="font-size:.8rem;font-weight:800;color:#10b981;'
+                    f'text-transform:uppercase;letter-spacing:.06em;margin-bottom:.5rem">'
+                    f'💎 A-Tier Setups — Leader + VCP Base ({len(overlap)})</div>{ov_cards}'
+                    f'<div style="font-size:.72rem;color:var(--muted);margin-top:.6rem">'
+                    f'These appear on BOTH lists: strong RS leadership AND a low-risk VCP '
+                    f'base. This overlap is the classic Minervini setup — your highest-'
+                    f'conviction shortlist. Still confirm the breakout before entering.</div>'
+                    f'</div>', unsafe_allow_html=True)
 
             # Build a clean table
             import pandas as _pd
