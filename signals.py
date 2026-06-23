@@ -256,6 +256,14 @@ SECTOR_INDICES = {
     "PSU Bank": "^CNXPSUBANK", "Private Bank": "^CNXPVTBANK", "Bank": "^NSEBANK"
 }
 
+# US sector ETFs (SPDR sector funds) — used for US sector rotation
+US_SECTOR_INDICES = {
+    "Technology": "XLK", "Financials": "XLF", "Health Care": "XLV",
+    "Consumer Discretionary": "XLY", "Consumer Staples": "XLP",
+    "Energy": "XLE", "Industrials": "XLI", "Materials": "XLB",
+    "Utilities": "XLU", "Real Estate": "XLRE", "Communication": "XLC",
+}
+
 TRACKED_INDICES = {
     "Sensex": "^BSESN", "Nifty 50": "^NSEI",
     "Nifty Midcap": "^NSEMDCP50", "Nifty Smallcap": "^CNXSC",
@@ -1568,19 +1576,25 @@ def generate_signals(trades_df):
 
 
 # ─── Sector Rotation (unchanged from v11 — already 8/10) ──────────────────────
-def sector_rotation(trades_df=None):
+def sector_rotation(trades_df=None, market="NSE"):
     rows = []
-    idx_symbols = list(SECTOR_INDICES.values()) + ["^NSEI"]
+    if market == "US":
+        _sectors = US_SECTOR_INDICES
+        _bench_sym = "^GSPC"
+    else:
+        _sectors = SECTOR_INDICES
+        _bench_sym = "^NSEI"
+    idx_symbols = list(_sectors.values()) + [_bench_sym]
     bulk_data   = _bulk_fetch_history(idx_symbols, period="6mo")
 
-    nifty_df    = bulk_data.get("^NSEI")
+    nifty_df    = bulk_data.get(_bench_sym)
     nifty_ret1m = nifty_ret3m = 0.0
     if nifty_df is not None and len(nifty_df) >= 21:
         nifty_ret1m = (float(nifty_df["Close"].iloc[-1]) / float(nifty_df["Close"].iloc[-21]) - 1) * 100
     if nifty_df is not None and len(nifty_df) >= 61:
         nifty_ret3m = (float(nifty_df["Close"].iloc[-1]) / float(nifty_df["Close"].iloc[-61]) - 1) * 100
 
-    for sector, idx_sym in SECTOR_INDICES.items():
+    for sector, idx_sym in _sectors.items():
         try:
             df_idx = bulk_data.get(idx_sym)
             if df_idx is None or len(df_idx) < 21:
