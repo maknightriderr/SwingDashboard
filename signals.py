@@ -427,18 +427,36 @@ def _load_us_universe():
                 US_UNIVERSE_SOURCES.append((lbl, 0, 0, "no symbol column"))
                 continue
             loaded = skipped = 0
+            # Look for a security-name/description column to identify non-common-stock
+            name_col = _find_col(df.columns, ["Security Name", "SECURITY NAME",
+                                              "security name", "Company Name", "Name"])
+            _JUNK_WORDS = ("WARRANT", "- UNIT", " UNITS", "RIGHT", "PREFERRED",
+                           "DEPOSITARY", "DEBENTURE", "NOTES", "% NOTE", "TRUST UNIT",
+                           "SUBORDINAT", "CONVERTIBLE", "ETF", "ETN", " FUND",
+                           "WHEN ISSUED", "ACQUISITION CORP", "ACQUISITION INC",
+                           "ORDINARY SHARES", " ADS", " ADR")
             for _, row in df.iterrows():
                 raw = str(row[sym_col]).strip().upper()
-                # Skip only genuine junk: empty, dupes, test issues, share-class
-                # dots, and obviously invalid tickers. Allow up to 5 alpha chars
-                # (standard US tickers) plus common valid forms.
+                # Skip genuine junk by ticker shape
                 if (not raw or raw == "NAN" or raw in seen
                         or "$" in raw or " " in raw or "/" in raw
                         or len(raw) > 5 or len(raw) < 1
                         or not raw.replace(".", "").replace("-", "").isalpha()):
                     skipped += 1
                     continue
-                # Drop share-class suffixes for the base ticker (BRK.B → BRK)
+                # Skip warrants / units / rights / preferred via the security name
+                if name_col is not None:
+                    _nm = str(row.get(name_col, "")).upper()
+                    if any(w in _nm for w in _JUNK_WORDS):
+                        skipped += 1
+                        continue
+                # Skip tickers with warrant/unit/right suffix letters (5-char tickers
+                # ending in W/U/R/P that are typically SPAC derivatives)
+                if len(raw) == 5 and raw[-1] in ("W", "U", "R") and raw not in (
+                        # whitelist a few legit ones if needed
+                        ):
+                    skipped += 1
+                    continue
                 base = raw.split(".")[0].split("-")[0]
                 if not base or base in seen or len(base) > 5:
                     skipped += 1
