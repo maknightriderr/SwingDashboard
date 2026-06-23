@@ -37,6 +37,10 @@ from signals import (
 try:
     from signals import (MARKETS, get_market, currency_symbol, get_universe,
                          US_UNIVERSE_TOTAL, US_UNIVERSE_SOURCES)
+    try:
+        from signals import debug_us_universe_load
+    except ImportError:
+        debug_us_universe_load = None
     _MARKETS_AVAILABLE = True
 except ImportError:
     _MARKETS_AVAILABLE = False
@@ -2780,6 +2784,9 @@ elif _page == 'scanner':
     # ── Diagnostic expander — shows exactly what loaded and why ───────────────
     with st.expander("🔍 Universe Load Diagnostics", expanded=False):
         st.code(debug_universe_load(), language=None)
+        if _MARKETS_AVAILABLE and debug_us_universe_load is not None:
+            st.markdown("**🇺🇸 US Universe:**")
+            st.code(debug_us_universe_load(), language=None)
         st.caption("If a file shows '❌ not found', check it is committed to "
                    "your repo root (same folder as signals.py and app.py).")
 
