@@ -185,45 +185,6 @@ def debug_universe_load():
     return "\n".join(lines)
 
 
-def debug_us_universe_load():
-    """Diagnostic for the US universe — shows which CSV files were found and
-    how many symbols loaded. Use to debug us_stocks.csv not loading."""
-    lines = [f"🔍 US universe load report — base dir: {_BASE_DIR}"]
-    try:
-        _here = os.listdir(_BASE_DIR)
-        _csvs = [f for f in _here if f.lower().endswith(".csv")]
-        lines.append(f"CSV files in base dir: {', '.join(sorted(_csvs)) or '(none)'}")
-    except Exception as e:
-        lines.append(f"Could not list base dir: {e}")
-    for fn in ("us_stocks.csv", "nasdaq_listed.csv", "nyse_listed.csv", "sp500.csv"):
-        fp = os.path.join(_BASE_DIR, fn)
-        exists = os.path.exists(fp)
-        sz = f"{os.path.getsize(fp):,} bytes" if exists else "—"
-        status = "✅ found" if exists else "❌ not found"
-        lines.append(f"  {status}  {fn:24s}  {sz}")
-    lines.append("\nLoaded sources:")
-    for lbl, n, sk, err in US_UNIVERSE_SOURCES:
-        if err:
-            lines.append(f"  ❌ {lbl}: {err}")
-        else:
-            lines.append(f"  ✅ {lbl}: {n:,} symbols loaded, {sk:,} skipped")
-    lines.append(f"\nTotal US universe: {US_UNIVERSE_TOTAL:,} symbols across "
-                 f"{len(US_SECTOR_STOCKS):,} sectors")
-    # Show a few sample symbols so you can confirm real stocks loaded
-    _sample = []
-    for v in US_SECTOR_STOCKS.values():
-        _sample.extend(v[:5])
-        if len(_sample) >= 15:
-            break
-    lines.append(f"Sample symbols: {', '.join(_sample[:15]) or '(none)'}")
-    if US_UNIVERSE_TOTAL <= 50:
-        lines.append("\n⚠️ Only the fallback list is loaded. If you uploaded "
-                     "us_stocks.csv, check: (1) it's in the REPO ROOT next to "
-                     "signals.py, (2) it has a 'Symbol' column header, "
-                     "(3) the filename is exactly 'us_stocks.csv'.")
-    return "\n".join(lines)
-
-
 # ── Run loader at import time ─────────────────────────────────────────────────
 _any_loaded = False
 for _cfg in _NSE_CSV_CONFIGS:
@@ -269,30 +230,10 @@ SECTOR_INDICES = {
     "PSU Bank": "^CNXPSUBANK", "Private Bank": "^CNXPVTBANK", "Bank": "^NSEBANK"
 }
 
-# US sector ETFs (SPDR sector funds) — used for US sector rotation
-US_SECTOR_INDICES = {
-    "Technology": "XLK", "Financials": "XLF", "Health Care": "XLV",
-    "Consumer Discretionary": "XLY", "Consumer Staples": "XLP",
-    "Energy": "XLE", "Industrials": "XLI", "Materials": "XLB",
-    "Utilities": "XLU", "Real Estate": "XLRE", "Communication": "XLC",
-}
-
 TRACKED_INDICES = {
     "Sensex": "^BSESN", "Nifty 50": "^NSEI",
     "Nifty Midcap": "^NSEMDCP50", "Nifty Smallcap": "^CNXSC",
     "Bank Nifty": "^NSEBANK", "Nifty IT": "^CNXIT", "India VIX": "^INDIAVIX"
-}
-
-# US market indices
-US_TRACKED_INDICES = {
-    "S&P 500": "^GSPC", "Nasdaq": "^IXIC", "Dow Jones": "^DJI",
-    "Russell 2000": "^RUT", "VIX": "^VIX", "Nasdaq 100": "^NDX",
-}
-
-# Per-market index sets and the "primary" index used for regime analysis
-_MARKET_INDICES = {
-    "NSE": {"indices": TRACKED_INDICES, "primary": "^NSEI", "primary_name": "Nifty 50"},
-    "US":  {"indices": US_TRACKED_INDICES, "primary": "^GSPC", "primary_name": "S&P 500"},
 }
 
 # Fallback symbols for indices that Yahoo sometimes deprecates. If the primary
@@ -360,249 +301,16 @@ def sanitize_ticker(sym):
     return clean
 
 
-# ==============================================================================
-# MARKET REGISTRY  —  multi-market support (NSE / US)
-# ==============================================================================
-# Each market knows: its Yahoo ticker suffixes, currency symbol, RS benchmark,
-# and which set of stocks belongs to it. A symbol is mapped to its market via
-# _SYMBOL_MARKET (populated as universes load). US tickers take NO suffix on
-# Yahoo (AAPL), NSE tickers take .NS / .BO.
-# ==============================================================================
-MARKETS = {
-    "NSE": {
-        "label": "🇮🇳 NSE (India)", "suffixes": [".NS", ".BO"],
-        "currency": "₹", "benchmark": "^NSEI", "benchmark_name": "Nifty 50",
-    },
-    "US": {
-        "label": "🇺🇸 US (NYSE/NASDAQ)", "suffixes": [""],
-        "currency": "$", "benchmark": "^GSPC", "benchmark_name": "S&P 500",
-    },
-}
-
-# Symbol → market lookup. Populated by the universe loaders. Default NSE.
-_SYMBOL_MARKET = {}
-
-
-def get_market(symbol):
-    """Return 'NSE' or 'US' for a symbol. Defaults to NSE if unknown."""
-    return _SYMBOL_MARKET.get(sanitize_ticker(symbol), "NSE")
-
-
-def market_suffixes(symbol):
-    """Return the list of Yahoo suffixes to try for this symbol's market."""
-    return MARKETS[get_market(symbol)]["suffixes"]
-
-
-def currency_symbol(symbol):
-    """Return ₹ or $ for the symbol's market."""
-    return MARKETS[get_market(symbol)]["currency"]
-
-
-def _yahoo_candidates(symbol):
-    """Yahoo ticker strings to try, in order, for any market."""
-    clean = sanitize_ticker(symbol)
-    out = []
-    for sfx in market_suffixes(symbol):
-        out.append(clean + sfx)
-    return out
-
-
-# ── US universe storage (parallel to NSE's SECTOR_STOCKS) ────────────────────
-US_SECTOR_STOCKS = {}        # sector -> [symbols]   (US only)
-US_SECTOR_MAP    = {}        # symbol -> sector      (US only)
-US_UNIVERSE_SOURCES = []     # [(label, loaded, skipped, err)]
-US_UNIVERSE_TOTAL = 0
-
-
-def _load_us_universe():
-    """Load the US stock universe from CSV files in the repo root.
-
-    Expected files (any that exist are used; missing ones skipped gracefully):
-      - nasdaq_listed.csv  / us_stocks.csv  (Symbol[,Sector/Industry] columns)
-      - nyse_listed.csv
-
-    Falls back to a curated mega-cap list if no CSV is present, so the US
-    market is always usable even before you upload the full lists.
-    """
-    global US_SECTOR_STOCKS, US_SECTOR_MAP, US_UNIVERSE_SOURCES, US_UNIVERSE_TOTAL
-    import os
-    candidates = [
-        ("us_stocks.csv",      "US All Listed"),
-        ("nasdaq_listed.csv",  "NASDAQ Listed"),
-        ("nyse_listed.csv",    "NYSE Listed"),
-        ("sp500.csv",          "S&P 500"),
-    ]
-    seen = set()
-    any_loaded = False
-    for fn, lbl in candidates:
-        fp = os.path.join(_BASE_DIR, fn)
-        if not os.path.exists(fp):
-            US_UNIVERSE_SOURCES.append((lbl, 0, 0, "not found"))
-            continue
-        try:
-            df = pd.read_csv(fp)
-            df = _norm_cols(df)
-            sym_col = _find_col(df.columns, _SYM_CANDIDATES + ["ACT Symbol", "Ticker", "TICKER"])
-            sec_col = _find_col(df.columns, _SEC_CANDIDATES + ["Sector", "GICS Sector"])
-            if sym_col is None:
-                US_UNIVERSE_SOURCES.append((lbl, 0, 0, "no symbol column"))
-                continue
-            loaded = skipped = 0
-            # Look for a security-name/description column to identify non-common-stock
-            name_col = _find_col(df.columns, ["Security Name", "SECURITY NAME",
-                                              "security name", "Company Name", "Name"])
-            # Junk words that indicate a NON-common-stock security TYPE.
-            # We deliberately do NOT filter on company-name words like
-            # "Acquisition" — many real common stocks (post-merger SPACs,
-            # ordinary shares, ADRs) trade normally and should be kept.
-            _JUNK_WORDS = (" WARRANT", "WARRANTS", "- UNIT", " UNITS", " RIGHT",
-                           " RIGHTS", "PREFERRED", "DEBENTURE", "% NOTE",
-                           "SUBORDINATED NOTE", "TRUST UNIT", "WHEN ISSUED",
-                           "WHEN-ISSUED")
-            for _, row in df.iterrows():
-              try:
-                raw = str(row[sym_col]).strip().upper()
-                # Skip genuine junk by ticker shape
-                if (not raw or raw == "NAN" or raw in seen
-                        or "$" in raw or " " in raw or "/" in raw
-                        or len(raw) > 5 or len(raw) < 1
-                        or not raw.replace(".", "").replace("-", "").isalpha()):
-                    skipped += 1
-                    continue
-                # Skip warrants / units / rights / preferred via the security name
-                if name_col is not None:
-                    _nm = str(row.get(name_col, "")).upper()
-                    if any(w in _nm for w in _JUNK_WORDS):
-                        skipped += 1
-                        continue
-                # Skip obvious warrant/right tickers: 5-char ending in W or R
-                # ONLY when the security name confirms it's a warrant/right.
-                if len(raw) == 5 and raw[-1] in ("W", "R") and name_col is not None:
-                    _nm2 = str(row.get(name_col, "")).upper()
-                    if "WARRANT" in _nm2 or "RIGHT" in _nm2:
-                        skipped += 1
-                        continue
-                base = raw.split(".")[0].split("-")[0]
-                if not base or base in seen or len(base) > 5:
-                    skipped += 1
-                    continue
-                raw = base
-                sector = (str(row[sec_col]).strip() if sec_col and pd.notna(row.get(sec_col))
-                          else "US Equity")
-                if sector in ("", "nan", "N/A", "NaN"):
-                    sector = "US Equity"
-                US_SECTOR_STOCKS.setdefault(sector, []).append(raw)
-                US_SECTOR_MAP[raw] = sector
-                _SYMBOL_MARKET[raw] = "US"
-                seen.add(raw)
-                loaded += 1
-              except Exception:
-                skipped += 1
-                continue
-            US_UNIVERSE_SOURCES.append((lbl, loaded, skipped, None))
-            if loaded > 0:
-                any_loaded = True
-        except Exception as e:
-            US_UNIVERSE_SOURCES.append((lbl, 0, 0, str(e)[:60]))
-
-    if not any_loaded:
-        # Curated mega-cap fallback so US works before CSVs are uploaded
-        US_SECTOR_STOCKS = {
-            "Technology": ["AAPL","MSFT","NVDA","AVGO","ORCL","CRM","ADBE","AMD","CSCO","INTC"],
-            "Communication": ["GOOGL","META","NFLX","DIS","TMUS","VZ"],
-            "Consumer": ["AMZN","TSLA","HD","MCD","NKE","SBUX","COST","WMT"],
-            "Financials": ["JPM","BAC","WFC","GS","MS","V","MA","AXP"],
-            "Healthcare": ["UNH","JNJ","LLY","PFE","ABBV","MRK","TMO"],
-            "Energy": ["XOM","CVX","COP"],
-            "Industrials": ["BA","CAT","GE","HON","UPS"],
-        }
-        for sec, stks in US_SECTOR_STOCKS.items():
-            for s in stks:
-                US_SECTOR_MAP[s] = sec
-                _SYMBOL_MARKET[s] = "US"
-        US_UNIVERSE_SOURCES.append(("US Mega-cap (fallback)", len(US_SECTOR_MAP), 0, None))
-
-    US_UNIVERSE_TOTAL = sum(len(v) for v in US_SECTOR_STOCKS.values())
-    return US_UNIVERSE_TOTAL
-
-
-# Load US universe at import (after market registry exists)
-try:
-    _load_us_universe()
-except Exception as _e:
-    US_UNIVERSE_SOURCES.append(("US loader crashed", 0, 0, str(_e)[:80]))
-
-# Register US sector ETFs (XLK, XLF, …) and US tracked-index ETFs as US market
-# so _yahoo_candidates returns the BARE ticker (no .NS/.BO suffix). Without this,
-# a plain ticker like "XLK" would wrongly be fetched as "XLK.NS" and return
-# nothing — which is why US sector rotation came back empty.
-try:
-    for _etf in list(US_SECTOR_INDICES.values()):
-        _SYMBOL_MARKET[_etf] = "US"
-    for _uidx in list(US_TRACKED_INDICES.values()):
-        if not _uidx.startswith("^"):
-            _SYMBOL_MARKET[_uidx] = "US"
-except Exception:
-    pass
-
-
-def get_universe(market="NSE"):
-    """Return (SECTOR_STOCKS, SECTOR_MAP) for the requested market."""
-    if market == "US":
-        return US_SECTOR_STOCKS, US_SECTOR_MAP
-    return SECTOR_STOCKS, SECTOR_MAP
-
-
-def _fetch_live_prices(symbols):
-    """Fetch the LIVE last-traded price for each symbol (market-aware).
-    Tries fast_info.last_price first (real-time), falls back to the latest
-    close. Returns {symbol: price}. Used so displays show the true current
-    price, not a stale daily-candle close."""
-    out = {}
-    def _one(sym):
-        if sym.startswith("^"):
-            return sym, None
-        for cand in _yahoo_candidates(sym):
-            try:
-                t = yf.Ticker(cand)
-                fi = getattr(t, "fast_info", None)
-                px = None
-                if fi is not None:
-                    for attr in ("last_price", "lastPrice"):
-                        try:
-                            v = fi[attr] if isinstance(fi, dict) else getattr(fi, attr, None)
-                            if v:
-                                px = float(v); break
-                        except Exception:
-                            continue
-                if px and px > 0:
-                    return sym, px
-            except Exception:
-                continue
-        return sym, None
-    try:
-        with ThreadPoolExecutor(max_workers=5) as ex:
-            futs = {ex.submit(_one, s): s for s in symbols}
-            for f in as_completed(futs):
-                s, p = f.result()
-                if p is not None:
-                    out[s] = p
-    except Exception:
-        pass
-    return out
-
-
 def _bulk_fetch_history(symbols, period="1y"):
     results = {}
     with ThreadPoolExecutor(max_workers=5) as executor:
         def fetch_single(sym):
             if sym.startswith("^"):
                 return sym, _fetch_history(sym, period)
-            df = None
-            for cand in _yahoo_candidates(sym):
-                df = _fetch_history(cand, period)
-                if df is not None:
-                    break
+            clean_sym = sanitize_ticker(sym)
+            df = _fetch_history(clean_sym + ".NS", period)
+            if df is None:
+                df = _fetch_history(clean_sym + ".BO", period)
             return sym, df
 
         future_to_sym = {executor.submit(fetch_single, sym): sym for sym in symbols}
@@ -880,19 +588,16 @@ def _fetch_index_history(symbol, period="1y"):
 # A high-RS stock in a VCP base near a pivot is the classic Minervini long.
 # ==============================================================================
 
-_BENCH_CACHE = {}   # market -> {"ts":..., "data":...}
+_NIFTY_BENCH_CACHE = {"ts": 0, "data": None}
 
 
-def _get_nifty_benchmark(market="NSE"):
-    """Return the market benchmark's trailing returns over standard lookbacks
-    (cached 15 min). NSE → Nifty 50 (^NSEI); US → S&P 500 (^GSPC).
+def _get_nifty_benchmark():
+    """Return Nifty's trailing returns over standard lookbacks (cached 15 min).
     Returns dict {'21': r, '63': r, '126': r, '252': r} of % returns, or None."""
     now = time.time()
-    cached = _BENCH_CACHE.get(market)
-    if cached and cached["data"] and (now - cached["ts"]) < _CACHE_TTL:
-        return cached["data"]
-    bench_symbol = MARKETS.get(market, {}).get("benchmark", "^NSEI")
-    df = _fetch_index_history(bench_symbol, period="1y")
+    if _NIFTY_BENCH_CACHE["data"] and (now - _NIFTY_BENCH_CACHE["ts"]) < _CACHE_TTL:
+        return _NIFTY_BENCH_CACHE["data"]
+    df = _fetch_index_history("^NSEI", period="1y")
     if df is None or df.empty or len(df) < 30:
         return None
     closes = df["Close"].dropna().values.astype(float)
@@ -902,23 +607,24 @@ def _get_nifty_benchmark(market="NSE"):
             past = closes[-lb - 1]
             bench[str(lb)] = (closes[-1] / past - 1) * 100 if past > 0 else 0.0
         else:
+            # Not enough history for this window — use the longest available
             past = closes[0]
             bench[str(lb)] = (closes[-1] / past - 1) * 100 if past > 0 else 0.0
-    _BENCH_CACHE[market] = {"data": bench, "ts": now}
+    _NIFTY_BENCH_CACHE["data"] = bench
+    _NIFTY_BENCH_CACHE["ts"] = now
     return bench
 
 
-def compute_relative_strength(close, bench=None, market="NSE"):
-    """Compute a stock's RS ratio versus its market benchmark.
+def compute_relative_strength(close, bench=None):
+    """Compute a stock's RS ratio versus Nifty.
 
     Uses IBD-style weighting: the most recent quarter counts double.
-    RS ratio > 1.0 means OUTPERFORMING the benchmark; < 1.0 underperforming.
-    NSE stocks are compared to Nifty 50; US stocks to the S&P 500.
+    RS ratio > 1.0 means the stock is OUTPERFORMING Nifty; < 1.0 underperforming.
 
     Returns dict: {rs_ratio, rs_line, outperforming, periods:{...}} or None.
     """
     if bench is None:
-        bench = _get_nifty_benchmark(market)
+        bench = _get_nifty_benchmark()
     if bench is None:
         return None
     if close is None or len(close) < 30:
@@ -970,20 +676,9 @@ def _rs_ratio_to_rating(ratio, all_ratios):
     return max(1, min(99, int(round(pct))))
 
 
-def get_market_regime(market="NSE"):
+def get_market_regime():
     now = time.time()
-    _mkt_cfg = _MARKET_INDICES.get(market, _MARKET_INDICES["NSE"])
-    _indices = _mkt_cfg["indices"]
-    _primary = _mkt_cfg["primary"]
-    _primary_name = _mkt_cfg["primary_name"]
-
-    # Per-market regime cache (so NSE and US don't overwrite each other)
-    if not isinstance(_market_regime_cache.get("data"), dict) or \
-            _market_regime_cache.get("market") != market:
-        _cache_ok = False
-    else:
-        _cache_ok = (now - _market_regime_cache["ts"]) < _CACHE_TTL
-    if _cache_ok and _market_regime_cache["data"]:
+    if _market_regime_cache["data"] and (now - _market_regime_cache["ts"]) < _CACHE_TTL:
         return _market_regime_cache["data"]
 
     indices_data = {}
@@ -991,7 +686,7 @@ def get_market_regime(market="NSE"):
 
     # Fetch each index individually with the resilient fetcher. Doing them one
     # by one (not bulk) means one failing index never wipes out the rest.
-    for name, symbol in _indices.items():
+    for name, symbol in TRACKED_INDICES.items():
         df = _fetch_index_history(symbol, period="1y")
         if df is not None and len(df) >= 2:
             bulk_data[symbol] = df
@@ -1004,13 +699,13 @@ def get_market_regime(market="NSE"):
             current = float(df["Close"].iloc[-1])
             indices_data[name] = {"price": round(current, 2), "chg_pct": 0.0}
 
-    nifty = indices_data.get(_primary_name, {})
+    nifty = indices_data.get("Nifty 50", {})
     nifty_close = nifty.get("price")
     regime, trend, nifty_rsi = "Unknown", "Sideways", None
     support, resistance, conf = None, None, 50
 
-    if nifty_close and _primary in bulk_data:
-        df = bulk_data[_primary]
+    if nifty_close and "^NSEI" in bulk_data:
+        df = bulk_data["^NSEI"]
         if len(df) >= 50:
             close  = df["Close"]
             ema20  = float(close.ewm(span=20,  adjust=False).mean().iloc[-1])
@@ -1049,8 +744,7 @@ def get_market_regime(market="NSE"):
         "regime": regime, "trend": trend, "nifty_close": nifty_close,
         "nifty_rsi": nifty_rsi, "risk_level": risk, "indices": indices_data,
         "support": support, "resistance": resistance, "confidence": conf,
-        "indices_ok": len(indices_data) > 0, "market": market,
-        "primary_name": _primary_name,
+        "indices_ok": len(indices_data) > 0,
     }
     # Only cache a GOOD result (with at least some index data). If everything
     # failed (transient Yahoo rate-limit), don't poison the 10-min cache with
@@ -1058,7 +752,6 @@ def get_market_regime(market="NSE"):
     if indices_data:
         _market_regime_cache["data"] = result
         _market_regime_cache["ts"] = now
-        _market_regime_cache["market"] = market
     return result
 
 
@@ -1263,7 +956,7 @@ def _compute_indicators_raw(symbol, period="1y", prefetched_df=None):
     # ── Bull / Bear Trap detection (v4 — ATR-normalised, RSI-at-peak) ────────
     # Pull cached market regime so the regime-context factor activates live.
     try:
-        _mkt_regime = get_market_regime(get_market(symbol))
+        _mkt_regime = get_market_regime()
     except Exception:
         _mkt_regime = None
     traps = detect_trap_signals(
@@ -1286,9 +979,9 @@ def _compute_indicators_raw(symbol, period="1y", prefetched_df=None):
         vcp = {"is_vcp": False, "vcp_ready": False, "contractions": [],
                "pivot": None, "quality": None, "detail": ""}
 
-    # ── Relative Strength vs market benchmark (Nifty / S&P 500) ──────────────
+    # ── Relative Strength vs Nifty ───────────────────────────────────────────
     try:
-        rs = compute_relative_strength(close, market=get_market(symbol))
+        rs = compute_relative_strength(close)
     except Exception:
         rs = None
 
@@ -1410,10 +1103,6 @@ def generate_signals(trades_df):
     unique_symbols = open_trades["stock"].unique().tolist()
     bulk_data = _bulk_fetch_history(unique_symbols, period="1y")
 
-    # Fetch LIVE prices (last traded), not just the last daily candle close,
-    # so Active Signals shows the real current market price.
-    live_prices = _fetch_live_prices(unique_symbols)
-
     for _, row in open_trades.iterrows():
         symbol, buy_at, qty, tid = row["stock"], row["buy_at"], row["quantity"], row["id"]
 
@@ -1437,10 +1126,6 @@ def generate_signals(trades_df):
             continue
 
         cmp, rsi = ind["cmp"], ind["rsi"]
-        # Prefer the live last-traded price over the stale daily-candle close
-        _live = live_prices.get(symbol)
-        if _live is not None and _live > 0:
-            cmp = round(float(_live), 2)
         ema9, ema21, ema50 = ind["ema9"], ind["ema21"], ind["ema50"]
         support, resistance = ind["support"], ind["resistance"]
         atr   = ind["atr"]
@@ -1607,25 +1292,19 @@ def generate_signals(trades_df):
 
 
 # ─── Sector Rotation (unchanged from v11 — already 8/10) ──────────────────────
-def sector_rotation(trades_df=None, market="NSE"):
+def sector_rotation(trades_df=None):
     rows = []
-    if market == "US":
-        _sectors = US_SECTOR_INDICES
-        _bench_sym = "^GSPC"
-    else:
-        _sectors = SECTOR_INDICES
-        _bench_sym = "^NSEI"
-    idx_symbols = list(_sectors.values()) + [_bench_sym]
+    idx_symbols = list(SECTOR_INDICES.values()) + ["^NSEI"]
     bulk_data   = _bulk_fetch_history(idx_symbols, period="6mo")
 
-    nifty_df    = bulk_data.get(_bench_sym)
+    nifty_df    = bulk_data.get("^NSEI")
     nifty_ret1m = nifty_ret3m = 0.0
     if nifty_df is not None and len(nifty_df) >= 21:
         nifty_ret1m = (float(nifty_df["Close"].iloc[-1]) / float(nifty_df["Close"].iloc[-21]) - 1) * 100
     if nifty_df is not None and len(nifty_df) >= 61:
         nifty_ret3m = (float(nifty_df["Close"].iloc[-1]) / float(nifty_df["Close"].iloc[-61]) - 1) * 100
 
-    for sector, idx_sym in _sectors.items():
+    for sector, idx_sym in SECTOR_INDICES.items():
         try:
             df_idx = bulk_data.get(idx_sym)
             if df_idx is None or len(df_idx) < 21:
@@ -1825,10 +1504,9 @@ def build_telegram_message(signals, sector_df, picks=None):
 
 
 # ─── Master Universe Scanner — FIX 9: unified engine + liquidity gate ─────────
-def generate_market_scanner(market="NSE"):
-    _univ, _ = get_universe(market)
+def generate_market_scanner():
     all_symbols = []
-    for sector, stocks in _univ.items():
+    for sector, stocks in SECTOR_STOCKS.items():
         all_symbols.extend(stocks)
     bulk_data = _bulk_fetch_history(all_symbols, period="6mo")
     results = []
@@ -2384,7 +2062,7 @@ def detect_trap_signals(close, high, low, vol, vol_avg, rsi_series,
     return result
 
 
-def scan_for_traps(min_confidence=55, market="NSE"):
+def scan_for_traps(min_confidence=55):
     """
     Proactively sweeps all Nifty 500 stocks for live bull trap and bear trap
     patterns. Unlike the embedded flags in generate_signals() which only cover
@@ -2412,9 +2090,8 @@ def scan_for_traps(min_confidence=55, market="NSE"):
         support, resistance, atr, entry, target,
         stop_loss, risk_reward, trend, vol_ratio, supertrend_bullish
     """
-    _univ, _ = get_universe(market)
     all_symbols = []
-    for sector, stocks in _univ.items():
+    for sector, stocks in SECTOR_STOCKS.items():
         all_symbols.extend(stocks)
 
     # Bulk fetch — single network pass for the whole universe
@@ -3329,7 +3006,7 @@ def compute_smc(open_, high, low, close, vol, atr):
 # ==============================================================================
 # SMC SETUP SCANNER — sweeps universe for actionable SMC trade setups
 # ==============================================================================
-def scan_for_smc_setups(min_quality="B", action_filter="All", market="NSE"):
+def scan_for_smc_setups(min_quality="B", action_filter="All"):
     """
     Sweeps the full universe for stocks with an actionable SMC trade setup
     (BUY or SELL) with concrete Entry/Target/SL/RR.
@@ -3352,9 +3029,8 @@ def scan_for_smc_setups(min_quality="B", action_filter="All", market="NSE"):
     quality_rank = {"A+": 3, "A": 2, "B": 1}
     min_rank = quality_rank.get(min_quality, 1)
 
-    _univ, _ = get_universe(market)
     all_symbols = []
-    for stocks in _univ.values():
+    for stocks in SECTOR_STOCKS.values():
         all_symbols.extend(stocks)
 
     bulk = _bulk_fetch_history(all_symbols, period="6mo")
@@ -3405,7 +3081,7 @@ def scan_for_smc_setups(min_quality="B", action_filter="All", market="NSE"):
         "timestamp": datetime.now().strftime("%d %b %Y %H:%M"),
     }
 
-def scan_for_vcp(min_quality="B", ready_only=False, market="NSE"):
+def scan_for_vcp(min_quality="B", ready_only=False):
     """
     Sweeps the universe for stocks forming a Volatility Contraction Pattern.
 
@@ -3425,9 +3101,8 @@ def scan_for_vcp(min_quality="B", ready_only=False, market="NSE"):
     quality_rank = {"A+": 4, "A": 3, "B": 2, "C": 1}
     min_rank = quality_rank.get(min_quality, 2)
 
-    _univ, _ = get_universe(market)
     all_symbols = []
-    for stocks in _univ.values():
+    for stocks in SECTOR_STOCKS.values():
         all_symbols.extend(stocks)
 
     bulk = _bulk_fetch_history(all_symbols, period="6mo")
@@ -3490,7 +3165,7 @@ def scan_for_vcp(min_quality="B", ready_only=False, market="NSE"):
         "timestamp": datetime.now().strftime("%d %b %Y %H:%M"),
     }
 
-def scan_relative_strength(top_n=None, min_rating=0, market="NSE"):
+def scan_relative_strength(top_n=None, min_rating=0):
     """
     Rank the entire universe by Relative Strength versus Nifty.
 
@@ -3510,16 +3185,14 @@ def scan_relative_strength(top_n=None, min_rating=0, market="NSE"):
     Each row: stock, sector, cmp, rs_ratio, rs_rating, ret_21d, ret_63d,
               ret_252d, nifty_21d, outperforming, trend
     """
-    bench = _get_nifty_benchmark(market)
-    _bench_name = MARKETS.get(market, {}).get("benchmark_name", "benchmark")
+    bench = _get_nifty_benchmark()
     if bench is None:
         return {"leaders": [], "scanned": 0, "liquid": 0, "count": 0,
                 "nifty_returns": {}, "timestamp": datetime.now().strftime("%d %b %Y %H:%M"),
-                "error": f"Could not fetch {_bench_name} benchmark data"}
+                "error": "Could not fetch Nifty benchmark data"}
 
-    _univ, _ = get_universe(market)
     all_symbols = []
-    for stocks in _univ.values():
+    for stocks in SECTOR_STOCKS.values():
         all_symbols.extend(stocks)
 
     bulk = _bulk_fetch_history(all_symbols, period="1y")
