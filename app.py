@@ -2717,10 +2717,30 @@ elif _page == 'signals':
 
 # ── Sector Rotation ──────────────────────────────────────────────────────────
 elif _page == 'sector':
-    st.markdown('<div class="sec">Macro Sector Rotation & Capital Flow</div>',
+    _sec_scope = "US Sectors (SPDR ETFs)" if MARKET == "US" else "NSE Sectors"
+    st.markdown(f'<div class="sec">Macro Sector Rotation & Capital Flow — {_sec_scope}</div>',
                 unsafe_allow_html=True)
 
-    if st.session_state.sector_cache is not None:
+    # Manual scan trigger (so the page works without waiting for background scan)
+    if st.button("🔄 Run Sector Rotation Scan", width="stretch"):
+        with st.spinner(f"Analysing {MARKET} sector rotation…"):
+            try:
+                st.session_state.sector_cache = sector_rotation(market=MARKET)
+                _sc = st.session_state.sector_cache
+                if _sc is not None and not _sc.empty:
+                    try:
+                        st.session_state.outlook_cache = predict_sector_outlook(_sc)
+                    except Exception:
+                        st.session_state.outlook_cache = None
+                    st.toast(f"✅ {len(_sc)} sectors analysed", icon="🔄")
+                else:
+                    st.warning(f"No {MARKET} sector data returned — the sector "
+                               f"ETFs/indices may be temporarily unavailable from "
+                               f"Yahoo. Try again in a moment.")
+            except Exception as e:
+                st.error(f"Sector scan failed: {str(e)[:120]}")
+
+    if st.session_state.sector_cache is not None and not st.session_state.sector_cache.empty:
         render_sector(st.session_state.sector_cache, theme_t)
 
         if not st.session_state.sector_cache.empty:
@@ -2728,6 +2748,7 @@ elif _page == 'sector':
             rs_val  = top.get("rs_vs_nifty_1m", 0) or 0
             rs_clr  = "#10b981" if rs_val > 0 else "#ef4444"
             rrg_val = top.get("rrg_quadrant", "—")
+            _bench_nm = "S&P 500" if MARKET == "US" else "Nifty"
 
             st.markdown(
                 f'<div style="margin-top:1rem;background:rgba(16,185,129,.08);'
@@ -2737,7 +2758,7 @@ elif _page == 'sector':
                 f' — Momentum {top["momentum_score"]:.2f}'
                 f' | Avg RSI {top["avg_rsi"]:.0f}'
                 f' | Flow {top["avg_pct"]:+.1f}%'
-                f' | RS vs Nifty <b style="color:{rs_clr}">{rs_val:+.1f}%</b>'
+                f' | RS vs {_bench_nm} <b style="color:{rs_clr}">{rs_val:+.1f}%</b>'
                 f' | {rrg_val}<br>'
                 f'<span style="color:var(--muted);font-size:.75rem;margin-top:5px;'
                 f'display:block">Constituents: {top["stocks"]}</span>'
