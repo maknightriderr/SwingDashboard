@@ -189,6 +189,12 @@ def debug_us_universe_load():
     """Diagnostic for the US universe — shows which CSV files were found and
     how many symbols loaded. Use to debug us_stocks.csv not loading."""
     lines = [f"🔍 US universe load report — base dir: {_BASE_DIR}"]
+    try:
+        _here = os.listdir(_BASE_DIR)
+        _csvs = [f for f in _here if f.lower().endswith(".csv")]
+        lines.append(f"CSV files in base dir: {', '.join(sorted(_csvs)) or '(none)'}")
+    except Exception as e:
+        lines.append(f"Could not list base dir: {e}")
     for fn in ("us_stocks.csv", "nasdaq_listed.csv", "nyse_listed.csv", "sp500.csv"):
         fp = os.path.join(_BASE_DIR, fn)
         exists = os.path.exists(fp)
@@ -203,6 +209,13 @@ def debug_us_universe_load():
             lines.append(f"  ✅ {lbl}: {n:,} symbols loaded, {sk:,} skipped")
     lines.append(f"\nTotal US universe: {US_UNIVERSE_TOTAL:,} symbols across "
                  f"{len(US_SECTOR_STOCKS):,} sectors")
+    # Show a few sample symbols so you can confirm real stocks loaded
+    _sample = []
+    for v in US_SECTOR_STOCKS.values():
+        _sample.extend(v[:5])
+        if len(_sample) >= 15:
+            break
+    lines.append(f"Sample symbols: {', '.join(_sample[:15]) or '(none)'}")
     if US_UNIVERSE_TOTAL <= 50:
         lines.append("\n⚠️ Only the fallback list is loaded. If you uploaded "
                      "us_stocks.csv, check: (1) it's in the REPO ROOT next to "
