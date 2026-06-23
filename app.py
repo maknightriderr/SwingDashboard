@@ -3154,7 +3154,8 @@ elif _page == 'traps':
         st.warning("🪤 Trap Scanner requires the updated **signals.py** (v12+). "
                    "Deploy the new signals.py from the project outputs to enable this tab.",
                    icon="⚠️")
-    st.markdown('<div class="sec">🪤 Bull & Bear Trap Scanner — Full Nifty 500</div>',
+    _trap_universe = "US Stocks" if MARKET == "US" else "Full Nifty 500"
+    st.markdown(f'<div class="sec">🪤 Bull & Bear Trap Scanner — {_trap_universe}</div>',
                 unsafe_allow_html=True)
 
     # ── Summary banner ─────────────────────────────────────────────────────────
@@ -3182,7 +3183,7 @@ elif _page == 'traps':
     # ── Controls ────────────────────────────────────────────────────────────────
     ctrl1, ctrl2, ctrl3 = st.columns([2, 1, 1])
     with ctrl1:
-        st.caption("⚡ Sweeps all Nifty 500 liquid stocks for false breakout / breakdown patterns.")
+        st.caption(f"⚡ Sweeps all {_trap_universe} liquid stocks for false breakout / breakdown patterns.")
     with ctrl2:
         min_conf = st.slider("Min Confidence %", 50, 90, 60, 5, label_visibility="collapsed")
     with ctrl3:
@@ -3199,7 +3200,7 @@ elif _page == 'traps':
                 icon="🪤")
 
     if not trap_data:
-        st.info("💡 Click **🪤 Run Trap Scan** to sweep the full Nifty 500 for active trap patterns.")
+        st.info(f"💡 Click **🪤 Run Trap Scan** to sweep the {_trap_universe} for active trap patterns.")
     else:
         bull_traps = trap_data.get("bull_traps", [])
         bear_traps = trap_data.get("bear_traps", [])
@@ -3861,7 +3862,7 @@ elif _page == 'smc':
             run_smc_scan = st.button("🎯 Scan Setups", width="stretch")
 
         if run_smc_scan:
-            with st.spinner(f"Scanning {len(SECTOR_MAP)} stocks for SMC setups…"):
+            with st.spinner(f"Scanning {len(get_universe(MARKET)[1])} {MARKET} stocks for SMC setups…"):
                 st.session_state.smc_scan_cache = scan_for_smc_setups(
                     min_quality=min_q, action_filter=act_f, market=MARKET)
                 sc = st.session_state.smc_scan_cache
@@ -5123,12 +5124,13 @@ elif _page == 'rs':
         else:
             leaders = rres["leaders"]
             nifty = rres.get("nifty_returns", {})
-            # Nifty benchmark context
+            _bench_label = "S&P 500" if MARKET == "US" else "Nifty"
+            # Benchmark context (Nifty for NSE, S&P 500 for US)
             st.markdown(
                 f'<div style="background:var(--card);border:1px solid var(--border);'
                 f'border-radius:10px;padding:.8rem 1.1rem;margin-bottom:1rem;'
                 f'font-family:\'JetBrains Mono\',monospace;font-size:.82rem;color:var(--muted)">'
-                f'📊 Nifty benchmark — 1M: <b style="color:var(--text)">{nifty.get("21",0):+.1f}%</b> · '
+                f'📊 {_bench_label} benchmark — 1M: <b style="color:var(--text)">{nifty.get("21",0):+.1f}%</b> · '
                 f'3M: <b style="color:var(--text)">{nifty.get("63",0):+.1f}%</b> · '
                 f'6M: <b style="color:var(--text)">{nifty.get("126",0):+.1f}%</b> · '
                 f'1Y: <b style="color:var(--text)">{nifty.get("252",0):+.1f}%</b></div>',
@@ -5229,7 +5231,7 @@ if st.session_state.get("_run_deep_now", False):
 
     if _stage == "sector":
         try:
-            st.session_state.sector_cache = sector_rotation()
+            st.session_state.sector_cache = sector_rotation(market=MARKET)
             if (st.session_state.sector_cache is not None and
                     not st.session_state.sector_cache.empty):
                 st.session_state.outlook_cache = predict_sector_outlook(
