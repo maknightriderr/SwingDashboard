@@ -532,6 +532,19 @@ try:
 except Exception as _e:
     US_UNIVERSE_SOURCES.append(("US loader crashed", 0, 0, str(_e)[:80]))
 
+# Register US sector ETFs (XLK, XLF, …) and US tracked-index ETFs as US market
+# so _yahoo_candidates returns the BARE ticker (no .NS/.BO suffix). Without this,
+# a plain ticker like "XLK" would wrongly be fetched as "XLK.NS" and return
+# nothing — which is why US sector rotation came back empty.
+try:
+    for _etf in list(US_SECTOR_INDICES.values()):
+        _SYMBOL_MARKET[_etf] = "US"
+    for _uidx in list(US_TRACKED_INDICES.values()):
+        if not _uidx.startswith("^"):
+            _SYMBOL_MARKET[_uidx] = "US"
+except Exception:
+    pass
+
 
 def get_universe(market="NSE"):
     """Return (SECTOR_STOCKS, SECTOR_MAP) for the requested market."""
