@@ -32,23 +32,6 @@ from signals import (
 
 # New functions added in signals.py v12+ — imported separately so the app
 # degrades gracefully if an older signals.py is deployed.
-
-# Market layer (NSE / US) — graceful fallback if older signals.py deployed
-try:
-    from signals import (MARKETS, get_market, currency_symbol, get_universe,
-                         US_UNIVERSE_TOTAL, US_UNIVERSE_SOURCES)
-    try:
-        from signals import debug_us_universe_load
-    except ImportError:
-        debug_us_universe_load = None
-    _MARKETS_AVAILABLE = True
-except ImportError:
-    _MARKETS_AVAILABLE = False
-    MARKETS = {"NSE": {"label": "🇮🇳 NSE (India)", "currency": "₹"}}
-    def get_market(s): return "NSE"
-    def currency_symbol(s): return "₹"
-    def get_universe(m="NSE"): return SECTOR_MAP, SECTOR_MAP
-
 try:
     from signals import scan_for_traps as _scan_for_traps
     scan_for_traps = _scan_for_traps
@@ -100,56 +83,31 @@ except Exception:
 # market_regime is global (same for all users) — safe to cache across sessions.
 # TTL 600s = 10 min. This renders the header banner in <100ms on reruns.
 @st.cache_data(ttl=600, show_spinner=False)
-def _cached_market_regime(market):
-    return get_market_regime(market)
+def _cached_market_regime():
+    return get_market_regime()
 
 
-def _get_market_regime_safe(market="NSE"):
-    """Return the market regime, cached in session_state so switching tabs is
-    INSTANT (reads a dict from memory, no network, no cache-layer call). Only
-    re-fetches when our own 10-min timer says the data is stale, or when the
-    market changes. This is the key to fast tab-switching."""
-    if not market:
-        market = "NSE"
-    import time as _t
-    _now = _t.time()
-    _store = st.session_state.get("_regime_store")
-    # Fast path: we have a fresh, good result for THIS market → return instantly
-    if (isinstance(_store, dict)
-            and _store.get("market") == market
-            and _store.get("data")
-            and _store["data"].get("indices")
-            and (_now - _store.get("ts", 0)) < 600):
-        return _store["data"]
-    # Stale or missing → fetch (this is the only slow path, ~once per 10 min)
-    m = None
-    try:
-        m = _cached_market_regime(market)
-    except Exception:
-        try:
-            m = get_market_regime(market)
-        except Exception:
-            m = None
+def _get_market_regime_safe():
+    """Wrapper that avoids caching an empty (failed) regime result.
+    If indices came back empty, clear the cache so the next rerun retries."""
+    m = _cached_market_regime()
     if not m or not m.get("indices"):
+        # Empty/failed — drop the cached empty so next call re-fetches fresh
         try:
             _cached_market_regime.clear()
         except Exception:
             pass
+        # Try one direct (uncached) fetch right now
         try:
-            m2 = get_market_regime(market)
+            m2 = get_market_regime()
             if m2 and m2.get("indices"):
-                m = m2
+                return m2
         except Exception:
             pass
-    result = m or {"regime": "Unknown", "indices": {}, "confidence": "—"}
-    # Store in session so subsequent tab switches are instant
-    if result.get("indices"):
-        st.session_state["_regime_store"] = {
-            "market": market, "data": result, "ts": _now}
-    return result
+    return m or {"regime": "Unknown", "indices": {}, "confidence": "—"}
 
 # Price cache: 5-min TTL so KPI cards don't block on every sidebar interaction.
-@st.cache_data(ttl=300, show_spinner=False)
+@st.cache_data(ttl=120, show_spinner=False)
 def _cached_prices(symbols_tuple):
     """Fetch ACCURATE live prices for a tuple of symbols.
 
@@ -412,14 +370,6 @@ def init_db():
                 conn.commit()
             except Exception:
                 conn.rollback()
-        # ── Migration: add 'market' column to separate NSE / US holdings ──────
-        for _tbl in ("trades", "watchlist", "price_alerts", "trade_journal"):
-            try:
-                cur.execute(f"ALTER TABLE {_tbl} ADD COLUMN IF NOT EXISTS "
-                            f"market TEXT DEFAULT 'NSE'")
-                conn.commit()
-            except Exception:
-                conn.rollback()
         cur.close(); conn.close()
     else:
         c = sqlite3.connect(DB)
@@ -450,14 +400,6 @@ def init_db():
             trade_date TEXT, direction TEXT, entry_price REAL, exit_price REAL,
             setup TEXT, rationale TEXT, emotion TEXT, outcome TEXT,
             lesson TEXT, rating INTEGER, created_date TEXT DEFAULT(date('now')))""")
-        # ── Migration: add 'market' column to separate NSE / US holdings ──────
-        for _tbl in ("trades", "watchlist", "price_alerts", "trade_journal"):
-            try:
-                _cols = [r[1] for r in c.execute(f"PRAGMA table_info({_tbl})").fetchall()]
-                if "market" not in _cols:
-                    c.execute(f"ALTER TABLE {_tbl} ADD COLUMN market TEXT DEFAULT 'NSE'")
-            except Exception:
-                pass
         c.commit(); c.close()
 
 def register_user(username, password):
@@ -547,13 +489,11 @@ def save_tg_config(user_id, token, chat):
         db("INSERT OR REPLACE INTO tg_config(user_id,bot_token,chat_id) VALUES(?,?,?)",
            (user_id, token, chat))
 
-def add_trade(user_id, stock, qty, buy, sell=None, market="NSE"):
+def add_trade(user_id, stock, qty, buy, sell=None):
     status = "Closed" if sell else "Open"
     closed = datetime.now().strftime("%Y-%m-%d") if sell else None
-    _sym = stock.upper().strip()
-    db("INSERT INTO trades(user_id,stock,quantity,buy_at,sell_at,status,closed_date,market) "
-       "VALUES(?,?,?,?,?,?,?,?)",
-       (user_id, _sym, qty, buy, sell, status, closed, market))
+    db("INSERT INTO trades(user_id,stock,quantity,buy_at,sell_at,status,closed_date) VALUES(?,?,?,?,?,?,?)",
+       (user_id, stock.upper().strip(), qty, buy, sell, status, closed))
 
 def update_trade(tid, user_id, stock, qty, buy, sell, status):
     closed = datetime.now().strftime("%Y-%m-%d") if status == "Closed" else None
@@ -578,9 +518,9 @@ def save_snapshot(user_id, invested, value):
     except Exception:
         pass   # snapshot is non-essential; never block the dashboard on it
 
-def add_watchlist(user_id, stock, target=None, notes="", market="NSE"):
-    db("INSERT INTO watchlist(user_id,stock,target_price,notes,market) VALUES(?,?,?,?,?)",
-       (user_id, stock.upper().strip(), target, notes, market))
+def add_watchlist(user_id, stock, target=None, notes=""):
+    db("INSERT INTO watchlist(user_id,stock,target_price,notes) VALUES(?,?,?,?)",
+       (user_id, stock.upper().strip(), target, notes))
 
 def delete_watchlist_item(wid, user_id):
     db("DELETE FROM watchlist WHERE id=? AND user_id=?", (wid, user_id))
@@ -661,7 +601,6 @@ for k, v in [("user_id", None), ("username", None), ("edit_id", None), ("close_i
              ("outlook_cache", None), ("scanner_cache", None), ("trap_scan_cache", None),
              ("corp_actions_cache", None), ("selected_scanner_sector", "All Sectors"),
              ("custom_stocks_input", ""), ("active_page", "portfolio"),
-             ("active_market", "NSE"),
              ("smc_scan_cache", None), ("vcp_scan_cache", None), ("rs_scan_cache", None),
              ("etf_scan_cache", None), ("mf_search_results", []),
              ("mf_selected", None), ("mf_compare_list", []),
@@ -1477,14 +1416,8 @@ def calc_analytics(df):
 
 
 # ── Formatting helpers ─────────────────────────────────────────────────────────
-def _cur():
-    """Active currency symbol — resolves at call time from session market."""
-    try:
-        return MARKETS.get(st.session_state.get("active_market", "NSE"), {}).get("currency", "₹")
-    except Exception:
-        return "₹"
-def fi(v):   return f"{_cur()}{v:,.0f}"    if not pd.isna(v) else "—"
-def fi2(v):  return f"{_cur()}{v:,.2f}"   if not pd.isna(v) else "—"
+def fi(v):   return f"₹{v:,.0f}"    if not pd.isna(v) else "—"
+def fi2(v):  return f"₹{v:,.2f}"   if not pd.isna(v) else "—"
 def fp(v):   return f"{'+' if v >= 0 else ''}{v:.2f}%" if not pd.isna(v) else "—"
 
 def cv_cell(v, fn):
@@ -1539,7 +1472,7 @@ def chart_pnl(df):
         textposition="outside", textfont=dict(color="#f8fafc", size=10)
     )), "P&L by Stock")
     fig.update_layout(showlegend=False, margin=dict(l=8, r=55, t=45, b=8))
-    fig.update_xaxes(tickprefix=_cur())
+    fig.update_xaxes(tickprefix="₹")
     return fig
 
 
@@ -1578,7 +1511,7 @@ def chart_growth(hist, cur_val, cur_inv):
                    name="Invested", line=dict(color="#3b82f6", width=2, dash="dash"))
     ]), "Portfolio Growth")
     fig.update_layout(hovermode="x unified")
-    fig.update_yaxes(tickprefix=_cur())
+    fig.update_yaxes(tickprefix="₹")
     return fig
 
 
@@ -1619,12 +1552,11 @@ def render_signals(signals, theme_t):
         reason  = s.get("reason", "")
         strength = s.get("strength", 30)
 
-        _c = _cur()
-        cmp_str = f"{_c}{cmp_v}" if cmp_v is not None else "—"
+        cmp_str = f"₹{cmp_v}" if cmp_v is not None else "—"
         rsi_str = str(rsi_v)  if rsi_v is not None else "—"
         pct_str = f"{pct:+.1f}%" if pct is not None else "—%"
-        tgt_str = f"{_c}{target}" if target is not None else "—"
-        sl_str  = f"{_c}{sl}"    if sl  is not None else "—"
+        tgt_str = f"₹{target}" if target is not None else "—"
+        sl_str  = f"₹{sl}"    if sl  is not None else "—"
         rr_html = _fmt_rr(rr)
 
         if c == "sell":
@@ -1634,9 +1566,9 @@ def render_signals(signals, theme_t):
             avg_p   = s.get("avg_price")
             new_avg = s.get("new_avg")
             new_sl  = s.get("new_sl")
-            ph = (f"💰 Avg: {_c+str(avg_p) if avg_p else '—'} | "
-                  f"New Avg: {_c+str(new_avg) if new_avg else '—'}<br>"
-                  f"🛑 SL: {_c+str(new_sl) if new_sl else '—'} | 🎯 Target: {tgt_str}")
+            ph = (f"💰 Avg: {'₹'+str(avg_p) if avg_p else '—'} | "
+                  f"New Avg: {'₹'+str(new_avg) if new_avg else '—'}<br>"
+                  f"🛑 SL: {'₹'+str(new_sl) if new_sl else '—'} | 🎯 Target: {tgt_str}")
         else:
             ph = (f"🎯 Target: {tgt_str} | 🛑 SL: {sl_str}<br>"
                   f"📊 R:R {rr_html} | {trend_v}")
@@ -1773,11 +1705,11 @@ def render_picks(picks, t):
             f"<div style='font-weight:800'>{p['stock']} "
             f"<span class='pick-sector'>{p['sector']}</span></div>"
             f"<div style='font-size:.8rem;color:var(--muted);font-weight:600;margin-top:3px'>"
-            f"CMP {_cur()}{p['cmp']} · RSI {p['rsi']} · {p['trend']}</div>"
+            f"CMP ₹{p['cmp']} · RSI {p['rsi']} · {p['trend']}</div>"
             f"<div class='pick-prices'>"
-            f"🎯 Entry: {_cur()}{p['entry']}<br>"
-            f"🚀 Target: {_cur()}{p['target']}<br>"
-            f"🛑 SL: {_cur()}{p['stop_loss']}<br>"
+            f"🎯 Entry: ₹{p['entry']}<br>"
+            f"🚀 Target: ₹{p['target']}<br>"
+            f"🛑 SL: ₹{p['stop_loss']}<br>"
             f"📊 R:R: {_fmt_rr(p['risk_reward'])} · Score: {p['score']}</div>"
             f"<div class='pick-reason'>{p['reason']}</div>"
             f"</div>"
@@ -1864,32 +1796,6 @@ def render_score_dashboard():
 # ── Load & Enrich Data ─────────────────────────────────────────────────────────
 raw = get_trades(UID)
 df  = enrich(raw) if not raw.empty else raw.copy()
-
-# ── Separate holdings by market (NSE stocks → NSE dashboard, US → US) ──────────
-# The stored 'market' column is the GROUND TRUTH — it's set when the trade is
-# added, while the active market is known for certain. Symbol detection is only
-# a FALLBACK for legacy rows that have no stored market (NULL/blank), because a
-# ticker can exist in both the NSE and US lists and detection alone would
-# mis-route it. Trusting the stored value stops NSE holdings leaking into US.
-_active_mkt = st.session_state.get("active_market", "NSE")
-if not df.empty and "stock" in df.columns:
-    if "market" in df.columns:
-        _stored = df["market"].astype(str).str.upper().str.strip()
-    else:
-        _stored = pd.Series([""] * len(df), index=df.index)
-
-    def _resolve_mkt(stored_val, symbol):
-        # Use the stored market if it's a real value; otherwise detect.
-        if stored_val in ("NSE", "US"):
-            return stored_val
-        if _MARKETS_AVAILABLE:
-            return get_market(str(symbol))
-        return "NSE"
-
-    _mkt_series = pd.Series(
-        [_resolve_mkt(_stored.iloc[i], df["stock"].iloc[i]) for i in range(len(df))],
-        index=df.index)
-    df = df[_mkt_series == _active_mkt].reset_index(drop=True)
 
 if (st.session_state.last_refresh is None or
         (datetime.now() - st.session_state.last_refresh).seconds >= _TTL):
@@ -2016,10 +1922,6 @@ else:
 theme_t = THEMES[st.session_state.theme]
 st.markdown(theme_css(theme_t), unsafe_allow_html=True)
 
-# ── Active market globals (used across all pages/screeners) ────────────────────
-MARKET = st.session_state.get("active_market", "NSE")
-CUR = MARKETS.get(MARKET, {}).get("currency", "₹")   # currency symbol for display
-
 # ── Sidebar ────────────────────────────────────────────────────────────────────
 with st.sidebar:
     st.markdown(
@@ -2059,41 +1961,6 @@ with st.sidebar:
         controller.set("swing_user_id", "", max_age=0)
         st.session_state.clear()
         st.rerun()
-
-    # ── MARKET SELECTOR (NSE / US) ─────────────────────────────────────────────
-    if _MARKETS_AVAILABLE:
-        st.markdown("<hr style='margin:1rem 0;border-color:var(--border)'>",
-                    unsafe_allow_html=True)
-        st.markdown('<div style="font-size:.8rem;font-weight:800;letter-spacing:.05em;'
-                    'margin-bottom:.5rem">🌍 MARKET</div>', unsafe_allow_html=True)
-        _mkt_keys = list(MARKETS.keys())
-        _mkt_labels = [MARKETS[k]["label"] for k in _mkt_keys]
-        _cur_idx = _mkt_keys.index(st.session_state.active_market) \
-            if st.session_state.active_market in _mkt_keys else 0
-        _picked_label = st.radio("Market", _mkt_labels, index=_cur_idx,
-                                 label_visibility="collapsed", key="market_radio")
-        _picked_market = _mkt_keys[_mkt_labels.index(_picked_label)]
-        if _picked_market != st.session_state.active_market:
-            st.session_state.active_market = _picked_market
-            # Clear all scan caches so they repopulate for the new market
-            for _ck in ("scanner_cache", "smc_scan_cache", "trap_scan_cache",
-                        "vcp_scan_cache", "rs_scan_cache", "sector_cache",
-                        "signals_cache", "picks_cache", "outlook_cache"):
-                if _ck in st.session_state:
-                    st.session_state[_ck] = None
-            st.rerun()
-        # Show universe size for the active market
-        try:
-            _mkt_universe, _ = get_universe(st.session_state.active_market)
-            _mkt_count = sum(len(v) for v in _mkt_universe.values())
-            _mkt_cur = MARKETS[st.session_state.active_market]["currency"]
-            st.markdown(
-                f'<div style="font-size:.68rem;color:var(--muted);margin-top:.3rem">'
-                f'{_mkt_count:,} stocks · {_mkt_cur} · '
-                f'{MARKETS[st.session_state.active_market].get("benchmark_name","")}</div>',
-                unsafe_allow_html=True)
-        except Exception:
-            pass
 
     st.markdown("<hr style='margin:1rem 0;border-color:var(--border)'>",
                 unsafe_allow_html=True)
@@ -2199,11 +2066,11 @@ with st.sidebar:
                                placeholder="CDSL, IRFC…")
         q_in   = st.number_input("Quantity", min_value=1, step=1,
                                  value=int(erow["quantity"]) if erow is not None else 1)
-        b_in   = st.number_input("Buy At " + _cur(), min_value=0.01, step=0.05,
+        b_in   = st.number_input("Buy At ₹", min_value=0.01, step=0.05,
                                  value=float(erow["buy_at"]) if erow is not None else 0.01,
                                  format="%.2f")
         sel_in = st.number_input(
-            "Sell At " + _cur() + " (optional)", min_value=0.0, step=0.05,
+            "Sell At ₹ (optional)", min_value=0.0, step=0.05,
             value=float(erow["sell_at"]) if (erow is not None and erow["sell_at"]) else 0.0,
             format="%.2f")
 
@@ -2221,8 +2088,8 @@ with st.sidebar:
                     st.session_state.edit_id = None
                     st.success("Updated!")
                 else:
-                    add_trade(UID, s_in, q_in, b_in, sv, market=MARKET)
-                    st.success(f"Added {s_in.upper()} to {MARKET}")
+                    add_trade(UID, s_in, q_in, b_in, sv)
+                    st.success(f"Added {s_in.upper()}")
                 _CACHE.clear()
                 st.session_state.last_auto_scan = 0.0
                 st.rerun()
@@ -2301,8 +2168,8 @@ with st.sidebar:
                     "smc": "SMC setups", "traps": "Trap scan",
                     "vcp": "VCP bases", "rs": "RS leaders"}
     if st.session_state.get("_deep_running", False):
-        _stg = st.session_state.get("_deep_stage", "sector")
-        _deep_status = f'⏳ {_stage_names.get(_stg, _stg)}…'
+        _cur = st.session_state.get("_deep_stage", "sector")
+        _deep_status = f'⏳ {_stage_names.get(_cur, _cur)}…'
     else:
         _deep_status = f'{_nxt_slow}m' if st.session_state.auto_deep else 'manual'
     _fast_status = f'{_nxt_fast}m' if st.session_state.auto_fast else 'manual'
@@ -2348,7 +2215,7 @@ st.markdown(
     '</div>',
     unsafe_allow_html=True)
 
-market = _get_market_regime_safe(MARKET)
+market = _get_market_regime_safe()
 regime = market.get("regime", "Unknown")
 
 rc_map = {
@@ -2367,9 +2234,8 @@ _idx_items = market.get("indices", {})
 for name, d in _idx_items.items():
     price = d.get("price")
     chg   = d.get("chg_pct", 0)
-    price_str = f"{price:,.0f}" if price else "—"
-    # VIX-type indices: rising = fear (red), falling = calm (green) — inverse
-    if "VIX" in name:
+    price_str = f"₹{price:,.0f}" if price else "—"
+    if name == "India VIX":
         chg_clr = "var(--red)" if chg > 0 else "var(--green)"
     else:
         chg_clr = "var(--green)" if chg > 0 else "var(--red)"
@@ -2387,8 +2253,8 @@ if not _idx_items:
         'refreshes automatically)</span>'
     )
 
-sup_str = f"{_cur()}{market.get('support'):,.0f}" if market.get("support") else "—"
-res_str = f"{_cur()}{market.get('resistance'):,.0f}" if market.get("resistance") else "—"
+sup_str = f"₹{market.get('support'):,.0f}" if market.get("support") else "—"
+res_str = f"₹{market.get('resistance'):,.0f}" if market.get("resistance") else "—"
 
 st.markdown(
     f'<div class="regime-banner" style="background:{rc_bg};{rc_border};'
@@ -2536,7 +2402,7 @@ if _page == 'portfolio':
         if st.session_state.close_id:
             st.markdown("---")
             st.markdown("**Execute Close — Confirm Exit Price**")
-            sp = st.number_input("Exit Price " + _cur(), min_value=0.01, step=0.05, format="%.2f")
+            sp = st.number_input("Exit Price ₹", min_value=0.01, step=0.05, format="%.2f")
             x1, x2 = st.columns(2)
             with x1:
                 if st.button("✅ Confirm Exit", width="stretch"):
@@ -2744,30 +2610,10 @@ elif _page == 'signals':
 
 # ── Sector Rotation ──────────────────────────────────────────────────────────
 elif _page == 'sector':
-    _sec_scope = "US Sectors (SPDR ETFs)" if MARKET == "US" else "NSE Sectors"
-    st.markdown(f'<div class="sec">Macro Sector Rotation & Capital Flow — {_sec_scope}</div>',
+    st.markdown('<div class="sec">Macro Sector Rotation & Capital Flow</div>',
                 unsafe_allow_html=True)
 
-    # Manual scan trigger (so the page works without waiting for background scan)
-    if st.button("🔄 Run Sector Rotation Scan", width="stretch"):
-        with st.spinner(f"Analysing {MARKET} sector rotation…"):
-            try:
-                st.session_state.sector_cache = sector_rotation(market=MARKET)
-                _sc = st.session_state.sector_cache
-                if _sc is not None and not _sc.empty:
-                    try:
-                        st.session_state.outlook_cache = predict_sector_outlook(_sc)
-                    except Exception:
-                        st.session_state.outlook_cache = None
-                    st.toast(f"✅ {len(_sc)} sectors analysed", icon="🔄")
-                else:
-                    st.warning(f"No {MARKET} sector data returned — the sector "
-                               f"ETFs/indices may be temporarily unavailable from "
-                               f"Yahoo. Try again in a moment.")
-            except Exception as e:
-                st.error(f"Sector scan failed: {str(e)[:120]}")
-
-    if st.session_state.sector_cache is not None and not st.session_state.sector_cache.empty:
+    if st.session_state.sector_cache is not None:
         render_sector(st.session_state.sector_cache, theme_t)
 
         if not st.session_state.sector_cache.empty:
@@ -2775,7 +2621,6 @@ elif _page == 'sector':
             rs_val  = top.get("rs_vs_nifty_1m", 0) or 0
             rs_clr  = "#10b981" if rs_val > 0 else "#ef4444"
             rrg_val = top.get("rrg_quadrant", "—")
-            _bench_nm = "S&P 500" if MARKET == "US" else "Nifty"
 
             st.markdown(
                 f'<div style="margin-top:1rem;background:rgba(16,185,129,.08);'
@@ -2785,7 +2630,7 @@ elif _page == 'sector':
                 f' — Momentum {top["momentum_score"]:.2f}'
                 f' | Avg RSI {top["avg_rsi"]:.0f}'
                 f' | Flow {top["avg_pct"]:+.1f}%'
-                f' | RS vs {_bench_nm} <b style="color:{rs_clr}">{rs_val:+.1f}%</b>'
+                f' | RS vs Nifty <b style="color:{rs_clr}">{rs_val:+.1f}%</b>'
                 f' | {rrg_val}<br>'
                 f'<span style="color:var(--muted);font-size:.75rem;margin-top:5px;'
                 f'display:block">Constituents: {top["stocks"]}</span>'
@@ -2807,24 +2652,13 @@ elif _page == 'sector':
 
 # ── Universe Scanner ─────────────────────────────────────────────────────────
 elif _page == 'scanner':
-    # Market-aware universe count + source list
-    if MARKET == "US" and _MARKETS_AVAILABLE:
-        _scan_total = US_UNIVERSE_TOTAL
-        _scan_sources = US_UNIVERSE_SOURCES
-        _scan_label = "🇺🇸 US Universe Scanner"
-    else:
-        _scan_total = UNIVERSE_TOTAL
-        _scan_sources = UNIVERSE_SOURCES
-        _scan_label = "🌌 Universe Scanner"
     st.markdown(
-        f'<div class="sec">{_scan_label} — {_scan_total:,} Assets</div>',
+        f'<div class="sec">🌌 Universe Scanner — {UNIVERSE_TOTAL:,} Assets</div>',
         unsafe_allow_html=True)
 
     # ── Universe source breakdown ─────────────────────────────────────────────
     src_html = ""
-    for _src in _scan_sources:
-        lbl, n, sk = _src[0], _src[1], _src[2]
-        err = _src[3] if len(_src) > 3 else None
+    for lbl, n, sk, err in UNIVERSE_SOURCES:
         clr = theme_t["green"] if n > 0 else theme_t["red"]
         src_html += (
             f'<span style="background:var(--card2);border:1px solid var(--border);'
@@ -2840,24 +2674,8 @@ elif _page == 'scanner':
         f'Sources loaded:</span> {src_html}</div>',
         unsafe_allow_html=True)
 
-    # ── Always-visible US load status when in US mode ─────────────────────────
-    if MARKET == "US" and _MARKETS_AVAILABLE:
-        if _scan_total <= 50:
-            st.warning(
-                f"⚠️ Only {_scan_total} US stocks loaded (fallback list). Your "
-                f"`us_stocks.csv` isn't being read. Open the diagnostics below to "
-                f"see why — check the file is in your repo root and `signals.py` "
-                f"is the latest version.")
-        else:
-            st.success(f"✅ {_scan_total:,} US stocks loaded and ready to scan.")
-
     # ── Diagnostic expander — shows exactly what loaded and why ───────────────
-    with st.expander("🔍 Universe Load Diagnostics",
-                     expanded=(MARKET == "US" and _scan_total <= 50)):
-        if MARKET == "US" and _MARKETS_AVAILABLE and debug_us_universe_load is not None:
-            st.markdown("**🇺🇸 US Universe:**")
-            st.code(debug_us_universe_load(), language=None)
-            st.markdown("**🇮🇳 NSE Universe:**")
+    with st.expander("🔍 Universe Load Diagnostics", expanded=False):
         st.code(debug_universe_load(), language=None)
         st.caption("If a file shows '❌ not found', check it is committed to "
                    "your repo root (same folder as signals.py and app.py).")
@@ -2902,8 +2720,8 @@ elif _page == 'scanner':
                 st.info("Custom list cleared.")
 
     if st.button("⚡ Execute Global Scan", width="stretch"):
-        with st.spinner(f"Scanning {len(get_universe(MARKET)[1])} {MARKET} tickers..."):
-            sd = generate_market_scanner(market=MARKET)
+        with st.spinner(f"Scanning {len(SECTOR_MAP)} tickers..."):
+            sd = generate_market_scanner()
             st.session_state.scanner_cache = sd if (sd is not None and not sd.empty) \
                 else pd.DataFrame()
             if (st.session_state.scanner_cache is not None and
@@ -3096,19 +2914,11 @@ elif _page == 'watchlist':
                 label_visibility="collapsed").upper().strip()
         with col_btn:
             if st.form_submit_button("➕ Add", width="stretch") and new_stock:
-                add_watchlist(UID, new_stock, market=MARKET)
+                add_watchlist(UID, new_stock)
                 st.toast(f"🚀 {new_stock} added!")
                 st.rerun()
 
     wdf = get_watchlist(UID)
-    # Separate watchlist by market (same logic as holdings)
-    if not wdf.empty and "stock" in wdf.columns:
-        _wmkt = wdf["market"].fillna("NSE") if "market" in wdf.columns \
-            else pd.Series(["NSE"] * len(wdf), index=wdf.index)
-        if _MARKETS_AVAILABLE:
-            _wdet = wdf["stock"].apply(lambda s: get_market(str(s)))
-            _wmkt = _wmkt.where(_wdet != "US", "US")
-        wdf = wdf[_wmkt == MARKET].reset_index(drop=True)
     if not wdf.empty:
         st.markdown('<div class="sec" style="margin-top:1rem">Live Monitored Assets</div>',
                     unsafe_allow_html=True)
@@ -3142,10 +2952,10 @@ elif _page == 'watchlist':
   <div style="font-size:.75rem;color:var(--muted);margin-bottom:.5rem;
        text-transform:uppercase">{get_sector(stock)}</div>
   <div style="font-size:.8rem;line-height:1.6;color:var(--text)">
-    <b>CMP:</b> {_cur()}{cmp_v}<br>
+    <b>CMP:</b> ₹{cmp_v}<br>
     <b>RSI:</b> {rsi_v} | <b>Trend:</b> {trend}<br>
-    <b>EMA9:</b> {_cur()}{ema9} | <b>EMA21:</b> {_cur()}{ema21}<br>
-    <b>Sup:</b> {_cur()}{sup} | <b>Res:</b> {_cur()}{res}
+    <b>EMA9:</b> ₹{ema9} | <b>EMA21:</b> ₹{ema21}<br>
+    <b>Sup:</b> ₹{sup} | <b>Res:</b> ₹{res}
   </div>
 </div>""", unsafe_allow_html=True)
                 else:
@@ -3202,8 +3012,7 @@ elif _page == 'traps':
         st.warning("🪤 Trap Scanner requires the updated **signals.py** (v12+). "
                    "Deploy the new signals.py from the project outputs to enable this tab.",
                    icon="⚠️")
-    _trap_universe = "US Stocks" if MARKET == "US" else "Full Nifty 500"
-    st.markdown(f'<div class="sec">🪤 Bull & Bear Trap Scanner — {_trap_universe}</div>',
+    st.markdown('<div class="sec">🪤 Bull & Bear Trap Scanner — Full Nifty 500</div>',
                 unsafe_allow_html=True)
 
     # ── Summary banner ─────────────────────────────────────────────────────────
@@ -3231,16 +3040,16 @@ elif _page == 'traps':
     # ── Controls ────────────────────────────────────────────────────────────────
     ctrl1, ctrl2, ctrl3 = st.columns([2, 1, 1])
     with ctrl1:
-        st.caption(f"⚡ Sweeps all {_trap_universe} liquid stocks for false breakout / breakdown patterns.")
+        st.caption("⚡ Sweeps all Nifty 500 liquid stocks for false breakout / breakdown patterns.")
     with ctrl2:
         min_conf = st.slider("Min Confidence %", 50, 90, 60, 5, label_visibility="collapsed")
     with ctrl3:
         run_trap_scan = st.button("🪤 Run Trap Scan", width="stretch")
 
     if run_trap_scan:
-        total_sym = len(get_universe(MARKET)[1])
+        total_sym = len(SECTOR_MAP)
         with st.spinner(f"🔍 Scanning {total_sym} stocks for trap patterns…"):
-            st.session_state.trap_scan_cache = scan_for_traps(min_confidence=min_conf, market=MARKET)
+            st.session_state.trap_scan_cache = scan_for_traps(min_confidence=min_conf)
             trap_data = st.session_state.trap_scan_cache
             st.toast(
                 f"✅ Found {trap_data['bull_count']} bull traps, "
@@ -3248,7 +3057,7 @@ elif _page == 'traps':
                 icon="🪤")
 
     if not trap_data:
-        st.info(f"💡 Click **🪤 Run Trap Scan** to sweep the {_trap_universe} for active trap patterns.")
+        st.info("💡 Click **🪤 Run Trap Scan** to sweep the full Nifty 500 for active trap patterns.")
     else:
         bull_traps = trap_data.get("bull_traps", [])
         bear_traps = trap_data.get("bear_traps", [])
@@ -3289,7 +3098,7 @@ elif _page == 'traps':
     </span>
   </div>
   <div style="font-size:.75rem;color:var(--muted);margin-bottom:.5rem">
-    {bt['sector']} · CMP {_cur()}{bt['cmp']} · RSI {bt['rsi'] if bt['rsi'] else '—'}
+    {bt['sector']} · CMP ₹{bt['cmp']} · RSI {bt['rsi'] if bt['rsi'] else '—'}
   </div>
   <div style="font-size:.8rem;color:var(--red);font-weight:600;margin-bottom:.5rem">
     ⚠️ {bt['detail']}
@@ -3300,9 +3109,9 @@ elif _page == 'traps':
   <div style="font-size:.78rem;color:var(--muted);display:grid;grid-template-columns:1fr 1fr;gap:.2rem">
     <span>📊 Trend: {bt['trend']}</span>
     <span>📦 Vol: {bt['vol_ratio']:.1f}x avg</span>
-    <span>🛡 Support: {_cur()}{bt['support']}</span>
-    <span>🚧 Resist: {_cur()}{bt['resistance']}</span>
-    <span>🔁 Re-entry SL: {_cur()}{bt['re_entry_sl']}</span>
+    <span>🛡 Support: ₹{bt['support']}</span>
+    <span>🚧 Resist: ₹{bt['resistance']}</span>
+    <span>🔁 Re-entry SL: ₹{bt['re_entry_sl']}</span>
     <span>ST: {'🟢 Bull' if bt.get('supertrend_bullish') else '🔴 Bear'}</span>
   </div>
   {('<div style="font-size:.72rem;color:var(--muted);margin-top:.4rem">📐 ' + bt['patterns'] + '</div>') if bt.get('patterns') else ''}
@@ -3347,7 +3156,7 @@ elif _page == 'traps':
     </span>
   </div>
   <div style="font-size:.75rem;color:var(--muted);margin-bottom:.5rem">
-    {brt['sector']} · CMP {_cur()}{brt['cmp']} · RSI {brt['rsi'] if brt['rsi'] else '—'}
+    {brt['sector']} · CMP ₹{brt['cmp']} · RSI {brt['rsi'] if brt['rsi'] else '—'}
   </div>
   <div style="font-size:.8rem;color:var(--green);font-weight:600;margin-bottom:.5rem">
     🪤 {brt['detail']}
@@ -3358,15 +3167,15 @@ elif _page == 'traps':
   <div style="background:rgba(16,185,129,.06);border-radius:6px;
        padding:.6rem .8rem;margin-bottom:.5rem;
        display:grid;grid-template-columns:1fr 1fr 1fr;gap:.3rem;font-size:.8rem;font-weight:700">
-    <span>🎯 Entry<br><b>{_cur()}{brt['entry']}</b></span>
-    <span>🚀 Target<br><b style="color:var(--green)">{_cur()}{brt['target']}</b></span>
-    <span>🛑 SL<br><b style="color:var(--red)">{_cur()}{brt['stop_loss']}</b></span>
+    <span>🎯 Entry<br><b>₹{brt['entry']}</b></span>
+    <span>🚀 Target<br><b style="color:var(--green)">₹{brt['target']}</b></span>
+    <span>🛑 SL<br><b style="color:var(--red)">₹{brt['stop_loss']}</b></span>
   </div>
   <div style="font-size:.78rem;color:var(--muted);display:grid;grid-template-columns:1fr 1fr;gap:.2rem">
     <span>📊 {rr_str}</span>
     <span>📦 Vol: {brt['vol_ratio']:.1f}x avg</span>
-    <span>🛡 Support: {_cur()}{brt['support']}</span>
-    <span>🚧 Resist: {_cur()}{brt['resistance']}</span>
+    <span>🛡 Support: ₹{brt['support']}</span>
+    <span>🚧 Resist: ₹{brt['resistance']}</span>
     <span>📈 Trend: {brt['trend']}</span>
     <span>ST: {'🟢 Bull' if brt.get('supertrend_bullish') else '🔴 Bear'}</span>
   </div>
@@ -3472,7 +3281,7 @@ elif _page == 'corp_actions':
         run_ca_scan = st.button("📅 Scan Corporate Actions", width="stretch")
 
     if run_ca_scan:
-        total_sym = len(get_universe(MARKET)[1])
+        total_sym = len(SECTOR_MAP)
         with st.spinner(f"Fetching corporate actions for {total_sym} stocks… (may take 60–90s)"):
             st.session_state.corp_actions_cache = scan_corporate_actions_universe()
             ca = st.session_state.corp_actions_cache
@@ -3679,17 +3488,17 @@ elif _page == 'smc':
                     f'text-align:center"><div style="font-size:.7rem;color:var(--muted);'
                     f'font-weight:700;text-transform:uppercase">Entry</div>'
                     f'<div style="font-size:1.3rem;font-weight:800;color:var(--text)">'
-                    f'{_cur()}{entry}</div></div>'
+                    f'₹{entry}</div></div>'
                     f'<div style="background:var(--card);border-radius:10px;padding:.9rem;'
                     f'text-align:center"><div style="font-size:.7rem;color:var(--muted);'
                     f'font-weight:700;text-transform:uppercase">Target</div>'
                     f'<div style="font-size:1.3rem;font-weight:800;color:{theme_t["green"]}">'
-                    f'{_cur()}{target}</div></div>'
+                    f'₹{target}</div></div>'
                     f'<div style="background:var(--card);border-radius:10px;padding:.9rem;'
                     f'text-align:center"><div style="font-size:.7rem;color:var(--muted);'
                     f'font-weight:700;text-transform:uppercase">Stop Loss</div>'
                     f'<div style="font-size:1.3rem;font-weight:800;color:{theme_t["red"]}">'
-                    f'{_cur()}{sl}</div></div>'
+                    f'₹{sl}</div></div>'
                     f'<div style="background:var(--card);border-radius:10px;padding:.9rem;'
                     f'text-align:center"><div style="font-size:.7rem;color:var(--muted);'
                     f'font-weight:700;text-transform:uppercase">Risk:Reward</div>'
@@ -3739,9 +3548,9 @@ elif _page == 'smc':
                 f'<div style="font-size:.7rem;color:var(--muted);font-weight:700;'
                 f'text-transform:uppercase;letter-spacing:.08em">CMP</div>'
                 f'<div style="font-size:1.5rem;font-weight:800;color:var(--text);'
-                f'margin:.2rem 0">{_cur()}{cmp}</div>'
+                f'margin:.2rem 0">₹{cmp}</div>'
                 f'<div style="font-size:.8rem;color:var(--muted)">'
-                f'Range {_cur()}{ind.get("smc_range_low","—")}–{_cur()}{ind.get("smc_range_high","—")}</div>'
+                f'Range ₹{ind.get("smc_range_low","—")}–₹{ind.get("smc_range_high","—")}</div>'
                 f'</div>'
                 f'</div>',
                 unsafe_allow_html=True)
@@ -3779,11 +3588,11 @@ elif _page == 'smc':
                                  'margin-bottom:.3rem">📍 Price currently INSIDE a bearish FVG (resistance)</div>')
                 if nbf:
                     fvg_rows += (f'<div style="font-size:.82rem;margin-bottom:.3rem">'
-                                 f'🟢 Nearest bull FVG below: <b>{_cur()}{nbf["bottom"]}–{_cur()}{nbf["top"]}</b> '
+                                 f'🟢 Nearest bull FVG below: <b>₹{nbf["bottom"]}–₹{nbf["top"]}</b> '
                                  f'({nbf["size_atr"]} ATR)</div>')
                 if nbef:
                     fvg_rows += (f'<div style="font-size:.82rem;margin-bottom:.3rem">'
-                                 f'🔴 Nearest bear FVG above: <b>{_cur()}{nbef["bottom"]}–{_cur()}{nbef["top"]}</b> '
+                                 f'🔴 Nearest bear FVG above: <b>₹{nbef["bottom"]}–₹{nbef["top"]}</b> '
                                  f'({nbef["size_atr"]} ATR)</div>')
                 fvg_rows += (f'<div style="font-size:.75rem;color:var(--muted);margin-top:.4rem">'
                              f'Unfilled: {ind.get("smc_bull_fvg_count",0)} bullish · '
@@ -3810,11 +3619,11 @@ elif _page == 'smc':
                                 'margin-bottom:.3rem">📍 Price at a bearish order block (supply)</div>')
                 if nbo:
                     ob_rows += (f'<div style="font-size:.82rem;margin-bottom:.3rem">'
-                                f'🟢 Bull OB (demand): <b>{_cur()}{nbo["bottom"]}–{_cur()}{nbo["top"]}</b> '
+                                f'🟢 Bull OB (demand): <b>₹{nbo["bottom"]}–₹{nbo["top"]}</b> '
                                 f'({nbo["strength_atr"]} ATR move)</div>')
                 if nbeo:
                     ob_rows += (f'<div style="font-size:.82rem;margin-bottom:.3rem">'
-                                f'🔴 Bear OB (supply): <b>{_cur()}{nbeo["bottom"]}–{_cur()}{nbeo["top"]}</b> '
+                                f'🔴 Bear OB (supply): <b>₹{nbeo["bottom"]}–₹{nbeo["top"]}</b> '
                                 f'({nbeo["strength_atr"]} ATR move)</div>')
                 if not (nbo or nbeo or ind.get("smc_at_bull_ob") or ind.get("smc_at_bear_ob")):
                     ob_rows = '<div style="font-size:.82rem;color:var(--muted)">No active order blocks nearby.</div>'
@@ -3834,11 +3643,11 @@ elif _page == 'smc':
                 liq_rows = ""
                 if nbs:
                     liq_rows += (f'<div style="font-size:.82rem;margin-bottom:.3rem">'
-                                 f'🔼 Buy-side liquidity above: <b>{_cur()}{nbs["level"]}</b> '
+                                 f'🔼 Buy-side liquidity above: <b>₹{nbs["level"]}</b> '
                                  f'({nbs["touches"]} equal highs — short stops)</div>')
                 if nss:
                     liq_rows += (f'<div style="font-size:.82rem;margin-bottom:.3rem">'
-                                 f'🔽 Sell-side liquidity below: <b>{_cur()}{nss["level"]}</b> '
+                                 f'🔽 Sell-side liquidity below: <b>₹{nss["level"]}</b> '
                                  f'({nss["touches"]} equal lows — long stops)</div>')
                 if not (nbs or nss):
                     liq_rows = '<div style="font-size:.82rem;color:var(--muted)">No clear liquidity clusters nearby.</div>'
@@ -3910,9 +3719,9 @@ elif _page == 'smc':
             run_smc_scan = st.button("🎯 Scan Setups", width="stretch")
 
         if run_smc_scan:
-            with st.spinner(f"Scanning {len(get_universe(MARKET)[1])} {MARKET} stocks for SMC setups…"):
+            with st.spinner(f"Scanning {len(SECTOR_MAP)} stocks for SMC setups…"):
                 st.session_state.smc_scan_cache = scan_for_smc_setups(
-                    min_quality=min_q, action_filter=act_f, market=MARKET)
+                    min_quality=min_q, action_filter=act_f)
                 sc = st.session_state.smc_scan_cache
                 st.toast(f"✅ {sc['buy_count']} BUY · {sc['sell_count']} SELL setups",
                          icon="🎯")
@@ -4024,17 +3833,17 @@ elif _page == 'etfs':
   </div>
   <div style="display:flex;gap:2rem;flex-wrap:wrap;margin-top:.8rem">
     <div><span style="color:var(--muted);font-size:.75rem">CMP</span><br>
-         <b style="font-size:1.3rem">{_cur()}{q['cmp']}</b></div>
+         <b style="font-size:1.3rem">₹{q['cmp']}</b></div>
     <div><span style="color:var(--muted);font-size:.75rem">Day</span><br>
          <b style="font-size:1.3rem;color:{day_clr}">{(q['day_chg'] or 0):+.2f}%</b></div>
     <div><span style="color:var(--muted);font-size:.75rem">50-DMA</span><br>
-         <b style="font-size:1.1rem">{_cur()}{q.get('dma50','—')}</b></div>
+         <b style="font-size:1.1rem">₹{q.get('dma50','—')}</b></div>
     <div><span style="color:var(--muted);font-size:.75rem">200-DMA</span><br>
-         <b style="font-size:1.1rem">{_cur()}{q.get('dma200') or '—'}</b></div>
+         <b style="font-size:1.1rem">₹{q.get('dma200') or '—'}</b></div>
     <div><span style="color:var(--muted);font-size:.75rem">52W High</span><br>
-         <b style="font-size:1.1rem">{_cur()}{q['high52']}</b></div>
+         <b style="font-size:1.1rem">₹{q['high52']}</b></div>
     <div><span style="color:var(--muted);font-size:.75rem">52W Low</span><br>
-         <b style="font-size:1.1rem">{_cur()}{q['low52']}</b></div>
+         <b style="font-size:1.1rem">₹{q['low52']}</b></div>
   </div>
   <div style="margin-top:1rem;display:flex;gap:1.5rem;flex-wrap:wrap">
     {''.join(f'<div><span style="color:var(--muted);font-size:.72rem">{k}</span><br>'
@@ -4048,8 +3857,8 @@ elif _page == 'etfs':
     '<span style="font-size:.82rem">' + ' · '.join(q.get('signal_reasons', [])) + '</span></div>')
    if q.get('signal_reasons') else ''}
   {('<div style="margin-top:.8rem;font-size:.85rem">'
-    f'<b>Entry</b> {_cur()}{q.get("entry")} &nbsp; <b>Target</b> {_cur()}{q.get("target")} &nbsp; '
-    f'<b>Stop</b> {_cur()}{q.get("stop_loss")}</div>')
+    f'<b>Entry</b> ₹{q.get("entry")} &nbsp; <b>Target</b> ₹{q.get("target")} &nbsp; '
+    f'<b>Stop</b> ₹{q.get("stop_loss")}</div>')
    if q.get('signal')=='BUY' and q.get('target') else ''}
 </div>""", unsafe_allow_html=True)
                 st.caption("⚠️ Signals are algorithmic (trend + momentum), not financial advice. "
@@ -4207,7 +4016,7 @@ elif _page == 'sizing':
 
     colA, colB = st.columns(2)
     with colA:
-        _cap = st.number_input("💰 Total Trading Capital (" + _cur() + ")", min_value=1000.0,
+        _cap = st.number_input("💰 Total Trading Capital (₹)", min_value=1000.0,
                                value=float(st.session_state.get("_sz_cap", 100000.0)),
                                step=5000.0, key="sz_cap")
         st.session_state._sz_cap = _cap
@@ -4217,11 +4026,11 @@ elif _page == 'sizing':
                               help="Pros risk 1-2% per trade. Never exceed 2% as a beginner.")
         st.session_state._sz_risk = _risk_pct
     with colB:
-        _entry = st.number_input("📈 Entry Price (" + _cur() + ")", min_value=0.0,
+        _entry = st.number_input("📈 Entry Price (₹)", min_value=0.0,
                                  value=float(st.session_state.get("_sz_entry", 100.0)),
                                  step=1.0, key="sz_entry")
         st.session_state._sz_entry = _entry
-        _stop = st.number_input("🛑 Stop Loss Price (" + _cur() + ")", min_value=0.0,
+        _stop = st.number_input("🛑 Stop Loss Price (₹)", min_value=0.0,
                                 value=float(st.session_state.get("_sz_stop", 95.0)),
                                 step=1.0, key="sz_stop")
         st.session_state._sz_stop = _stop
@@ -4255,12 +4064,12 @@ elif _page == 'sizing':
     <div><span style="color:var(--muted);font-size:.78rem">Shares to Buy</span><br>
          <b style="font-size:1.8rem;color:var(--accent)">{qty:,}</b></div>
     <div><span style="color:var(--muted);font-size:.78rem">Position Value</span><br>
-         <b style="font-size:1.5rem">{_cur()}{position_value:,.0f}</b>
+         <b style="font-size:1.5rem">₹{position_value:,.0f}</b>
          <span style="font-size:.8rem;color:var(--muted)"> ({position_pct:.1f}%)</span></div>
     <div><span style="color:var(--muted);font-size:.78rem">Max Loss (your risk)</span><br>
-         <b style="font-size:1.5rem;color:var(--red)">{_cur()}{risk_amount:,.0f}</b></div>
+         <b style="font-size:1.5rem;color:var(--red)">₹{risk_amount:,.0f}</b></div>
     <div><span style="color:var(--muted);font-size:.78rem">Risk / Share</span><br>
-         <b style="font-size:1.5rem">{_cur()}{risk_per_share:.2f}</b></div>
+         <b style="font-size:1.5rem">₹{risk_per_share:.2f}</b></div>
   </div>
 </div>""", unsafe_allow_html=True)
         if warn:
@@ -4280,8 +4089,8 @@ elif _page == 'sizing':
 <div style="background:var(--card);border:1px solid var(--border);border-radius:8px;
             padding:.7rem;text-align:center">
   <div style="font-size:.7rem;color:var(--muted)">{rmult}R Target</div>
-  <div style="font-size:1.1rem;font-weight:800;color:var(--green)">{_cur()}{tgt:.2f}</div>
-  <div style="font-size:.72rem;color:var(--muted)">+{_cur()}{reward:,.0f}</div>
+  <div style="font-size:1.1rem;font-weight:800;color:var(--green)">₹{tgt:.2f}</div>
+  <div style="font-size:.72rem;color:var(--muted)">+₹{reward:,.0f}</div>
 </div>""", unsafe_allow_html=True)
 
         st.caption("💡 Quantity is calculated so that IF your stop loss hits, you lose "
@@ -4300,7 +4109,7 @@ elif _page == 'risk':
     if odf_risk.empty:
         st.info("No open positions to analyze. Add trades to see your risk profile.")
     else:
-        total_cap = st.number_input("💰 Total Trading Capital (" + _cur() + ") — for risk context",
+        total_cap = st.number_input("💰 Total Trading Capital (₹) — for risk context",
                                     min_value=1000.0,
                                     value=float(st.session_state.get("_sz_cap", 100000.0)),
                                     step=5000.0, key="risk_cap")
@@ -4340,7 +4149,7 @@ elif _page == 'risk':
                 border-radius:10px;padding:1rem;text-align:center">
                 <div style="font-size:.72rem;color:var(--muted)">Capital Deployed</div>
                 <div style="font-size:1.6rem;font-weight:800;color:{clr}">{deployed_pct:.0f}%</div>
-                <div style="font-size:.7rem;color:var(--muted)">{_cur()}{total_invested:,.0f}</div>
+                <div style="font-size:.7rem;color:var(--muted)">₹{total_invested:,.0f}</div>
                 </div>""", unsafe_allow_html=True)
         with m2:
             clr = _risk_badge(largest_pct, 25, 40)
@@ -4414,13 +4223,13 @@ elif _page == 'alerts':
         with ac2:
             _al_cond = st.selectbox("Condition", ["above", "below"], key="al_cond")
         with ac3:
-            _al_price = st.number_input("Target " + _cur(), min_value=0.0, step=1.0, key="al_price")
+            _al_price = st.number_input("Target ₹", min_value=0.0, step=1.0, key="al_price")
         _al_note = st.text_input("Note (optional)", key="al_note",
                                  placeholder="e.g. breakout level / support")
         if st.button("🔔 Create Alert", width="stretch"):
             if _al_stock and _al_price > 0:
                 add_price_alert(UID, _al_stock, _al_cond, _al_price, _al_note)
-                st.success(f"Alert set: {_al_stock.upper()} {_al_cond} {_cur()}{_al_price}")
+                st.success(f"Alert set: {_al_stock.upper()} {_al_cond} ₹{_al_price}")
                 st.rerun()
             else:
                 st.error("Enter a stock symbol and a target price above 0.")
@@ -4443,7 +4252,7 @@ elif _page == 'alerts':
                 elif cond == "below" and cur_price <= target:
                     triggered = True
 
-            cur_str = f"{_cur()}{cur_price}" if cur_price is not None else "—"
+            cur_str = f"₹{cur_price}" if cur_price is not None else "—"
             arrow = "▲" if cond == "above" else "▼"
             row_clr = "#10b981" if triggered else "var(--border)"
 
@@ -4455,7 +4264,7 @@ elif _page == 'alerts':
                 st.markdown(f"""
 <div style="background:var(--card);border:1px solid {row_clr};border-radius:8px;
             padding:.7rem 1rem;margin-bottom:.5rem">
-  <b style="font-size:.95rem">{stock}</b> {arrow} {_cur()}{target}
+  <b style="font-size:.95rem">{stock}</b> {arrow} ₹{target}
   <span style="color:var(--muted);font-size:.8rem">· now {cur_str}</span>{trig_html}
   {('<br><span style="font-size:.72rem;color:var(--muted)">📝 ' + note + '</span>') if note else ''}
 </div>""", unsafe_allow_html=True)
@@ -4471,7 +4280,7 @@ elif _page == 'alerts':
                     try:
                         send_telegram(saved_tok, saved_cid,
                             f"🎯 <b>PRICE ALERT</b>\n{stock} is now {cur_str} "
-                            f"({arrow} target {_cur()}{target})\n{note}")
+                            f"({arrow} target ₹{target})\n{note}")
                     except Exception:
                         pass
     else:
@@ -4486,7 +4295,7 @@ elif _page == 'alerts':
                 arrow = "▲" if cond == "above" else "▼"
                 tc1, tc2 = st.columns([5, 1])
                 with tc1:
-                    st.markdown(f"**{stock}** {arrow} {_cur()}{target} · triggered {trig_date or '—'}")
+                    st.markdown(f"**{stock}** {arrow} ₹{target} · triggered {trig_date or '—'}")
                 with tc2:
                     if st.button("🗑", key=f"del_trig_{aid}"):
                         delete_price_alert(aid, UID)
@@ -4577,13 +4386,13 @@ elif _page == 'chart':
                                      name=f"EMA {_ema_slow}"))
             # S/R lines
             fig.add_hline(y=resistance, line=dict(color="#ef4444", width=1, dash="dash"),
-                          annotation_text=f"R {_cur()}{resistance:.1f}", annotation_position="right")
+                          annotation_text=f"R ₹{resistance:.1f}", annotation_position="right")
             fig.add_hline(y=support, line=dict(color="#10b981", width=1, dash="dash"),
-                          annotation_text=f"S {_cur()}{support:.1f}", annotation_position="right")
+                          annotation_text=f"S ₹{support:.1f}", annotation_position="right")
             # Live CMP line (real-time, distinct from last candle close)
             if live_cmp:
                 fig.add_hline(y=live_cmp, line=dict(color="#d4af37", width=1.2, dash="dot"),
-                              annotation_text=f"CMP {_cur()}{live_cmp:.1f}",
+                              annotation_text=f"CMP ₹{live_cmp:.1f}",
                               annotation_position="left")
 
             fig.update_layout(
@@ -4629,13 +4438,13 @@ elif _page == 'chart':
             chg = (display_price / prev_close - 1) * 100 if prev_close else 0
             sc1, sc2, sc3, sc4 = st.columns(4)
             sc1.metric("CMP (live)" if live_cmp else "Last Close",
-                       f"{_cur()}{display_price:.2f}", f"{chg:+.2f}%")
-            sc2.metric("Support", f"{_cur()}{support:.2f}")
-            sc3.metric("Resistance", f"{_cur()}{resistance:.2f}")
+                       f"₹{display_price:.2f}", f"{chg:+.2f}%")
+            sc2.metric("Support", f"₹{support:.2f}")
+            sc3.metric("Resistance", f"₹{resistance:.2f}")
             sc4.metric("Bars", f"{len(c)}")
             if live_cmp and abs(live_cmp - last_close) > 0.01:
-                st.caption(f"💡 Gold dotted line = live CMP {_cur()}{live_cmp:.2f}. "
-                           f"Last {_tf_label} candle closed at {_cur()}{last_close:.2f} "
+                st.caption(f"💡 Gold dotted line = live CMP ₹{live_cmp:.2f}. "
+                           f"Last {_tf_label} candle closed at ₹{last_close:.2f} "
                            f"(candles lag live price, especially intraday/after-hours).")
 
 # ── Trade Journal ──────────────────────────────────────────────────────────────
@@ -4651,8 +4460,8 @@ elif _page == 'journal':
             j_date = st.date_input("Trade date", key="j_date")
             j_dir = st.selectbox("Direction", ["Long", "Short"], key="j_dir")
         with jc2:
-            j_entry = st.number_input("Entry " + _cur(), min_value=0.0, step=1.0, key="j_entry")
-            j_exit = st.number_input("Exit " + _cur() + " (0 if open)", min_value=0.0, step=1.0, key="j_exit")
+            j_entry = st.number_input("Entry ₹", min_value=0.0, step=1.0, key="j_entry")
+            j_exit = st.number_input("Exit ₹ (0 if open)", min_value=0.0, step=1.0, key="j_exit")
             j_setup = st.selectbox("Setup", ["Breakout", "Pullback", "Reversal", "Trend-follow",
                                    "SMC / Order Block", "Trap reversal", "Sector rotation",
                                    "News-based", "Other"], key="j_setup")
@@ -4740,7 +4549,7 @@ elif _page == 'journal':
     <span style="color:{oc_clr};font-weight:700;font-size:.85rem">{outcome}{pnl_str}</span>
   </div>
   <div style="font-size:.78rem;color:var(--muted);margin-top:.2rem">
-    {tdate} · Entry {_cur()}{entry_p or '—'} → Exit {_cur()}{exit_p or '—'} · Emotion: {emotion} · ⭐{rating}/5</div>
+    {tdate} · Entry ₹{entry_p or '—'} → Exit ₹{exit_p or '—'} · Emotion: {emotion} · ⭐{rating}/5</div>
   {('<div style="font-size:.82rem;margin-top:.4rem"><b>Thesis:</b> ' + rationale + '</div>') if rationale else ''}
   {('<div style="font-size:.82rem;margin-top:.3rem;color:var(--accent)"><b>Lesson:</b> ' + lesson + '</div>') if lesson else ''}
 </div>""", unsafe_allow_html=True)
@@ -4761,7 +4570,7 @@ elif _page == 'breadth':
                 "(or it fills automatically via the background deep scan).")
         if st.button("🔍 Run Universe Scan for Breadth"):
             with st.spinner("Scanning universe…"):
-                st.session_state.scanner_cache = generate_market_scanner(market=MARKET)
+                st.session_state.scanner_cache = generate_market_scanner()
             st.rerun()
     else:
         total = len(scan_df)
@@ -4839,7 +4648,7 @@ elif _page == 'screener':
         st.info("Screener needs universe scan data first.")
         if st.button("🔍 Run Universe Scan"):
             with st.spinner("Scanning universe…"):
-                st.session_state.scanner_cache = generate_market_scanner(market=MARKET)
+                st.session_state.scanner_cache = generate_market_scanner()
             st.rerun()
     else:
         st.markdown(f"##### Filters ({len(scan_df):,} stocks in universe)")
@@ -5038,7 +4847,7 @@ elif _page == 'vcp':
         if _run_vcp:
             with st.spinner("Scanning universe for VCP bases… (this can take a minute)"):
                 st.session_state.vcp_scan_cache = scan_for_vcp(
-                    min_quality=_vcp_quality, ready_only=_vcp_ready, market=MARKET)
+                    min_quality=_vcp_quality, ready_only=_vcp_ready)
 
         vres = st.session_state.get("vcp_scan_cache")
         if vres is None:
@@ -5066,7 +4875,7 @@ elif _page == 'vcp':
                         f'<b>{s["stock"]}</b> {rdy} '
                         f'<span style="color:var(--muted);font-size:.78rem">{s["sector"]}</span></span>'
                         f'<span style="font-family:monospace;font-size:.82rem">'
-                        f'VCP {s["quality"]} · pivot {_cur()}{s["pivot"]} '
+                        f'VCP {s["quality"]} · pivot ₹{s["pivot"]} '
                         f'({s.get("pivot_distance_pct",0):+.1f}%)</span></div>')
                 st.markdown(
                     f'<div style="background:var(--gradient);border:1px solid var(--accent);'
@@ -5101,7 +4910,7 @@ elif _page == 'vcp':
             font-size:.72rem;font-weight:800;margin-left:.5rem">VCP {q}</span>{ready_badge}
     </div>
     <div style="font-family:'JetBrains Mono',monospace;font-size:.82rem;color:var(--muted)">
-      CMP {_cur()}{s['cmp']} · Pivot {_cur()}{s['pivot']}
+      CMP ₹{s['cmp']} · Pivot ₹{s['pivot']}
     </div>
   </div>
   <div style="font-size:.82rem;color:var(--muted);margin-top:.5rem">
@@ -5109,9 +4918,9 @@ elif _page == 'vcp':
     &nbsp;·&nbsp; {s.get('detail','')}
   </div>
   <div style="font-size:.85rem;margin-top:.5rem">
-    <b>Entry</b> {_cur()}{s.get('entry','—')} &nbsp;·&nbsp;
-    <b>Target</b> {_cur()}{s.get('target','—')} &nbsp;·&nbsp;
-    <b>Stop</b> {_cur()}{s.get('stop_loss','—')} &nbsp;·&nbsp;
+    <b>Entry</b> ₹{s.get('entry','—')} &nbsp;·&nbsp;
+    <b>Target</b> ₹{s.get('target','—')} &nbsp;·&nbsp;
+    <b>Stop</b> ₹{s.get('stop_loss','—')} &nbsp;·&nbsp;
     <b>R:R</b> {rr_str}
   </div>
 </div>""", unsafe_allow_html=True)
@@ -5160,7 +4969,7 @@ elif _page == 'rs':
             top_n = None if _rs_top == "All" else int(_rs_top)
             with st.spinner("Ranking the universe by relative strength… (takes a minute)"):
                 st.session_state.rs_scan_cache = scan_relative_strength(
-                    top_n=top_n, min_rating=_rs_min, market=MARKET)
+                    top_n=top_n, min_rating=_rs_min)
 
         rres = st.session_state.get("rs_scan_cache")
         if rres is None:
@@ -5172,13 +4981,12 @@ elif _page == 'rs':
         else:
             leaders = rres["leaders"]
             nifty = rres.get("nifty_returns", {})
-            _bench_label = "S&P 500" if MARKET == "US" else "Nifty"
-            # Benchmark context (Nifty for NSE, S&P 500 for US)
+            # Nifty benchmark context
             st.markdown(
                 f'<div style="background:var(--card);border:1px solid var(--border);'
                 f'border-radius:10px;padding:.8rem 1.1rem;margin-bottom:1rem;'
                 f'font-family:\'JetBrains Mono\',monospace;font-size:.82rem;color:var(--muted)">'
-                f'📊 {_bench_label} benchmark — 1M: <b style="color:var(--text)">{nifty.get("21",0):+.1f}%</b> · '
+                f'📊 Nifty benchmark — 1M: <b style="color:var(--text)">{nifty.get("21",0):+.1f}%</b> · '
                 f'3M: <b style="color:var(--text)">{nifty.get("63",0):+.1f}%</b> · '
                 f'6M: <b style="color:var(--text)">{nifty.get("126",0):+.1f}%</b> · '
                 f'1Y: <b style="color:var(--text)">{nifty.get("252",0):+.1f}%</b></div>',
@@ -5279,7 +5087,7 @@ if st.session_state.get("_run_deep_now", False):
 
     if _stage == "sector":
         try:
-            st.session_state.sector_cache = sector_rotation(market=MARKET)
+            st.session_state.sector_cache = sector_rotation()
             if (st.session_state.sector_cache is not None and
                     not st.session_state.sector_cache.empty):
                 st.session_state.outlook_cache = predict_sector_outlook(
@@ -5295,7 +5103,7 @@ if st.session_state.get("_run_deep_now", False):
 
     elif _stage == "universe":
         try:
-            _usd = generate_market_scanner(market=MARKET)
+            _usd = generate_market_scanner()
             st.session_state.scanner_cache = (
                 _usd if (_usd is not None and not _usd.empty) else pd.DataFrame())
         except Exception:
@@ -5306,7 +5114,7 @@ if st.session_state.get("_run_deep_now", False):
         try:
             if scan_for_smc_setups is not None:
                 st.session_state.smc_scan_cache = scan_for_smc_setups(
-                    min_quality="B", action_filter="All", market=MARKET)
+                    min_quality="B", action_filter="All")
         except Exception:
             pass
         st.session_state._deep_stage = "traps"
@@ -5314,7 +5122,7 @@ if st.session_state.get("_run_deep_now", False):
     elif _stage == "traps":
         try:
             if scan_for_traps is not None:
-                st.session_state.trap_scan_cache = scan_for_traps(min_confidence=55, market=MARKET)
+                st.session_state.trap_scan_cache = scan_for_traps(min_confidence=55)
         except Exception:
             pass
         st.session_state._deep_stage = "vcp"
@@ -5323,7 +5131,7 @@ if st.session_state.get("_run_deep_now", False):
         try:
             if scan_for_vcp is not None:
                 st.session_state.vcp_scan_cache = scan_for_vcp(
-                    min_quality="B", ready_only=False, market=MARKET)
+                    min_quality="B", ready_only=False)
         except Exception:
             pass
         st.session_state._deep_stage = "rs"
@@ -5332,7 +5140,7 @@ if st.session_state.get("_run_deep_now", False):
         try:
             if scan_relative_strength is not None:
                 st.session_state.rs_scan_cache = scan_relative_strength(
-                    top_n=None, min_rating=0, market=MARKET)
+                    top_n=None, min_rating=0)
         except Exception:
             pass
         st.session_state._deep_stage = "sector"        # reset for next cycle
