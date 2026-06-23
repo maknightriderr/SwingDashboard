@@ -185,6 +185,32 @@ def debug_universe_load():
     return "\n".join(lines)
 
 
+def debug_us_universe_load():
+    """Diagnostic for the US universe — shows which CSV files were found and
+    how many symbols loaded. Use to debug us_stocks.csv not loading."""
+    lines = [f"🔍 US universe load report — base dir: {_BASE_DIR}"]
+    for fn in ("us_stocks.csv", "nasdaq_listed.csv", "nyse_listed.csv", "sp500.csv"):
+        fp = os.path.join(_BASE_DIR, fn)
+        exists = os.path.exists(fp)
+        sz = f"{os.path.getsize(fp):,} bytes" if exists else "—"
+        status = "✅ found" if exists else "❌ not found"
+        lines.append(f"  {status}  {fn:24s}  {sz}")
+    lines.append("\nLoaded sources:")
+    for lbl, n, sk, err in US_UNIVERSE_SOURCES:
+        if err:
+            lines.append(f"  ❌ {lbl}: {err}")
+        else:
+            lines.append(f"  ✅ {lbl}: {n:,} symbols loaded, {sk:,} skipped")
+    lines.append(f"\nTotal US universe: {US_UNIVERSE_TOTAL:,} symbols across "
+                 f"{len(US_SECTOR_STOCKS):,} sectors")
+    if US_UNIVERSE_TOTAL <= 50:
+        lines.append("\n⚠️ Only the fallback list is loaded. If you uploaded "
+                     "us_stocks.csv, check: (1) it's in the REPO ROOT next to "
+                     "signals.py, (2) it has a 'Symbol' column header, "
+                     "(3) the filename is exactly 'us_stocks.csv'.")
+    return "\n".join(lines)
+
+
 # ── Run loader at import time ─────────────────────────────────────────────────
 _any_loaded = False
 for _cfg in _NSE_CSV_CONFIGS:
@@ -388,11 +414,12 @@ def _load_us_universe():
     seen = set()
     any_loaded = False
     for fn, lbl in candidates:
-        if not os.path.exists(fn):
+        fp = os.path.join(_BASE_DIR, fn)
+        if not os.path.exists(fp):
             US_UNIVERSE_SOURCES.append((lbl, 0, 0, "not found"))
             continue
         try:
-            df = pd.read_csv(fn)
+            df = pd.read_csv(fp)
             df = _norm_cols(df)
             sym_col = _find_col(df.columns, _SYM_CANDIDATES + ["ACT Symbol", "Ticker", "TICKER"])
             sec_col = _find_col(df.columns, _SEC_CANDIDATES + ["Sector", "GICS Sector"])
@@ -402,14 +429,24 @@ def _load_us_universe():
             loaded = skipped = 0
             for _, row in df.iterrows():
                 raw = str(row[sym_col]).strip().upper()
-                # Skip junk / non-common-stock rows
-                if (not raw or raw in seen or "$" in raw or "." in raw
-                        or len(raw) > 6 or not raw.isalpha()):
+                # Skip only genuine junk: empty, dupes, test issues, share-class
+                # dots, and obviously invalid tickers. Allow up to 5 alpha chars
+                # (standard US tickers) plus common valid forms.
+                if (not raw or raw == "NAN" or raw in seen
+                        or "$" in raw or " " in raw or "/" in raw
+                        or len(raw) > 5 or len(raw) < 1
+                        or not raw.replace(".", "").replace("-", "").isalpha()):
                     skipped += 1
                     continue
+                # Drop share-class suffixes for the base ticker (BRK.B → BRK)
+                base = raw.split(".")[0].split("-")[0]
+                if not base or base in seen or len(base) > 5:
+                    skipped += 1
+                    continue
+                raw = base
                 sector = (str(row[sec_col]).strip() if sec_col and pd.notna(row.get(sec_col))
                           else "US Equity")
-                if sector in ("", "nan", "N/A"):
+                if sector in ("", "nan", "N/A", "NaN"):
                     sector = "US Equity"
                 US_SECTOR_STOCKS.setdefault(sector, []).append(raw)
                 US_SECTOR_MAP[raw] = sector
