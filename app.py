@@ -96,14 +96,14 @@ except Exception:
 # market_regime is global (same for all users) — safe to cache across sessions.
 # TTL 600s = 10 min. This renders the header banner in <100ms on reruns.
 @st.cache_data(ttl=600, show_spinner=False)
-def _cached_market_regime():
-    return get_market_regime()
+def _cached_market_regime(market="NSE"):
+    return get_market_regime(market)
 
 
-def _get_market_regime_safe():
+def _get_market_regime_safe(market="NSE"):
     """Wrapper that avoids caching an empty (failed) regime result.
     If indices came back empty, clear the cache so the next rerun retries."""
-    m = _cached_market_regime()
+    m = _cached_market_regime(market)
     if not m or not m.get("indices"):
         # Empty/failed — drop the cached empty so next call re-fetches fresh
         try:
@@ -112,7 +112,7 @@ def _get_market_regime_safe():
             pass
         # Try one direct (uncached) fetch right now
         try:
-            m2 = get_market_regime()
+            m2 = get_market_regime(market)
             if m2 and m2.get("indices"):
                 return m2
         except Exception:
@@ -2310,7 +2310,7 @@ st.markdown(
     '</div>',
     unsafe_allow_html=True)
 
-market = _get_market_regime_safe()
+market = _get_market_regime_safe(MARKET)
 regime = market.get("regime", "Unknown")
 
 rc_map = {
@@ -2329,8 +2329,9 @@ _idx_items = market.get("indices", {})
 for name, d in _idx_items.items():
     price = d.get("price")
     chg   = d.get("chg_pct", 0)
-    price_str = f"{_cur()}{price:,.0f}" if price else "—"
-    if name == "India VIX":
+    price_str = f"{price:,.0f}" if price else "—"
+    # VIX-type indices: rising = fear (red), falling = calm (green) — inverse
+    if "VIX" in name:
         chg_clr = "var(--red)" if chg > 0 else "var(--green)"
     else:
         chg_clr = "var(--green)" if chg > 0 else "var(--red)"
