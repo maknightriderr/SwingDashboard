@@ -236,6 +236,18 @@ TRACKED_INDICES = {
     "Bank Nifty": "^NSEBANK", "Nifty IT": "^CNXIT", "India VIX": "^INDIAVIX"
 }
 
+# US market indices
+US_TRACKED_INDICES = {
+    "S&P 500": "^GSPC", "Nasdaq": "^IXIC", "Dow Jones": "^DJI",
+    "Russell 2000": "^RUT", "VIX": "^VIX", "Nasdaq 100": "^NDX",
+}
+
+# Per-market index sets and the "primary" index used for regime analysis
+_MARKET_INDICES = {
+    "NSE": {"indices": TRACKED_INDICES, "primary": "^NSEI", "primary_name": "Nifty 50"},
+    "US":  {"indices": US_TRACKED_INDICES, "primary": "^GSPC", "primary_name": "S&P 500"},
+}
+
 # Fallback symbols for indices that Yahoo sometimes deprecates. If the primary
 # symbol returns nothing, the resilient fetcher retries with these.
 _INDEX_FALLBACKS = {
@@ -443,6 +455,45 @@ def get_universe(market="NSE"):
     if market == "US":
         return US_SECTOR_STOCKS, US_SECTOR_MAP
     return SECTOR_STOCKS, SECTOR_MAP
+
+
+def _fetch_live_prices(symbols):
+    """Fetch the LIVE last-traded price for each symbol (market-aware).
+    Tries fast_info.last_price first (real-time), falls back to the latest
+    close. Returns {symbol: price}. Used so displays show the true current
+    price, not a stale daily-candle close."""
+    out = {}
+    def _one(sym):
+        if sym.startswith("^"):
+            return sym, None
+        for cand in _yahoo_candidates(sym):
+            try:
+                t = yf.Ticker(cand)
+                fi = getattr(t, "fast_info", None)
+                px = None
+                if fi is not None:
+                    for attr in ("last_price", "lastPrice"):
+                        try:
+                            v = fi[attr] if isinstance(fi, dict) else getattr(fi, attr, None)
+                            if v:
+                                px = float(v); break
+                        except Exception:
+                            continue
+                if px and px > 0:
+                    return sym, px
+            except Exception:
+                continue
+        return sym, None
+    try:
+        with ThreadPoolExecutor(max_workers=5) as ex:
+            futs = {ex.submit(_one, s): s for s in symbols}
+            for f in as_completed(futs):
+                s, p = f.result()
+                if p is not None:
+                    out[s] = p
+    except Exception:
+        pass
+    return out
 
 
 def _bulk_fetch_history(symbols, period="1y"):
@@ -823,9 +874,20 @@ def _rs_ratio_to_rating(ratio, all_ratios):
     return max(1, min(99, int(round(pct))))
 
 
-def get_market_regime():
+def get_market_regime(market="NSE"):
     now = time.time()
-    if _market_regime_cache["data"] and (now - _market_regime_cache["ts"]) < _CACHE_TTL:
+    _mkt_cfg = _MARKET_INDICES.get(market, _MARKET_INDICES["NSE"])
+    _indices = _mkt_cfg["indices"]
+    _primary = _mkt_cfg["primary"]
+    _primary_name = _mkt_cfg["primary_name"]
+
+    # Per-market regime cache (so NSE and US don't overwrite each other)
+    if not isinstance(_market_regime_cache.get("data"), dict) or \
+            _market_regime_cache.get("market") != market:
+        _cache_ok = False
+    else:
+        _cache_ok = (now - _market_regime_cache["ts"]) < _CACHE_TTL
+    if _cache_ok and _market_regime_cache["data"]:
         return _market_regime_cache["data"]
 
     indices_data = {}
@@ -833,7 +895,7 @@ def get_market_regime():
 
     # Fetch each index individually with the resilient fetcher. Doing them one
     # by one (not bulk) means one failing index never wipes out the rest.
-    for name, symbol in TRACKED_INDICES.items():
+    for name, symbol in _indices.items():
         df = _fetch_index_history(symbol, period="1y")
         if df is not None and len(df) >= 2:
             bulk_data[symbol] = df
@@ -846,13 +908,13 @@ def get_market_regime():
             current = float(df["Close"].iloc[-1])
             indices_data[name] = {"price": round(current, 2), "chg_pct": 0.0}
 
-    nifty = indices_data.get("Nifty 50", {})
+    nifty = indices_data.get(_primary_name, {})
     nifty_close = nifty.get("price")
     regime, trend, nifty_rsi = "Unknown", "Sideways", None
     support, resistance, conf = None, None, 50
 
-    if nifty_close and "^NSEI" in bulk_data:
-        df = bulk_data["^NSEI"]
+    if nifty_close and _primary in bulk_data:
+        df = bulk_data[_primary]
         if len(df) >= 50:
             close  = df["Close"]
             ema20  = float(close.ewm(span=20,  adjust=False).mean().iloc[-1])
@@ -891,7 +953,8 @@ def get_market_regime():
         "regime": regime, "trend": trend, "nifty_close": nifty_close,
         "nifty_rsi": nifty_rsi, "risk_level": risk, "indices": indices_data,
         "support": support, "resistance": resistance, "confidence": conf,
-        "indices_ok": len(indices_data) > 0,
+        "indices_ok": len(indices_data) > 0, "market": market,
+        "primary_name": _primary_name,
     }
     # Only cache a GOOD result (with at least some index data). If everything
     # failed (transient Yahoo rate-limit), don't poison the 10-min cache with
@@ -899,6 +962,7 @@ def get_market_regime():
     if indices_data:
         _market_regime_cache["data"] = result
         _market_regime_cache["ts"] = now
+        _market_regime_cache["market"] = market
     return result
 
 
@@ -1103,7 +1167,7 @@ def _compute_indicators_raw(symbol, period="1y", prefetched_df=None):
     # ── Bull / Bear Trap detection (v4 — ATR-normalised, RSI-at-peak) ────────
     # Pull cached market regime so the regime-context factor activates live.
     try:
-        _mkt_regime = get_market_regime()
+        _mkt_regime = get_market_regime(get_market(symbol))
     except Exception:
         _mkt_regime = None
     traps = detect_trap_signals(
@@ -1250,6 +1314,10 @@ def generate_signals(trades_df):
     unique_symbols = open_trades["stock"].unique().tolist()
     bulk_data = _bulk_fetch_history(unique_symbols, period="1y")
 
+    # Fetch LIVE prices (last traded), not just the last daily candle close,
+    # so Active Signals shows the real current market price.
+    live_prices = _fetch_live_prices(unique_symbols)
+
     for _, row in open_trades.iterrows():
         symbol, buy_at, qty, tid = row["stock"], row["buy_at"], row["quantity"], row["id"]
 
@@ -1273,6 +1341,10 @@ def generate_signals(trades_df):
             continue
 
         cmp, rsi = ind["cmp"], ind["rsi"]
+        # Prefer the live last-traded price over the stale daily-candle close
+        _live = live_prices.get(symbol)
+        if _live is not None and _live > 0:
+            cmp = round(float(_live), 2)
         ema9, ema21, ema50 = ind["ema9"], ind["ema21"], ind["ema50"]
         support, resistance = ind["support"], ind["resistance"]
         atr   = ind["atr"]
