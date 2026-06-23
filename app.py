@@ -105,14 +105,27 @@ def _cached_market_regime(market):
 
 
 def _get_market_regime_safe(market="NSE"):
-    """Wrapper that avoids caching an empty (failed) regime result.
-    If indices came back empty, clear the cache so the next rerun retries."""
+    """Return the market regime, cached in session_state so switching tabs is
+    INSTANT (reads a dict from memory, no network, no cache-layer call). Only
+    re-fetches when our own 10-min timer says the data is stale, or when the
+    market changes. This is the key to fast tab-switching."""
     if not market:
         market = "NSE"
+    import time as _t
+    _now = _t.time()
+    _store = st.session_state.get("_regime_store")
+    # Fast path: we have a fresh, good result for THIS market → return instantly
+    if (isinstance(_store, dict)
+            and _store.get("market") == market
+            and _store.get("data")
+            and _store["data"].get("indices")
+            and (_now - _store.get("ts", 0)) < 600):
+        return _store["data"]
+    # Stale or missing → fetch (this is the only slow path, ~once per 10 min)
+    m = None
     try:
         m = _cached_market_regime(market)
     except Exception:
-        # Cache layer or fetch failed — call directly, uncached
         try:
             m = get_market_regime(market)
         except Exception:
@@ -125,13 +138,18 @@ def _get_market_regime_safe(market="NSE"):
         try:
             m2 = get_market_regime(market)
             if m2 and m2.get("indices"):
-                return m2
+                m = m2
         except Exception:
             pass
-    return m or {"regime": "Unknown", "indices": {}, "confidence": "—"}
+    result = m or {"regime": "Unknown", "indices": {}, "confidence": "—"}
+    # Store in session so subsequent tab switches are instant
+    if result.get("indices"):
+        st.session_state["_regime_store"] = {
+            "market": market, "data": result, "ts": _now}
+    return result
 
 # Price cache: 5-min TTL so KPI cards don't block on every sidebar interaction.
-@st.cache_data(ttl=120, show_spinner=False)
+@st.cache_data(ttl=300, show_spinner=False)
 def _cached_prices(symbols_tuple):
     """Fetch ACCURATE live prices for a tuple of symbols.
 
