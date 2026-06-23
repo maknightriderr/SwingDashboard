@@ -1866,20 +1866,29 @@ raw = get_trades(UID)
 df  = enrich(raw) if not raw.empty else raw.copy()
 
 # ── Separate holdings by market (NSE stocks → NSE dashboard, US → US) ──────────
-# Trades carry a stored 'market' column (added via migration). New trades are
-# tagged at creation; legacy rows default to 'NSE'. We also re-detect US symbols
-# so any mislabeled legacy US holding still routes correctly.
+# The stored 'market' column is the GROUND TRUTH — it's set when the trade is
+# added, while the active market is known for certain. Symbol detection is only
+# a FALLBACK for legacy rows that have no stored market (NULL/blank), because a
+# ticker can exist in both the NSE and US lists and detection alone would
+# mis-route it. Trusting the stored value stops NSE holdings leaking into US.
 _active_mkt = st.session_state.get("active_market", "NSE")
 if not df.empty and "stock" in df.columns:
     if "market" in df.columns:
-        _mkt_series = df["market"].fillna("NSE")
+        _stored = df["market"].astype(str).str.upper().str.strip()
     else:
-        _mkt_series = pd.Series(["NSE"] * len(df), index=df.index)
-    # Re-detect: if a stock is known to be US in the universe, trust that
-    if _MARKETS_AVAILABLE:
-        _detected = df["stock"].apply(lambda s: get_market(str(s)))
-        # A row is US if either stored OR detected says US
-        _mkt_series = _mkt_series.where(_detected != "US", "US")
+        _stored = pd.Series([""] * len(df), index=df.index)
+
+    def _resolve_mkt(stored_val, symbol):
+        # Use the stored market if it's a real value; otherwise detect.
+        if stored_val in ("NSE", "US"):
+            return stored_val
+        if _MARKETS_AVAILABLE:
+            return get_market(str(symbol))
+        return "NSE"
+
+    _mkt_series = pd.Series(
+        [_resolve_mkt(_stored.iloc[i], df["stock"].iloc[i]) for i in range(len(df))],
+        index=df.index)
     df = df[_mkt_series == _active_mkt].reset_index(drop=True)
 
 if (st.session_state.last_refresh is None or
