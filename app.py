@@ -2759,13 +2759,24 @@ elif _page == 'sector':
 
 # ── Universe Scanner ─────────────────────────────────────────────────────────
 elif _page == 'scanner':
+    # Market-aware universe count + source list
+    if MARKET == "US" and _MARKETS_AVAILABLE:
+        _scan_total = US_UNIVERSE_TOTAL
+        _scan_sources = US_UNIVERSE_SOURCES
+        _scan_label = "🇺🇸 US Universe Scanner"
+    else:
+        _scan_total = UNIVERSE_TOTAL
+        _scan_sources = UNIVERSE_SOURCES
+        _scan_label = "🌌 Universe Scanner"
     st.markdown(
-        f'<div class="sec">🌌 Universe Scanner — {UNIVERSE_TOTAL:,} Assets</div>',
+        f'<div class="sec">{_scan_label} — {_scan_total:,} Assets</div>',
         unsafe_allow_html=True)
 
     # ── Universe source breakdown ─────────────────────────────────────────────
     src_html = ""
-    for lbl, n, sk, err in UNIVERSE_SOURCES:
+    for _src in _scan_sources:
+        lbl, n, sk = _src[0], _src[1], _src[2]
+        err = _src[3] if len(_src) > 3 else None
         clr = theme_t["green"] if n > 0 else theme_t["red"]
         src_html += (
             f'<span style="background:var(--card2);border:1px solid var(--border);'
@@ -2781,12 +2792,25 @@ elif _page == 'scanner':
         f'Sources loaded:</span> {src_html}</div>',
         unsafe_allow_html=True)
 
+    # ── Always-visible US load status when in US mode ─────────────────────────
+    if MARKET == "US" and _MARKETS_AVAILABLE:
+        if _scan_total <= 50:
+            st.warning(
+                f"⚠️ Only {_scan_total} US stocks loaded (fallback list). Your "
+                f"`us_stocks.csv` isn't being read. Open the diagnostics below to "
+                f"see why — check the file is in your repo root and `signals.py` "
+                f"is the latest version.")
+        else:
+            st.success(f"✅ {_scan_total:,} US stocks loaded and ready to scan.")
+
     # ── Diagnostic expander — shows exactly what loaded and why ───────────────
-    with st.expander("🔍 Universe Load Diagnostics", expanded=False):
-        st.code(debug_universe_load(), language=None)
-        if _MARKETS_AVAILABLE and debug_us_universe_load is not None:
+    with st.expander("🔍 Universe Load Diagnostics",
+                     expanded=(MARKET == "US" and _scan_total <= 50)):
+        if MARKET == "US" and _MARKETS_AVAILABLE and debug_us_universe_load is not None:
             st.markdown("**🇺🇸 US Universe:**")
             st.code(debug_us_universe_load(), language=None)
+            st.markdown("**🇮🇳 NSE Universe:**")
+        st.code(debug_universe_load(), language=None)
         st.caption("If a file shows '❌ not found', check it is committed to "
                    "your repo root (same folder as signals.py and app.py).")
 
