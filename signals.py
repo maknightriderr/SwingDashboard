@@ -436,6 +436,7 @@ def _load_us_universe():
                            "WHEN ISSUED", "ACQUISITION CORP", "ACQUISITION INC",
                            "ORDINARY SHARES", " ADS", " ADR")
             for _, row in df.iterrows():
+              try:
                 raw = str(row[sym_col]).strip().upper()
                 # Skip genuine junk by ticker shape
                 if (not raw or raw == "NAN" or raw in seen
@@ -451,10 +452,8 @@ def _load_us_universe():
                         skipped += 1
                         continue
                 # Skip tickers with warrant/unit/right suffix letters (5-char tickers
-                # ending in W/U/R/P that are typically SPAC derivatives)
-                if len(raw) == 5 and raw[-1] in ("W", "U", "R") and raw not in (
-                        # whitelist a few legit ones if needed
-                        ):
+                # ending in W/U/R that are typically SPAC derivatives)
+                if len(raw) == 5 and raw[-1] in ("W", "U", "R"):
                     skipped += 1
                     continue
                 base = raw.split(".")[0].split("-")[0]
@@ -471,6 +470,9 @@ def _load_us_universe():
                 _SYMBOL_MARKET[raw] = "US"
                 seen.add(raw)
                 loaded += 1
+              except Exception:
+                skipped += 1
+                continue
             US_UNIVERSE_SOURCES.append((lbl, loaded, skipped, None))
             if loaded > 0:
                 any_loaded = True
@@ -501,8 +503,8 @@ def _load_us_universe():
 # Load US universe at import (after market registry exists)
 try:
     _load_us_universe()
-except Exception:
-    pass
+except Exception as _e:
+    US_UNIVERSE_SOURCES.append(("US loader crashed", 0, 0, str(_e)[:80]))
 
 
 def get_universe(market="NSE"):
