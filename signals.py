@@ -451,11 +451,14 @@ def _load_us_universe():
             # Look for a security-name/description column to identify non-common-stock
             name_col = _find_col(df.columns, ["Security Name", "SECURITY NAME",
                                               "security name", "Company Name", "Name"])
-            _JUNK_WORDS = ("WARRANT", "- UNIT", " UNITS", "RIGHT", "PREFERRED",
-                           "DEPOSITARY", "DEBENTURE", "NOTES", "% NOTE", "TRUST UNIT",
-                           "SUBORDINAT", "CONVERTIBLE", "ETF", "ETN", " FUND",
-                           "WHEN ISSUED", "ACQUISITION CORP", "ACQUISITION INC",
-                           "ORDINARY SHARES", " ADS", " ADR")
+            # Junk words that indicate a NON-common-stock security TYPE.
+            # We deliberately do NOT filter on company-name words like
+            # "Acquisition" — many real common stocks (post-merger SPACs,
+            # ordinary shares, ADRs) trade normally and should be kept.
+            _JUNK_WORDS = (" WARRANT", "WARRANTS", "- UNIT", " UNITS", " RIGHT",
+                           " RIGHTS", "PREFERRED", "DEBENTURE", "% NOTE",
+                           "SUBORDINATED NOTE", "TRUST UNIT", "WHEN ISSUED",
+                           "WHEN-ISSUED")
             for _, row in df.iterrows():
               try:
                 raw = str(row[sym_col]).strip().upper()
@@ -472,11 +475,13 @@ def _load_us_universe():
                     if any(w in _nm for w in _JUNK_WORDS):
                         skipped += 1
                         continue
-                # Skip tickers with warrant/unit/right suffix letters (5-char tickers
-                # ending in W/U/R that are typically SPAC derivatives)
-                if len(raw) == 5 and raw[-1] in ("W", "U", "R"):
-                    skipped += 1
-                    continue
+                # Skip obvious warrant/right tickers: 5-char ending in W or R
+                # ONLY when the security name confirms it's a warrant/right.
+                if len(raw) == 5 and raw[-1] in ("W", "R") and name_col is not None:
+                    _nm2 = str(row.get(name_col, "")).upper()
+                    if "WARRANT" in _nm2 or "RIGHT" in _nm2:
+                        skipped += 1
+                        continue
                 base = raw.split(".")[0].split("-")[0]
                 if not base or base in seen or len(base) > 5:
                     skipped += 1
