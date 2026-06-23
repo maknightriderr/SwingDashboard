@@ -96,21 +96,28 @@ except Exception:
 # market_regime is global (same for all users) — safe to cache across sessions.
 # TTL 600s = 10 min. This renders the header banner in <100ms on reruns.
 @st.cache_data(ttl=600, show_spinner=False)
-def _cached_market_regime(market="NSE"):
+def _cached_market_regime(market):
     return get_market_regime(market)
 
 
 def _get_market_regime_safe(market="NSE"):
     """Wrapper that avoids caching an empty (failed) regime result.
     If indices came back empty, clear the cache so the next rerun retries."""
-    m = _cached_market_regime(market)
+    if not market:
+        market = "NSE"
+    try:
+        m = _cached_market_regime(market)
+    except Exception:
+        # Cache layer or fetch failed — call directly, uncached
+        try:
+            m = get_market_regime(market)
+        except Exception:
+            m = None
     if not m or not m.get("indices"):
-        # Empty/failed — drop the cached empty so next call re-fetches fresh
         try:
             _cached_market_regime.clear()
         except Exception:
             pass
-        # Try one direct (uncached) fetch right now
         try:
             m2 = get_market_regime(market)
             if m2 and m2.get("indices"):
