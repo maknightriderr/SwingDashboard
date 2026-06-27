@@ -1070,11 +1070,6 @@ table.t tr.row-loss td   {{ box-shadow: inset 3px 0 0 var(--red); }}
 .news-item:hover {{ border-left-width: 6px; background: var(--input); }}
 
 /* ═══ Sidebar, inputs, buttons ═══ */
-/* Theme-aware sidebar text — section headers (FILTERS, SCAN CONTROLS,
-   TELEGRAM, UI THEME, NAVIGATION) set no color of their own, so on light
-   themes they inherited a light default and vanished. Force them to follow
-   --text. Inline-coloured bits (status badges, accent username, muted
-   sub-labels) keep their own colour because inline styles always win. */
 [data-testid="stSidebar"] [data-testid="stMarkdownContainer"] div,
 [data-testid="stSidebar"] [data-testid="stMarkdownContainer"] p,
 [data-testid="stSidebar"] [data-testid="stMarkdownContainer"] span,
