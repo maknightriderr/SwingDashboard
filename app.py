@@ -2037,13 +2037,12 @@ with st.sidebar:
         st.session_state.active_page = "portfolio"
 
     # Group headers + radio buttons styled with CSS
-    # Two-level nav (Option B): each section is an expander; pages are
-    # buttons inside. The section holding the current page auto-expands,
-    # and the current page renders as a highlighted (primary) button.
+    # Popover nav: each section is a popover button; its pages live inside the
+    # floating panel. Click a section to open it, then click a page. The current
+    # page renders as a highlighted (primary) button.
     cur_page = st.session_state.active_page
     for group_label, items in NAV_GROUPS.items():
-        has_current = any(k == cur_page for _, k in items)
-        with st.expander(group_label, expanded=has_current):
+        with st.popover(group_label, use_container_width=True):
             for label, key in items:
                 if st.button(label, key=f"nav_{key}", width="stretch",
                              type=("primary" if key == cur_page else "secondary")):
