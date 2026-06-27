@@ -2660,7 +2660,7 @@ elif _page == 'sector':
             unsafe_allow_html=True)
         render_picks(st.session_state.picks_cache, theme_t)
 
-`# ── Universe Scanner ──` / `elif _page == 'scanner':`):
+# ── Universe Scanner ──` / `elif _page == 'scanner':`):
 
 ```python
 # ── Theme Scanner ────────────────────────────────────────────────────────────
