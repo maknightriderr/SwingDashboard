@@ -2661,8 +2661,6 @@ elif _page == 'sector':
         render_picks(st.session_state.picks_cache, theme_t)
 
 # ── Universe Scanner ──` / `elif _page == 'scanner':`):
-
-```python
 # ── Theme Scanner ────────────────────────────────────────────────────────────
 elif _page == 'themes':
     st.markdown('<div class="sec">🎯 Market Theme Scanner</div>',
