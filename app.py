@@ -1075,7 +1075,7 @@ table.t tr.row-loss td   {{ box-shadow: inset 3px 0 0 var(--red); }}
 [data-testid="stSidebar"] [data-testid="stMarkdownContainer"] span,
 [data-testid="stSidebar"] .stMarkdown div,
 [data-testid="stSidebar"] .stMarkdown p,
-[data-testid="stSidebar"] .stMarkdown span {
+[data-testid="stSidebar"] .stMarkdown span {{
     color: var(--text);
 }}
 [data-testid="stSidebar"] {{
