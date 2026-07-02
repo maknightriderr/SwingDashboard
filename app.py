@@ -1403,20 +1403,26 @@ ul[role="listbox"] li[aria-selected="true"] {{
 @media (prefers-reduced-motion: reduce) {{
     *, ::before, ::after {{ animation: none !important; transition: none !important; }}
 }}
-/* ═══ Sidebar buttons & popover triggers — text readable on every theme ═══ */
-/* Blanket rule: ALL sidebar button labels follow --text (fixes invisible
-   popover section names on light themes, regardless of Streamlit version). */
-[data-testid="stSidebar"] button p,
-[data-testid="stSidebar"] button span,
-[data-testid="stSidebar"] button [data-testid="stMarkdownContainer"] p {{
+/* ═══ Popover nav triggers — force section labels visible on every theme ═══ */
+/* Matches any popover-related element (stPopover / stPopoverButton / etc.)
+   inside the sidebar, whether the testid is on the button or its wrapper.
+   The open panel's page buttons are portaled to <body>, so only the section
+   triggers (Portfolio, Signals, …) are affected. */
+[data-testid="stSidebar"] button[data-testid*="Popover"],
+[data-testid="stSidebar"] button[data-testid*="Popover"] *,
+[data-testid="stSidebar"] [data-testid*="Popover"] button,
+[data-testid="stSidebar"] [data-testid*="Popover"] button *,
+[data-testid="stSidebar"] [class*="Popover"] button,
+[data-testid="stSidebar"] [class*="Popover"] button * {{
     color: var(--text) !important;
+    fill: var(--text) !important;
+    font-weight: 700 !important;
 }}
-/* Re-assert: PRIMARY buttons (current page / form submit) keep dark-on-accent */
-[data-testid="stSidebar"] button[kind="primary"] p,
-[data-testid="stSidebar"] button[kind="primary"] span,
-[data-testid="stSidebar"] button[data-testid*="primary"] p,
-[data-testid="stSidebar"] button[data-testid*="primary"] span {{
-    color: var(--bg) !important;
+[data-testid="stSidebar"] button[data-testid*="Popover"],
+[data-testid="stSidebar"] [data-testid*="Popover"] button,
+[data-testid="stSidebar"] [class*="Popover"] button {{
+    background: var(--card2) !important;
+    border: 1px solid var(--border) !important;
 }}
 </style>
 """
