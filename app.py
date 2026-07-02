@@ -158,18 +158,32 @@ def _cached_prices(symbols_tuple):
                     pass
         return None
 
-    # ── METHOD 1: per-ticker fast_info (LIVE last traded price = most accurate) ─
-    for tk, sym in sym_map.items():
+    # ── METHOD 1: per-ticker fast_info in PARALLEL (live last traded price) ────
+    # Same accuracy as before (fast_info stays the primary, real-time source);
+    # only the fetching is now concurrent instead of one-by-one.
+    from concurrent.futures import ThreadPoolExecutor as _TPE, as_completed as _asc
+
+    def _live_price(tk):
         base = tk[:-3]   # strip .NS
         for sfx in [".NS", ".BO"]:
             try:
-                t = _yf.Ticker(base + sfx)
-                v = _extract_fast_price(t)
+                v = _extract_fast_price(_yf.Ticker(base + sfx))
                 if v is not None and v > 0:
-                    prices[sym] = round(v, 2)
-                    break
+                    return round(v, 2)
             except Exception:
                 continue
+        return None
+
+    if sym_map:
+        with _TPE(max_workers=8) as _ex:
+            _futs = {_ex.submit(_live_price, tk): sym for tk, sym in sym_map.items()}
+            for _fut in _asc(_futs):
+                try:
+                    _v = _fut.result()
+                    if _v is not None:
+                        prices[_futs[_fut]] = _v
+                except Exception:
+                    pass
 
     # ── METHOD 2: batch download for any the live method missed ────────────────
     # auto_adjust=False → ACTUAL close price (not back-adjusted for div/splits)
@@ -229,10 +243,58 @@ st.set_page_config(
 
 # ── Auth helpers ───────────────────────────────────────────────────────────────
 def make_hash(password):
-    return hashlib.sha256(str.encode(password + "swing_salt_99")).hexdigest()
-
+    """PBKDF2-HMAC-SHA256 with a random per-user salt (200k iterations).
+    Stored format: pbkdf2$<salt_hex>$<hash_hex>"""
+    import secrets as _secrets
+    salt = _secrets.token_hex(16)
+    dk = hashlib.pbkdf2_hmac("sha256", password.encode(),
+                             bytes.fromhex(salt), 200_000)
+    return f"pbkdf2${salt}${dk.hex()}"
+ 
 def verify_hash(password, hashed_pw):
-    return make_hash(password) == hashed_pw
+    """Verifies new pbkdf2 hashes AND legacy sha256 hashes, so existing
+    accounts keep working. New registrations always get pbkdf2."""
+    try:
+        if str(hashed_pw).startswith("pbkdf2$"):
+            _, salt, expected = str(hashed_pw).split("$", 2)
+            dk = hashlib.pbkdf2_hmac("sha256", password.encode(),
+                                     bytes.fromhex(salt), 200_000)
+            import hmac as _hmac
+            return _hmac.compare_digest(dk.hex(), expected)
+        # Legacy: sha256 + static salt (accounts created before this upgrade)
+        legacy = hashlib.sha256(str.encode(password + "swing_salt_99")).hexdigest()
+        return legacy == hashed_pw
+    except Exception:
+        return False
+       
+def _cookie_secret():
+    try:
+        s = st.secrets.get("cookie_secret", "")
+        if s:
+            return str(s)
+    except Exception:
+        pass
+    return "swing_cookie_fallback_v1"
+ 
+def sign_uid(uid):
+    """Cookie value = '<uid>.<hmac>' so nobody can forge another user's id."""
+    import hmac as _hmac
+    sig = _hmac.new(_cookie_secret().encode(), str(uid).encode(),
+                    hashlib.sha256).hexdigest()[:24]
+    return f"{uid}.{sig}"
+ 
+def parse_signed_uid(token):
+    """Returns the uid only if the signature is valid, else None."""
+    import hmac as _hmac
+    try:
+        uid_str, sig = str(token).split(".", 1)
+        expected = _hmac.new(_cookie_secret().encode(), uid_str.encode(),
+                             hashlib.sha256).hexdigest()[:24]
+        if _hmac.compare_digest(sig, expected):
+            return int(uid_str)
+    except Exception:
+        pass
+    return None
 
 # ── Database ───────────────────────────────────────────────────────────────────
 # Uses Neon DB (serverless Postgres). Neon is reachable from Streamlit Cloud and
@@ -243,16 +305,24 @@ def verify_hash(password, hashed_pw):
 DB = "trades_v2.db"   # SQLite fallback (used if psycopg2 unavailable)
 
 # ── NEON DB CONNECTION ─────────────────────────────────────────────────────────
-_PG_PARAMS = dict(
-    host            = "ep-cold-morning-atyjado2.c-9.us-east-1.aws.neon.tech",
-    port            = 5432,
-    dbname          = "neondb",
-    user            = "neondb_owner",
-    password        = "npg_jZxyXU6vRm1P",
-    sslmode         = "require",
-    connect_timeout = 15,
-)
-_USE_PG = True
+def _load_pg_params():
+    """Read Neon credentials from Streamlit Secrets (never hardcode in a
+    public repo). If secrets are missing, returns None -> SQLite fallback."""
+    try:
+        return dict(
+            host            = st.secrets["pg_host"],
+            port            = int(st.secrets.get("pg_port", 5432)),
+            dbname          = st.secrets.get("pg_dbname", "neondb"),
+            user            = st.secrets["pg_user"],
+            password        = st.secrets["pg_password"],
+            sslmode         = "require",
+            connect_timeout = 15,
+        )
+    except Exception:
+        return None
+ 
+_PG_PARAMS = _load_pg_params()
+_USE_PG = _PG_PARAMS is not None
 
 try:
     import psycopg2
@@ -637,7 +707,9 @@ if st.session_state.user_id is None:
 
     if cookies and cookies.get("swing_user_id"):
         try:
-            cookie_uid = int(cookies.get("swing_user_id"))
+            cookie_uid = parse_signed_uid(cookies.get("swing_user_id"))
+            if cookie_uid is None:
+                raise ValueError("invalid cookie signature")
             st.session_state.user_id = cookie_uid
             user_row = db("SELECT username FROM users WHERE id=?",
                           (cookie_uid,), fetch=True)
@@ -669,7 +741,7 @@ if st.session_state.user_id is None:
                         st.session_state.user_id = uid
                         st.session_state.username = l_user
                         st.session_state.first_render_done = False  # defer scans
-                        controller.set("swing_user_id", str(uid), max_age=604800)
+                        controller.set("swing_user_id", sign_uid(uid), max_age=604800)
                         st.success("Authenticated. Booting Engine...")
                         time.sleep(1)
                         st.rerun()
@@ -1331,26 +1403,20 @@ ul[role="listbox"] li[aria-selected="true"] {{
 @media (prefers-reduced-motion: reduce) {{
     *, ::before, ::after {{ animation: none !important; transition: none !important; }}
 }}
-/* ═══ Popover nav triggers — force section labels visible on every theme ═══ */
-/* Matches any popover-related element (stPopover / stPopoverButton / etc.)
-   inside the sidebar, whether the testid is on the button or its wrapper.
-   The open panel's page buttons are portaled to <body>, so only the section
-   triggers (Portfolio, Signals, …) are affected. */
-[data-testid="stSidebar"] button[data-testid*="Popover"],
-[data-testid="stSidebar"] button[data-testid*="Popover"] *,
-[data-testid="stSidebar"] [data-testid*="Popover"] button,
-[data-testid="stSidebar"] [data-testid*="Popover"] button *,
-[data-testid="stSidebar"] [class*="Popover"] button,
-[data-testid="stSidebar"] [class*="Popover"] button * {{
+/* ═══ Sidebar buttons & popover triggers — text readable on every theme ═══ */
+/* Blanket rule: ALL sidebar button labels follow --text (fixes invisible
+   popover section names on light themes, regardless of Streamlit version). */
+[data-testid="stSidebar"] button p,
+[data-testid="stSidebar"] button span,
+[data-testid="stSidebar"] button [data-testid="stMarkdownContainer"] p {{
     color: var(--text) !important;
-    fill: var(--text) !important;
-    font-weight: 700 !important;
 }}
-[data-testid="stSidebar"] button[data-testid*="Popover"],
-[data-testid="stSidebar"] [data-testid*="Popover"] button,
-[data-testid="stSidebar"] [class*="Popover"] button {{
-    background: var(--card2) !important;
-    border: 1px solid var(--border) !important;
+/* Re-assert: PRIMARY buttons (current page / form submit) keep dark-on-accent */
+[data-testid="stSidebar"] button[kind="primary"] p,
+[data-testid="stSidebar"] button[kind="primary"] span,
+[data-testid="stSidebar"] button[data-testid*="primary"] p,
+[data-testid="stSidebar"] button[data-testid*="primary"] span {{
+    color: var(--bg) !important;
 }}
 </style>
 """
@@ -1535,34 +1601,61 @@ def card(lbl, val, sub="", cls=""):
 
 
 # ── Chart helpers ──────────────────────────────────────────────────────────────
+def _chart_colors():
+    """Colors for Plotly pulled from the ACTIVE theme, so charts stay readable
+    on light and dark themes alike."""
+    t = THEMES.get(st.session_state.get("theme")) or next(iter(THEMES.values()))
+    bg = str(t.get("bg", "#000000")).lstrip("#")
+    try:
+        r, g, b = int(bg[0:2], 16), int(bg[2:4], 16), int(bg[4:6], 16)
+        is_light = (0.299 * r + 0.587 * g + 0.114 * b) > 140
+    except Exception:
+        is_light = False
+    return {
+        "text":  t.get("text", "#f8fafc"),
+        "muted": t.get("muted", "#cbd5e1"),
+        "grid":  t.get("border", "rgba(148,163,184,.2)"),
+        "green": t.get("green", "#10b981"),
+        "red":   t.get("red", "#ef4444"),
+        "blue":  t.get("blue", "#3b82f6"),
+        "yellow": t.get("yellow", "#f59e0b"),
+        "pie_text": t.get("text", "#0f172a") if is_light else "#ffffff",
+    }
+
+
 def base_layout(fig, title):
+    c = _chart_colors()
     fig.update_layout(
-        title=dict(text=title, font=dict(size=14, color="#f8fafc", weight="bold"), x=.01),
+        title=dict(text=title, font=dict(size=14, color=c["text"], weight="bold"), x=.01),
         paper_bgcolor="rgba(0,0,0,0)", plot_bgcolor="rgba(0,0,0,0)",
-        font=dict(color="#cbd5e1", size=11), margin=dict(l=8, r=8, t=45, b=8))
-    fig.update_xaxes(gridcolor="#334155", zerolinecolor="#334155", tickfont=dict(color="#cbd5e1"))
-    fig.update_yaxes(gridcolor="#334155", zerolinecolor="#334155", tickfont=dict(color="#cbd5e1"))
+        font=dict(color=c["muted"], size=11), margin=dict(l=8, r=8, t=45, b=8))
+    fig.update_xaxes(gridcolor=c["grid"], zerolinecolor=c["grid"],
+                     tickfont=dict(color=c["muted"]))
+    fig.update_yaxes(gridcolor=c["grid"], zerolinecolor=c["grid"],
+                     tickfont=dict(color=c["muted"]))
     return fig
 
 
 def chart_alloc(df):
+    c = _chart_colors()
     g = df.groupby("stock")["invested"].sum().reset_index()
     return base_layout(go.Figure(go.Pie(
         labels=g["stock"], values=g["invested"], hole=0.4,
         marker=dict(colors=px.colors.qualitative.Dark24,
                     line=dict(color="rgba(0,0,0,0)", width=0)),
-        textinfo="percent+label", textfont=dict(size=11, color="#ffffff")
+        textinfo="percent+label", textfont=dict(size=11, color=c["pie_text"])
     )), "Portfolio Allocation")
 
 
 def chart_pnl(df):
+    c = _chart_colors()
     d = df.sort_values("profit")
     fig = base_layout(go.Figure(go.Bar(
         x=d["profit"], y=d["stock"], orientation="h",
-        marker=dict(color=["#ef4444" if v < 0 else "#10b981" for v in d["profit"]],
+        marker=dict(color=[c["red"] if v < 0 else c["green"] for v in d["profit"]],
                     line=dict(width=0)),
         text=[fp(p) for p in d["profit_pct"]],
-        textposition="outside", textfont=dict(color="#f8fafc", size=10)
+        textposition="outside", textfont=dict(color=c["text"], size=10)
     )), "P&L by Stock")
     fig.update_layout(showlegend=False, margin=dict(l=8, r=55, t=45, b=8))
     fig.update_xaxes(tickprefix="₹")
@@ -1570,23 +1663,25 @@ def chart_pnl(df):
 
 
 def chart_donut(df):
-    c = df["status"].value_counts().reset_index()
-    c.columns = ["Status", "Count"]
+    c = _chart_colors()
+    cnt = df["status"].value_counts().reset_index()
+    cnt.columns = ["Status", "Count"]
     fig = base_layout(go.Figure(go.Pie(
-        labels=c["Status"], values=c["Count"], hole=.6,
+        labels=cnt["Status"], values=cnt["Count"], hole=.6,
         marker=dict(
-            colors=[{"Open": "#f59e0b", "Closed": "#10b981"}.get(s, "#94a3b8")
-                    for s in c["Status"]],
+            colors=[{"Open": c["yellow"], "Closed": c["green"]}.get(s, c["muted"])
+                    for s in cnt["Status"]],
             line=dict(color="rgba(0,0,0,0)", width=0)),
-        textinfo="percent+value", textfont=dict(size=12, color="#ffffff")
+        textinfo="percent+value", textfont=dict(size=12, color=c["pie_text"])
     )), "Open vs Closed")
     fig.add_annotation(
         text=f"<b>{len(df)}</b><br><span style='font-size:10px'>TRADES</span>",
-        font=dict(size=18, color="#f8fafc"), showarrow=False, x=.5, y=.5)
+        font=dict(size=18, color=c["text"]), showarrow=False, x=.5, y=.5)
     return fig
 
 
 def chart_growth(hist, cur_val, cur_inv):
+    c = _chart_colors()
     today = datetime.now().strftime("%Y-%m-%d")
     rows = hist[["snapshot_date", "total_invested", "current_value"]].to_dict("records")
     if not hist.empty and hist.iloc[-1]["snapshot_date"] != today:
@@ -1598,10 +1693,10 @@ def chart_growth(hist, cur_val, cur_inv):
     d = pd.DataFrame(rows)
     fig = base_layout(go.Figure([
         go.Scatter(x=pd.to_datetime(d["snapshot_date"]), y=d["current_value"],
-                   name="Value", line=dict(color="#10b981", width=3),
+                   name="Value", line=dict(color=c["green"], width=3),
                    fill="tozeroy", fillcolor="rgba(16,185,129,0.1)"),
         go.Scatter(x=pd.to_datetime(d["snapshot_date"]), y=d["total_invested"],
-                   name="Invested", line=dict(color="#3b82f6", width=2, dash="dash"))
+                   name="Invested", line=dict(color=c["blue"], width=2, dash="dash"))
     ]), "Portfolio Growth")
     fig.update_layout(hovermode="x unified")
     fig.update_yaxes(tickprefix="₹")
@@ -2006,7 +2101,10 @@ if not df.empty:
     t_pnl_pct = t_pnl / _pnl_base * 100 if _pnl_base > 0 else 0
     best  = df.loc[df["profit_pct"].idxmax(), "stock"]
     worst = df.loc[df["profit_pct"].idxmin(), "stock"]
-    save_snapshot(UID, t_inv, t_cur)
+    _today_snap = datetime.now().strftime("%Y-%m-%d")
+    if st.session_state.get("_snap_done") != _today_snap:
+        save_snapshot(UID, t_inv, t_cur)
+        st.session_state._snap_done = _today_snap
 else:
     odf = cdf = pd.DataFrame()
     t_inv = t_cur = t_real = t_unreal = t_pnl = t_pnl_pct = 0
