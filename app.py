@@ -955,6 +955,17 @@ if st.session_state.theme not in THEMES:
 def theme_css(t):
     glow  = t.get("glow", "rgba(255,255,255,0.1)")
     bg_fx = t.get("bg_fx", "none")
+    # Pick readable text colour for filled (accent) buttons based on
+    # the accent's luminance — fixes light-on-gold primary buttons on
+    # light themes (e.g. "Execute Entry").
+    def _on_accent(hexc):
+        try:
+            h = str(hexc).lstrip("#")
+            r, g, b = int(h[0:2], 16), int(h[2:4], 16), int(h[4:6], 16)
+            return "#0b0b0b" if (0.299*r + 0.587*g + 0.114*b) > 150 else "#ffffff"
+        except Exception:
+            return "#ffffff"
+    on_accent = _on_accent(t.get("accent", "#ffffff"))
     return f"""
 <style>
 @import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&family=Fraunces:opsz,wght@9..144,400;9..144,500;9..144,600;9..144,700&family=JetBrains+Mono:wght@400;500;700&display=swap');
@@ -964,7 +975,7 @@ def theme_css(t):
   --border:{t['border']}; --text:{t['text']}; --muted:{t['muted']};
   --green:{t['green']}; --red:{t['red']}; --yellow:{t['yellow']};
   --blue:{t['blue']}; --accent:{t['accent']}; --card2:{t['card2']};
-  --gradient:{t['gradient']}; --glow:{glow};
+  --gradient:{t['gradient']}; --glow:{glow}; --on-accent:{on_accent};
 }}
 
 /* ═══ Base canvas with ambient light bloom ═══ */
@@ -1323,11 +1334,11 @@ ul[role="listbox"] li[aria-selected="true"] {{
 /* Primary buttons (form submit) get the gold fill */
 .stButton > button[kind="primary"], .stForm button[kind="primaryFormSubmit"] {{
     background: linear-gradient(145deg, var(--accent), var(--accent)) !important;
-    color: var(--bg) !important; border: none !important;
+    color: var(--on-accent) !important; border: none !important;
     box-shadow: 0 4px 20px -6px var(--glow) !important;
 }}
 .stButton > button[kind="primary"]:hover {{
-    color: var(--bg) !important; filter: brightness(1.08);
+    color: var(--on-accent) !important; filter: brightness(1.08);
 }}
 
 /* ✦ Inputs / selects — frosted with gold focus ring */
@@ -1418,6 +1429,54 @@ ul[role="listbox"] li[aria-selected="true"] {{
 [data-testid="stSidebar"] button[data-testid*="primary"] p,
 [data-testid="stSidebar"] button[data-testid*="primary"] span {{
     color: var(--bg) !important;
+}}
+
+/* ═══ Light-theme contrast pack — text/icons that Streamlit leaves white ═══ */
+/* (a) Popover PANEL page buttons live in a body-level portal, so the sidebar
+   fix can't reach them. Force their labels to --text, but keep the current
+   page (primary) button readable on its accent fill. */
+[data-testid="stPopoverBody"] button:not([kind="primary"]) p,
+[data-testid="stPopoverBody"] button:not([kind="primary"]) span,
+div[data-baseweb="popover"] button:not([kind="primary"]) p,
+div[data-baseweb="popover"] button:not([kind="primary"]) span {{
+    color: var(--text) !important;
+}}
+[data-testid="stPopoverBody"] button[kind="primary"] p,
+[data-testid="stPopoverBody"] button[kind="primary"] span,
+div[data-baseweb="popover"] button[kind="primary"] p,
+div[data-baseweb="popover"] button[kind="primary"] span {{
+    color: var(--on-accent) !important;
+}}
+/* (b) Password reveal 👁 icon + any input-adornment icons → follow --text */
+[data-testid="stTextInput"] button svg,
+[data-testid="stTextInput"] button,
+[data-baseweb="input"] button svg,
+button[aria-label*="assword"] svg,
+button[title*="assword"] svg {{
+    color: var(--muted) !important; fill: var(--muted) !important;
+}}
+[data-testid="stTextInput"] button:hover svg,
+[data-baseweb="input"] button:hover svg {{
+    color: var(--text) !important; fill: var(--text) !important;
+}}
+/* (c) Checkbox / toggle / radio labels (e.g. "Show EMA 9/21" under the chart,
+   "Ascending", scanner checkboxes) — force to --text on every theme. */
+[data-testid="stCheckbox"] label,
+[data-testid="stCheckbox"] label p,
+[data-testid="stCheckbox"] label span,
+[data-testid="stToggle"] label,
+[data-testid="stToggle"] label p,
+[data-testid="stToggle"] label span,
+[data-testid="stRadio"] label p,
+[data-testid="stWidgetLabel"] p,
+[data-testid="stWidgetLabel"] label {{
+    color: var(--text) !important;
+}}
+/* (d) Selectbox / multiselect chosen-value text (main area + sidebar) */
+[data-baseweb="select"] div[value],
+[data-baseweb="select"] span,
+[data-testid="stMultiSelect"] span {{
+    color: var(--text) !important;
 }}
 </style>
 """
