@@ -1229,15 +1229,17 @@ ul[role="listbox"] li {{ color: var(--text) !important; font-weight: 500 !import
 ul[role="listbox"] li[aria-selected="true"] {{
     background-color: var(--accent) !important; color: #000 !important; font-weight: 800 !important; }}
 
-.stButton>button {{
+.stButton>button, [data-testid="stButton"] button,
+[data-testid="baseButton-secondary"] {{
     background: var(--card2) !important; border: 1px solid var(--border) !important;
     color: var(--text) !important; border-radius: 10px !important; font-weight: 700 !important;
     letter-spacing: .05em !important; padding: .6rem 1.2rem !important;
     transition: all .3s ease !important;
 }}
-.stButton>button:hover {{
+.stButton>button:hover, [data-testid="stButton"] button:hover,
+[data-testid="baseButton-secondary"]:hover {{
     border-color: var(--accent) !important; background: var(--accent) !important;
-    color: #000 !important; box-shadow: 0 0 24px var(--glow) !important;
+    color: var(--on-accent) !important; box-shadow: 0 0 24px var(--glow) !important;
     transform: translateY(-1px) scale(1.01);
 }}
 
@@ -1313,7 +1315,9 @@ ul[role="listbox"] li[aria-selected="true"] {{
 }}
 
 /* ✦ Buttons — premium gradient, lift, gold glow on hover */
-.stButton > button, .stDownloadButton > button {{
+.stButton > button, .stDownloadButton > button,
+[data-testid="stButton"] button, [data-testid="stDownloadButton"] button,
+[data-testid="baseButton-secondary"] {{
     background: var(--card2) !important;
     border: 1px solid var(--border) !important;
     border-radius: 10px !important;
@@ -1322,7 +1326,9 @@ ul[role="listbox"] li[aria-selected="true"] {{
     letter-spacing: -0.01em !important;
     transition: all .25s cubic-bezier(0.175,0.885,0.32,1.275) !important;
 }}
-.stButton > button:hover, .stDownloadButton > button:hover {{
+.stButton > button:hover, .stDownloadButton > button:hover,
+[data-testid="stButton"] button:hover, [data-testid="stDownloadButton"] button:hover,
+[data-testid="baseButton-secondary"]:hover {{
     border-color: var(--accent) !important;
     color: var(--accent) !important;
     transform: translateY(-2px) !important;
@@ -1331,13 +1337,21 @@ ul[role="listbox"] li[aria-selected="true"] {{
 .stButton > button:active, .stDownloadButton > button:active {{
     transform: translateY(0) !important;
 }}
-/* Primary buttons (form submit) get the gold fill */
-.stButton > button[kind="primary"], .stForm button[kind="primaryFormSubmit"] {{
+/* Primary buttons (form submit, current-page nav) get the gold fill,
+   app-wide — not just in the sidebar. */
+button[kind*="primary"], [data-testid="baseButton-primary"],
+[data-testid="baseButton-primaryFormSubmit"] {{
     background: linear-gradient(145deg, var(--accent), var(--accent)) !important;
     color: var(--on-accent) !important; border: none !important;
     box-shadow: 0 4px 20px -6px var(--glow) !important;
 }}
-.stButton > button[kind="primary"]:hover {{
+button[kind*="primary"] p, button[kind*="primary"] span,
+[data-testid="baseButton-primary"] p, [data-testid="baseButton-primary"] span,
+[data-testid="baseButton-primaryFormSubmit"] p,
+[data-testid="baseButton-primaryFormSubmit"] span {{
+    color: var(--on-accent) !important;
+}}
+button[kind*="primary"]:hover, [data-testid="baseButton-primary"]:hover {{
     color: var(--on-accent) !important; filter: brightness(1.08);
 }}
 
@@ -3260,6 +3274,16 @@ elif _page == 'scanner':
             sd = generate_market_scanner()
             st.session_state.scanner_cache = sd if (sd is not None and not sd.empty) \
                 else pd.DataFrame()
+
+            # ── Scanner diagnostics (works once signals.py's get_scanner_
+            #    diagnostics() patch is applied; degrades silently otherwise) ──
+            try:
+                import signals as _sg_diag
+                if hasattr(_sg_diag, "get_scanner_diagnostics"):
+                    st.session_state["_scanner_diag"] = _sg_diag.get_scanner_diagnostics()
+            except Exception:
+                pass
+
             if (st.session_state.scanner_cache is not None and
                     not st.session_state.scanner_cache.empty):
                 _sc = st.session_state.scanner_cache
@@ -3270,7 +3294,58 @@ elif _page == 'scanner':
                     f"✅ {len(_sc)} setups | "
                     f"💧 {liq_ok} liquid · ⚠️ {liq_low} low-liq",
                     icon="🚀")
+
+            # ── AUTO-CHAIN Scanner 2.0 right after Universe Scan ────────────────
+            # Runs the regime/RS/structural-gate rework on the same universe and
+            # stores a funnel comparison: how many Universe Scan found vs how
+            # many survive Scanner 2.0's stricter filters (shown below).
+            try:
+                import scanner_v2 as _sv2_auto
+                _r2_auto = _sv2_auto.generate_market_scanner_v2()
+                st.session_state.scan2_cache = _r2_auto
+                _d2_auto = _r2_auto.get("df")
+                _v1_count = len(st.session_state.scanner_cache) \
+                    if st.session_state.scanner_cache is not None else 0
+                _v2_count = len(_d2_auto) if _d2_auto is not None else 0
+                _v2_buy = (int(_d2_auto["Signal"].isin(
+                            ["🔥 STRONG BUY", "🟢 BUY SETUP"]).sum())
+                          if _d2_auto is not None and not _d2_auto.empty else 0)
+                st.session_state["_scan_funnel"] = {
+                    "v1_total": _v1_count, "v2_scored": _v2_count,
+                    "v2_buy": _v2_buy, "regime": _r2_auto.get("regime", "—"),
+                }
+            except Exception as _sv2_err:
+                st.session_state["_scan_funnel"] = None
+                st.session_state["_scan_funnel_error"] = str(_sv2_err)
+
             st.rerun()
+
+    # ── Persistent funnel card: Universe Scan → Scanner 2.0 conversion ────────
+    _funnel = st.session_state.get("_scan_funnel")
+    if _funnel:
+        st.markdown(
+            f'<div style="background:var(--card);border:1px solid var(--accent);'
+            f'border-radius:10px;padding:.8rem 1.1rem;margin-bottom:1rem;'
+            f'display:flex;gap:1.5rem;align-items:center;flex-wrap:wrap">'
+            f'<span style="font-weight:800;color:var(--accent)">🚀 Scanner 2.0 '
+            f'auto-check</span>'
+            f'<span style="font-size:.85rem;color:var(--text)">'
+            f'Universe Scan found <b>{_funnel["v1_total"]}</b> → '
+            f'Scanner 2.0 scored <b>{_funnel["v2_scored"]}</b> → '
+            f'<b style="color:var(--green)">{_funnel["v2_buy"]}</b> pass as '
+            f'BUY-tier (regime: {_funnel["regime"]})</span>'
+            f'<span style="font-size:.75rem;color:var(--muted)">'
+            f'See full breakdown on 🚀 Scanner 2.0 page</span>'
+            f'</div>', unsafe_allow_html=True)
+    elif st.session_state.get("_scan_funnel_error"):
+        st.caption(f"🚀 Scanner 2.0 auto-check skipped — {st.session_state['_scan_funnel_error']} "
+                   "(upload scanner_v2.py to enable this comparison)")
+
+    # ── Scanner diagnostics expander (why results are sparse, if ever) ───────
+    _diag_text = st.session_state.get("_scanner_diag")
+    if _diag_text:
+        with st.expander("🔍 Why this many results? (fetch/liquidity breakdown)"):
+            st.code(_diag_text, language=None)
 
     scan_df = st.session_state.scanner_cache
     if scan_df is None:
@@ -3481,14 +3556,8 @@ elif _page == 'scanner2':
         else:
             _d2 = _r2["df"]
             _d2 = _d2.copy()
-            # ── HEAT GATE: over risk budget → buy tiers BLOCKED, not hinted ────
-            if _heat_pct >= 6:
-                _blk = _d2["Signal"].isin(["🔥 STRONG BUY", "🟢 BUY SETUP"])
-                if bool(_blk.any()):
-                    _d2.loc[_blk, "Signal"] = "⛔ HEAT-BLOCKED"
-                st.error(f"⛔ Portfolio heat {_heat_pct:.1f}% ≥ 6% — new buy signals are "
-                         "blocked until open risk reduces (book partials or tighten stops).",
-                         icon="🌡")
+            # Heat is shown informationally in the gauge above (no signals are
+            # blocked or relabeled here) — you decide what to act on.
             # ── 📆 Earnings-soon flag (uses your Earnings Calendar fetch) ──────
             try:
                 _ear_soon = {r.get("Stock") for r in
