@@ -1418,10 +1418,20 @@ ul[role="listbox"] li[aria-selected="true"] {{
 /* ═══ Sidebar buttons & popover triggers — text readable on every theme ═══ */
 /* Blanket rule: ALL sidebar button labels follow --text (fixes invisible
    popover section names on light themes, regardless of Streamlit version). */
-[data-testid="stSidebar"] button p,
-[data-testid="stSidebar"] button span,
-[data-testid="stSidebar"] button [data-testid="stMarkdownContainer"] p {{
+[data-testid="stSidebar"] button:not([kind="primary"]):not([kind="primaryFormSubmit"]) p,
+[data-testid="stSidebar"] button:not([kind="primary"]):not([kind="primaryFormSubmit"]) span,
+[data-testid="stSidebar"] button:not([kind="primary"]):not([kind="primaryFormSubmit"]) [data-testid="stMarkdownContainer"] p {{
     color: var(--text) !important;
+}}
+/* Primary / form-submit buttons IN the sidebar (e.g. "Execute Entry") must
+   read against their gold accent fill, not the generic --text colour. */
+[data-testid="stSidebar"] button[kind="primary"] p,
+[data-testid="stSidebar"] button[kind="primary"] span,
+[data-testid="stSidebar"] button[kind="primaryFormSubmit"] p,
+[data-testid="stSidebar"] button[kind="primaryFormSubmit"] span,
+[data-testid="stSidebar"] button[kind="primary"] [data-testid="stMarkdownContainer"] p,
+[data-testid="stSidebar"] button[kind="primaryFormSubmit"] [data-testid="stMarkdownContainer"] p {{
+    color: var(--on-accent) !important;
 }}
 /* Sidebar popover TRIGGER buttons (e.g. "Portfolio ⌄") don't get Streamlit's
    normal button background — force the same themed card look as other
@@ -1485,7 +1495,10 @@ button[title*="assword"] svg {{
 [data-testid="stToggle"] label span,
 [data-testid="stRadio"] label p,
 [data-testid="stWidgetLabel"] p,
-[data-testid="stWidgetLabel"] label {{
+[data-testid="stWidgetLabel"] label,
+[data-testid="stCheckbox"] [data-testid="stMarkdownContainer"] p,
+[data-testid="stToggle"] [data-testid="stMarkdownContainer"] p,
+[data-testid="stRadio"] [data-testid="stMarkdownContainer"] p {{
     color: var(--text) !important;
 }}
 /* (d) Selectbox / multiselect chosen-value text (main area + sidebar) */
@@ -5076,8 +5089,9 @@ elif _page == 'chart':
                 paper_bgcolor="rgba(0,0,0,0)", plot_bgcolor="rgba(0,0,0,0)",
                 font=dict(color=theme_t.get("text", "#fff")),
                 legend=dict(orientation="h", y=1.02, font=dict(color=theme_t.get("text", "#000"), size=11)))
-            fig.update_xaxes(gridcolor="rgba(255,255,255,0.05)")
-            fig.update_yaxes(gridcolor="rgba(255,255,255,0.05)", tickprefix="₹")
+            _ax_font = dict(color=theme_t.get("text", "#fff"), size=11)
+            fig.update_xaxes(gridcolor="rgba(148,163,184,0.18)", tickfont=_ax_font)
+            fig.update_yaxes(gridcolor="rgba(148,163,184,0.18)", tickprefix="₹", tickfont=_ax_font)
             st.plotly_chart(fig, use_container_width=True)
 
             # Volume subchart
@@ -5089,8 +5103,8 @@ elif _page == 'chart':
                 height=160, margin=dict(l=10, r=10, t=5, b=10), showlegend=False,
                 paper_bgcolor="rgba(0,0,0,0)", plot_bgcolor="rgba(0,0,0,0)",
                 font=dict(color=theme_t.get("text", "#fff")))
-            vfig.update_xaxes(gridcolor="rgba(255,255,255,0.03)")
-            vfig.update_yaxes(gridcolor="rgba(255,255,255,0.03)")
+            vfig.update_xaxes(gridcolor="rgba(148,163,184,0.12)", tickfont=_ax_font)
+            vfig.update_yaxes(gridcolor="rgba(148,163,184,0.12)", tickfont=_ax_font)
             st.plotly_chart(vfig, use_container_width=True)
 
 # ── Trade Journal ────────────────────────────────────────────────────────────
