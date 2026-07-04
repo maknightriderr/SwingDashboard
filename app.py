@@ -1423,6 +1423,22 @@ ul[role="listbox"] li[aria-selected="true"] {{
 [data-testid="stSidebar"] button [data-testid="stMarkdownContainer"] p {{
     color: var(--text) !important;
 }}
+/* Sidebar popover TRIGGER buttons (e.g. "Portfolio ⌄") don't get Streamlit's
+   normal button background — force the same themed card look as other
+   sidebar buttons, on every theme (light or dark). */
+[data-testid="stSidebar"] [data-testid="stPopover"] > div > button,
+[data-testid="stSidebar"] div[data-baseweb="popover"] > button,
+[data-testid="stSidebar"] button[data-testid*="Popover"],
+[data-testid="stSidebar"] [data-testid*="Popover"] > button {{
+    background: var(--card2) !important;
+    border: 1px solid var(--border) !important;
+    border-radius: 10px !important;
+}}
+[data-testid="stSidebar"] [data-testid="stPopover"] > div > button:hover,
+[data-testid="stSidebar"] div[data-baseweb="popover"] > button:hover,
+[data-testid="stSidebar"] button[data-testid*="Popover"]:hover {{
+    border-color: var(--accent) !important;
+}}
 /* Re-assert: PRIMARY buttons (current page / form submit) keep dark-on-accent */
 [data-testid="stSidebar"] button[kind="primary"] p,
 [data-testid="stSidebar"] button[kind="primary"] span,
@@ -5059,7 +5075,7 @@ elif _page == 'chart':
                 margin=dict(l=10, r=10, t=30, b=10),
                 paper_bgcolor="rgba(0,0,0,0)", plot_bgcolor="rgba(0,0,0,0)",
                 font=dict(color=theme_t.get("text", "#fff")),
-                legend=dict(orientation="h", y=1.02))
+                legend=dict(orientation="h", y=1.02, font=dict(color=theme_t.get("text", "#000"), size=11)))
             fig.update_xaxes(gridcolor="rgba(255,255,255,0.05)")
             fig.update_yaxes(gridcolor="rgba(255,255,255,0.05)", tickprefix="₹")
             st.plotly_chart(fig, use_container_width=True)
