@@ -1502,6 +1502,29 @@ def build_telegram_message(signals, sector_df, picks=None):
     lines.append("\n<i>Indicative only. Not investment advice.</i>")
     return "\n".join(lines)
 
+LAST_SCANNER_DIAGNOSTICS = {}
+ 
+ 
+def get_scanner_diagnostics():
+    """Human-readable breakdown of the last generate_market_scanner() run."""
+    d = LAST_SCANNER_DIAGNOSTICS
+    if not d:
+        return "No scan has run yet in this session."
+    msg = (
+        f"🔍 Last scan diagnostics ({d.get('timestamp','—')}):\n"
+        f"  Universe attempted     : {d.get('total', 0):,}\n"
+        f"  ❌ Fetch/compute failed : {d.get('fetch_failed', 0):,} "
+        f"(Yahoo data unavailable, <20 bars, or bad symbol)\n"
+        f"  ⚠️ Skipped (illiquid)   : {d.get('illiquid', 0):,} "
+        f"(avg turnover < ₹1 Cr/day)\n"
+        f"  ✅ Scored & in results  : {d.get('passed', 0):,}\n"
+    )
+    total = d.get('total', 0)
+    if total and d.get('fetch_failed', 0) / total > 0.5:
+        msg += (f"\n  ⚠️ Fetch failures are {d.get('fetch_failed',0)/total*100:.0f}% "
+               f"of the universe — Yahoo Finance is likely rate-limiting the "
+               f"app's IP. Usually transient; try again in a few minutes.")
+    return msg
 
 # ─── Master Universe Scanner — FIX 9: unified engine + liquidity gate ─────────
 def generate_market_scanner():
@@ -1510,13 +1533,17 @@ def generate_market_scanner():
         all_symbols.extend(stocks)
     bulk_data = _bulk_fetch_history(all_symbols, period="6mo")
     results = []
+    _fetch_failed = 0
+    _illiquid = 0
     for symbol in all_symbols:
         sector = get_sector(symbol)
         df  = bulk_data.get(symbol)
         ind = compute_indicators(symbol, period="6mo", prefetched_df=df)
         if not ind:
+            _fetch_failed += 1
             continue
         if not ind.get("liquidity_ok", True):   # FIX 10: visible skip for new entries
+            _illiquid += 1
             continue
         cmp, rsi, trend = ind["cmp"], ind["rsi"], ind["trend"]
         patterns = ind.get("patterns", []); candles = ind.get("candlesticks", [])
@@ -1584,6 +1611,12 @@ def generate_market_scanner():
             "Turnover_Cr": round(ind.get("avg_turnover", 0) / 1e7, 1),
             "Liquid": "✅" if ind.get("liquidity_ok", True) else "⚠️ Low",
         })
+    LAST_SCANNER_DIAGNOSTICS.clear()
+    LAST_SCANNER_DIAGNOSTICS.update({
+        "total": len(all_symbols), "fetch_failed": _fetch_failed,
+        "illiquid": _illiquid, "passed": len(results),
+        "timestamp": datetime.now().strftime("%d %b %Y %H:%M"),
+    })
     if not results:
         return pd.DataFrame()
     return pd.DataFrame(results).sort_values(by=["Sector", "Score"], ascending=[True, False])
