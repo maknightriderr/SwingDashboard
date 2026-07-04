@@ -250,7 +250,7 @@ def make_hash(password):
     dk = hashlib.pbkdf2_hmac("sha256", password.encode(),
                              bytes.fromhex(salt), 200_000)
     return f"pbkdf2${salt}${dk.hex()}"
- 
+
 def verify_hash(password, hashed_pw):
     """Verifies new pbkdf2 hashes AND legacy sha256 hashes, so existing
     accounts keep working. New registrations always get pbkdf2."""
@@ -266,7 +266,7 @@ def verify_hash(password, hashed_pw):
         return legacy == hashed_pw
     except Exception:
         return False
-       
+
 def _cookie_secret():
     try:
         s = st.secrets.get("cookie_secret", "")
@@ -275,14 +275,14 @@ def _cookie_secret():
     except Exception:
         pass
     return "swing_cookie_fallback_v1"
- 
+
 def sign_uid(uid):
     """Cookie value = '<uid>.<hmac>' so nobody can forge another user's id."""
     import hmac as _hmac
     sig = _hmac.new(_cookie_secret().encode(), str(uid).encode(),
                     hashlib.sha256).hexdigest()[:24]
     return f"{uid}.{sig}"
- 
+
 def parse_signed_uid(token):
     """Returns the uid only if the signature is valid, else None."""
     import hmac as _hmac
@@ -320,7 +320,7 @@ def _load_pg_params():
         )
     except Exception:
         return None
- 
+
 _PG_PARAMS = _load_pg_params()
 _USE_PG = _PG_PARAMS is not None
 
@@ -891,7 +891,7 @@ THEMES = {
         "glow": "rgba(20, 184, 166, 0.20)",
         "bg_fx": "radial-gradient(ellipse 70% 45% at 50% -15%, rgba(20,184,166,0.05), transparent)",
     },
-  # ── 7. Porcelain & Gold — private-bank light, warm ivory + deep gold ──────
+    # ── 7. Porcelain & Gold — private-bank light, warm ivory + deep gold ──────
     "Porcelain & Gold (Private Bank)": {
         "bg": "#f6f5f1", "card": "rgba(255, 255, 255, 0.85)", "input": "#ffffff",
         "border": "rgba(20, 33, 61, 0.12)",
@@ -1403,26 +1403,21 @@ ul[role="listbox"] li[aria-selected="true"] {{
 @media (prefers-reduced-motion: reduce) {{
     *, ::before, ::after {{ animation: none !important; transition: none !important; }}
 }}
-/* ═══ Popover nav triggers — force section labels visible on every theme ═══ */
-/* Matches any popover-related element (stPopover / stPopoverButton / etc.)
-   inside the sidebar, whether the testid is on the button or its wrapper.
-   The open panel's page buttons are portaled to <body>, so only the section
-   triggers (Portfolio, Signals, …) are affected. */
-[data-testid="stSidebar"] button[data-testid*="Popover"],
-[data-testid="stSidebar"] button[data-testid*="Popover"] *,
-[data-testid="stSidebar"] [data-testid*="Popover"] button,
-[data-testid="stSidebar"] [data-testid*="Popover"] button *,
-[data-testid="stSidebar"] [class*="Popover"] button,
-[data-testid="stSidebar"] [class*="Popover"] button * {{
+
+/* ═══ Sidebar buttons & popover triggers — text readable on every theme ═══ */
+/* Blanket rule: ALL sidebar button labels follow --text (fixes invisible
+   popover section names on light themes, regardless of Streamlit version). */
+[data-testid="stSidebar"] button p,
+[data-testid="stSidebar"] button span,
+[data-testid="stSidebar"] button [data-testid="stMarkdownContainer"] p {{
     color: var(--text) !important;
-    fill: var(--text) !important;
-    font-weight: 700 !important;
 }}
-[data-testid="stSidebar"] button[data-testid*="Popover"],
-[data-testid="stSidebar"] [data-testid*="Popover"] button,
-[data-testid="stSidebar"] [class*="Popover"] button {{
-    background: var(--card2) !important;
-    border: 1px solid var(--border) !important;
+/* Re-assert: PRIMARY buttons (current page / form submit) keep dark-on-accent */
+[data-testid="stSidebar"] button[kind="primary"] p,
+[data-testid="stSidebar"] button[kind="primary"] span,
+[data-testid="stSidebar"] button[data-testid*="primary"] p,
+[data-testid="stSidebar"] button[data-testid*="primary"] span {{
+    color: var(--bg) !important;
 }}
 </style>
 """
@@ -2196,6 +2191,7 @@ with st.sidebar:
             ("🎯 Theme Scanner",     "themes"),
             ("💪 RS Leaders",        "rs"),
             ("🌌 Universe Scanner",  "scanner"),
+            ("🚀 Scanner 2.0",       "scanner2"),
             ("📊 Market Breadth",    "breadth"),
             ("🔬 Custom Screener",   "screener"),
             ("📅 Corporate Actions", "corp_actions"),
@@ -2224,7 +2220,6 @@ with st.sidebar:
     if "active_page" not in st.session_state:
         st.session_state.active_page = "portfolio"
 
-    # Group headers + radio buttons styled with CSS
     # Popover nav: each section is a popover button; its pages live inside the
     # floating panel. Click a section to open it, then click a page. The current
     # page renders as a highlighted (primary) button.
@@ -2462,6 +2457,32 @@ st.markdown(
     unsafe_allow_html=True)
 
 # ── KPI cards ──────────────────────────────────────────────────────────────────
+# ── Portfolio value sparkline (30-day) for the KPI card ───────────────────────
+_spark_html = ""
+try:
+    _now_ts = time.time()
+    if (_now_ts - st.session_state.get("_hist_ts", 0)) > 600:
+        st.session_state["_hist_df"] = get_history(UID)
+        st.session_state["_hist_ts"] = _now_ts
+    _hh = st.session_state.get("_hist_df")
+    if _hh is not None and len(_hh) >= 3:
+        _vals = _hh["current_value"].astype(float).tail(30).tolist()
+        if t_cur:
+            _vals.append(float(t_cur))
+        _vmin, _vmax = min(_vals), max(_vals)
+        _rng = (_vmax - _vmin) or 1.0
+        _n = len(_vals)
+        _pts = " ".join(
+            f"{(i/(_n-1))*100:.1f},{26 - ((v - _vmin)/_rng)*24:.1f}"
+            for i, v in enumerate(_vals))
+        _sclr = "#10b981" if _vals[-1] >= _vals[0] else "#ef4444"
+        _spark_html = (f'<svg width="100%" height="28" viewBox="0 0 100 28" '
+                       f'preserveAspectRatio="none" style="margin-top:.3rem">'
+                       f'<polyline points="{_pts}" fill="none" stroke="{_sclr}" '
+                       f'stroke-width="2" stroke-linejoin="round"/></svg>')
+except Exception:
+    _spark_html = ""
+
 pnl_c = "green" if t_pnl >= 0 else "red"
 r_c   = "green" if t_real >= 0 else "red"
 u_c   = "green" if t_unreal >= 0 else "red"
@@ -2469,7 +2490,7 @@ u_c   = "green" if t_unreal >= 0 else "red"
 st.markdown(
     '<div class="cards">'
     + card("Total Invested",  fi(t_inv),    "",          "blue")
-    + card("Portfolio Value", fi(t_cur),    "",          "blue")
+    + card("Portfolio Value", fi(t_cur), _spark_html, "blue")
     + card("Total P&L",       fi(t_pnl),    fp(t_pnl_pct), pnl_c)
     + card("Realized P&L",    fi(t_real),   "",          r_c)
     + card("Unrealized P&L",  fi(t_unreal), "",          u_c)
@@ -2797,6 +2818,81 @@ elif _page == 'signals':
             f'</div>',
             unsafe_allow_html=True)
 
+        # ── 🎯 Exit Manager — R-multiples & professional exit rules ────────────
+        if not odf.empty:
+            _sig_by_stock = {s.get("stock"): s
+                             for s in (st.session_state.signals_cache or [])}
+            _em_rows = []
+            for _, _pos in odf.iterrows():
+                try:
+                    _stk = _pos["stock"]
+                    _buy = float(_pos["buy_at"])
+                    _cmp_p = _pos.get("cmp")
+                    if pd.isna(_cmp_p):
+                        continue
+                    _cmp_p = float(_cmp_p)
+                    _sg_ = _sig_by_stock.get(_stk, {})
+                    _stp = _sg_.get("stop_loss")
+                    _pct = float(_pos.get("profit_pct", 0) or 0)
+                    try:
+                        _days = (datetime.now() -
+                                 pd.to_datetime(_pos.get("added_date"))).days
+                    except Exception:
+                        _days = None
+                    # R-multiple: profit measured in units of entry risk
+                    _r_mult = None
+                    if _stp and float(_stp) < _buy:
+                        _risk0 = _buy - float(_stp)
+                        if _risk0 > 0.01:
+                            _r_mult = round((_cmp_p - _buy) / _risk0, 2)
+                    # Exit rule ladder (first match wins)
+                    if _stp and _cmp_p <= float(_stp):
+                        _act = "🛑 EXIT — stop violated"
+                    elif _pct <= -8:
+                        _act = "⚠️ Review — beyond 8% risk cap"
+                    elif _r_mult is not None and _r_mult >= 2:
+                        _act = "📤 Book ⅓–½ profit, trail the rest"
+                    elif _r_mult is not None and _r_mult >= 1:
+                        _act = f"🛡 Move SL to breakeven (₹{_buy:,.2f})"
+                    elif _days is not None and _days >= 15 and -2 <= _pct <= 2:
+                        _act = "⏰ Time stop — dead money, redeploy"
+                    elif _stp and float(_stp) >= _buy:
+                        _act = "✅ Risk-free (stop ≥ entry) — trail"
+                    else:
+                        _act = "✋ Hold per plan"
+                    _em_rows.append({
+                        "Stock": _stk, "Entry": _buy, "CMP": _cmp_p,
+                        "P&L %": _pct, "R": _r_mult,
+                        "SL": float(_stp) if _stp else None,
+                        "Days": _days, "Action": _act})
+                except Exception:
+                    continue
+            if _em_rows:
+                st.markdown('<div class="sec">🎯 Exit Manager — R-Multiples & Rules</div>',
+                            unsafe_allow_html=True)
+                _em_df = pd.DataFrame(_em_rows)
+                _urgent = int(_em_df["Action"].str.contains("🛑|⚠️|⏰").sum())
+                if _urgent:
+                    st.warning(f"⚡ {_urgent} position(s) need action — see the Action column.",
+                               icon="🎯")
+                st.dataframe(
+                    _em_df, hide_index=True, use_container_width=True,
+                    column_config={
+                        "Stock": st.column_config.TextColumn("Stock", width="small", pinned=True),
+                        "Entry": st.column_config.NumberColumn("Entry", format="₹%.2f"),
+                        "CMP":   st.column_config.NumberColumn("CMP", format="₹%.2f"),
+                        "P&L %": st.column_config.NumberColumn("P&L %", format="%+.1f"),
+                        "R":     st.column_config.NumberColumn("R", format="%.2f"),
+                        "SL":    st.column_config.NumberColumn("SL", format="₹%.2f"),
+                        "Days":  st.column_config.NumberColumn("Days", format="%d"),
+                        "Action": st.column_config.TextColumn("Action", width="large"),
+                    })
+                st.caption("R = profit in units of entry risk (entry − stop). Playbook: "
+                           "+1R → stop to breakeven · +2R → book ⅓–½ and trail the rest "
+                           "(Supertrend) · flat after 15 days → time stop. Note: the SL "
+                           "shown is the engine's CURRENT stop, so R is an approximation "
+                           "once stops have trailed up.")
+
         render_signals(st.session_state.signals_cache, theme_t)
 
 # ── Sector Rotation ──────────────────────────────────────────────────────────
@@ -2806,6 +2902,31 @@ elif _page == 'sector':
 
     if st.session_state.sector_cache is not None:
         render_sector(st.session_state.sector_cache, theme_t)
+
+        # ── 🗺 Sector Heatmap (treemap) — where capital is flowing ─────────────
+        try:
+            _sh_df = st.session_state.sector_cache.copy()
+            if not _sh_df.empty and "avg_pct" in _sh_df.columns:
+                _sh_df["_w"] = (_sh_df["momentum_score"].clip(lower=0.05)
+                                if "momentum_score" in _sh_df.columns else 1.0)
+                _tfig = px.treemap(
+                    _sh_df, path=["sector"], values="_w", color="avg_pct",
+                    color_continuous_scale=["#ef4444", "#3f3f46", "#10b981"],
+                    color_continuous_midpoint=0, custom_data=["avg_pct"])
+                _tfig.update_traces(
+                    texttemplate="<b>%{label}</b><br>%{customdata[0]:+.1f}%",
+                    textfont=dict(size=13))
+                _tfig.update_layout(
+                    height=340, margin=dict(l=4, r=4, t=8, b=4),
+                    paper_bgcolor="rgba(0,0,0,0)",
+                    font=dict(color=theme_t.get("text", "#fff")),
+                    coloraxis_showscale=False)
+                st.plotly_chart(_tfig, use_container_width=True)
+                st.caption("Tile size = sector momentum · colour = 1-month flow "
+                           "(green = money in, red = money out). One glance shows "
+                           "where capital is rotating.")
+        except Exception:
+            pass
 
         if not st.session_state.sector_cache.empty:
             top = st.session_state.sector_cache.iloc[0]
@@ -2841,7 +2962,6 @@ elif _page == 'sector':
             unsafe_allow_html=True)
         render_picks(st.session_state.picks_cache, theme_t)
 
-# ── Universe Scanner ──` / `elif _page == 'scanner':`):
 # ── Theme Scanner ────────────────────────────────────────────────────────────
 elif _page == 'themes':
     st.markdown('<div class="sec">🎯 Market Theme Scanner</div>',
@@ -2891,14 +3011,12 @@ elif _page == 'themes':
                 f'{tdata["timestamp"]}</div>',
                 unsafe_allow_html=True)
 
-            # ── Hottest-themes summary cards ──────────────────────────────────
             cards = ""
             for t in themes:
                 rank = t["rank"]
                 score = t["score"]
                 medal = ("🥇" if rank == 1 else "🥈" if rank == 2 else
                          "🥉" if rank == 3 else f"#{rank}")
-                # Hot/warm/cold colour
                 if score >= 55:
                     clr = theme_t["green"]; bdr = theme_t["accent"]
                 elif score >= 30:
@@ -2932,7 +3050,6 @@ elif _page == 'themes':
                 f'margin-bottom:1.5rem">{cards}</div>',
                 unsafe_allow_html=True)
 
-            # ── Per-theme drill-down (expandable constituents) ────────────────
             st.markdown('<div class="sec">🔬 Theme Constituents</div>',
                         unsafe_allow_html=True)
             for t in themes:
@@ -2976,6 +3093,7 @@ elif _page == 'themes':
                        "Inside each, stocks are ranked by relative strength — the leaders "
                        "of the leading themes are your highest-conviction shortlist. "
                        "Always confirm your own entry setup before trading.")
+
 
 # ── Universe Scanner ─────────────────────────────────────────────────────────
 elif _page == 'scanner':
@@ -3201,6 +3319,191 @@ elif _page == 'scanner':
                 "RS_Lead": st.column_config.TextColumn("Lead",    width="small"),
                 "Patterns":st.column_config.TextColumn("Patterns",width="large"),
             })
+
+# ── Scanner 2.0 (regime-aware, RS-gated, structural stops) ──────────────────
+elif _page == 'scanner2':
+    st.markdown('<div class="sec">🚀 Universe Scanner 2.0</div>',
+                unsafe_allow_html=True)
+    st.caption("Audit-grade rework: regime gating · RS gate · extension penalty · "
+               "fresh-breakout-only credit · structural stops · measured-move targets "
+               "· percentile ranking · outcome logging. Your original scanner is "
+               "untouched — compare them side by side.")
+
+    try:
+        import scanner_v2 as _sv2
+        _SV2_OK = True
+    except Exception as _sv2e:
+        _SV2_OK = False
+        st.warning(f"🚀 Scanner 2.0 needs `scanner_v2.py` in the repo root "
+                   f"(same folder as app.py). Upload it, then reboot. ({_sv2e})",
+                   icon="⚠️")
+
+    if _SV2_OK:
+        if "scan2_cache" not in st.session_state:
+            st.session_state.scan2_cache = None
+
+        # ── Portfolio heat gauge (open risk vs capital, from live signals) ────
+        _heat_rs = 0.0
+        try:
+            for _s in (st.session_state.signals_cache or []):
+                _c, _sl, _q = _s.get("cmp"), _s.get("stop_loss"), _s.get("quantity")
+                if _c and _sl and _q and _c > _sl:
+                    _heat_rs += float(_q) * (float(_c) - float(_sl))
+        except Exception:
+            pass
+        _cap = float(st.session_state.get("_sz_cap", 100000.0))
+        _heat_pct = (_heat_rs / _cap * 100) if _cap > 0 else 0
+        _h_clr = "#10b981" if _heat_pct < 4 else "#f59e0b" if _heat_pct < 6 else "#ef4444"
+        _h_msg = ("OK — room for new entries" if _heat_pct < 4 else
+                  "Caution — near risk budget" if _heat_pct < 6 else
+                  "🔴 OVER BUDGET — avoid new entries until risk reduces")
+        st.markdown(
+            f'<div style="background:var(--card);border:1px solid {_h_clr};'
+            f'border-radius:10px;padding:.7rem 1.1rem;margin-bottom:1rem;'
+            f'display:flex;gap:1.2rem;align-items:center;flex-wrap:wrap">'
+            f'<span style="font-weight:800;color:{_h_clr}">🌡 Portfolio Heat: '
+            f'{_heat_pct:.1f}%</span>'
+            f'<span style="font-size:.78rem;color:var(--muted)">open risk '
+            f'₹{_heat_rs:,.0f} of ₹{_cap:,.0f} capital · {_h_msg}</span></div>',
+            unsafe_allow_html=True)
+
+        sc2a, sc2b = st.columns([3, 1])
+        with sc2b:
+            _run_v2 = st.button("🚀 Run Scan 2.0", width="stretch")
+        with sc2a:
+            st.markdown('<div style="font-size:.78rem;color:var(--muted);'
+                        'font-weight:600;padding-top:.6rem">⚡ = fresh breakout '
+                        '(last 2 bars) · Entry = pivot buy-stop for fresh setups '
+                        '· SL below swing low · RR from actionable entry</div>',
+                        unsafe_allow_html=True)
+
+        if _run_v2:
+            with st.spinner("Running regime-aware scan…"):
+                st.session_state.scan2_cache = _sv2.generate_market_scanner_v2()
+
+        _r2 = st.session_state.scan2_cache
+        if _r2 is None:
+            st.info("💡 Click **Run Scan 2.0**. First run fetches history "
+                    "(shares the same cache as your other scanners).")
+        elif _r2["df"].empty:
+            st.warning("Scan returned nothing — Yahoo may be rate-limited; retry.")
+        else:
+            _d2 = _r2["df"]
+            _d2 = _d2.copy()
+            # ── HEAT GATE: over risk budget → buy tiers BLOCKED, not hinted ────
+            if _heat_pct >= 6:
+                _blk = _d2["Signal"].isin(["🔥 STRONG BUY", "🟢 BUY SETUP"])
+                if bool(_blk.any()):
+                    _d2.loc[_blk, "Signal"] = "⛔ HEAT-BLOCKED"
+                st.error(f"⛔ Portfolio heat {_heat_pct:.1f}% ≥ 6% — new buy signals are "
+                         "blocked until open risk reduces (book partials or tighten stops).",
+                         icon="🌡")
+            # ── 📆 Earnings-soon flag (uses your Earnings Calendar fetch) ──────
+            try:
+                _ear_soon = {r.get("Stock") for r in
+                             (st.session_state.get("_earnings_cache") or [])
+                             if isinstance(r, dict) and r.get("Days Away", 99) <= 7}
+            except Exception:
+                _ear_soon = set()
+            if _ear_soon:
+                _d2.insert(3, "📆", _d2["Stock"].map(
+                    lambda s: "📆" if s in _ear_soon else ""))
+            _n_strong = int((_d2["Signal"] == "🔥 STRONG BUY").sum())
+            _n_buy    = int((_d2["Signal"] == "🟢 BUY SETUP").sum())
+            st.markdown(
+                f'<div style="font-size:.78rem;color:var(--muted);margin:.3rem 0 .6rem;'
+                f'font-weight:600">Regime: <b style="color:var(--text)">'
+                f'{_r2["regime"]}</b> · {_r2["scanned"]} scored · '
+                f'🔥 {_n_strong} strong · 🟢 {_n_buy} buy setups · '
+                f'{_r2["timestamp"]}</div>', unsafe_allow_html=True)
+
+            _h2 = min(max(len(_d2) * 36 + 40, 240), 620)
+            st.dataframe(
+                _d2, hide_index=True, height=_h2, use_container_width=True,
+                column_config={
+                    "Stock":   st.column_config.TextColumn("Stock", width="small", pinned=True),
+                    "Score":   st.column_config.NumberColumn("Score", format="%.1f"),
+                    "Pctl":    st.column_config.ProgressColumn("Pctl", min_value=0, max_value=100, format="%.0f"),
+                    "CMP":     st.column_config.NumberColumn("CMP", format="₹%.2f"),
+                    "Entry":   st.column_config.NumberColumn("Entry", format="₹%.2f"),
+                    "SL":      st.column_config.NumberColumn("SL", format="₹%.2f"),
+                    "Target":  st.column_config.NumberColumn("Target", format="₹%.2f"),
+                    "Risk %":  st.column_config.NumberColumn("Risk %", format="%.1f"),
+                    "RR":      st.column_config.NumberColumn("R:R", format="%.2f"),
+                    "RS":      st.column_config.NumberColumn("RS", format="%.2f"),
+                    "RSI":     st.column_config.NumberColumn("RSI", format="%.0f"),
+                    "Ext(ATR)": st.column_config.NumberColumn("Ext", format="%.1f"),
+                })
+
+            # ── Outcome logger — the audit's #1 missing feature ───────────────
+            lg1, lg2 = st.columns([1, 2])
+            with lg1:
+                if st.button("📸 Log Top Signals", width="stretch",
+                             help="Snapshot today's 🔥/🟢 signals to track forward returns"):
+                    try:
+                        db("CREATE TABLE IF NOT EXISTS signal_log("
+                           "user_id INTEGER, log_date TEXT, scanner TEXT, "
+                           "stock TEXT, score REAL, entry REAL, "
+                           "stop_loss REAL, target REAL, rr REAL)")
+                        _today_lg = datetime.now().strftime("%Y-%m-%d")
+                        db("DELETE FROM signal_log WHERE user_id=? AND "
+                           "log_date=? AND scanner=?", (UID, _today_lg, "v2"))
+                        _top_lg = _d2[_d2["Signal"].isin(
+                            ["🔥 STRONG BUY", "🟢 BUY SETUP"])]
+                        for _, _rw in _top_lg.iterrows():
+                            db("INSERT INTO signal_log(user_id,log_date,scanner,"
+                               "stock,score,entry,stop_loss,target,rr) "
+                               "VALUES(?,?,?,?,?,?,?,?,?)",
+                               (UID, _today_lg, "v2", _rw["Stock"],
+                                float(_rw["Score"]), float(_rw["Entry"]),
+                                float(_rw["SL"]), float(_rw["Target"]),
+                                float(_rw["RR"] or 0)))
+                        st.toast(f"📸 Logged {len(_top_lg)} signals for {_today_lg}")
+                    except Exception as _lge:
+                        st.error(f"Logging failed: {_lge}")
+            with lg2:
+                st.caption("Log daily → within weeks you'll have real hit-rate data "
+                           "per signal tier, so tuning becomes evidence-based.")
+
+            with st.expander("📈 Logged Signal Performance", expanded=False):
+                try:
+                    _logs = db("SELECT log_date,stock,score,entry,stop_loss,target,rr "
+                               "FROM signal_log WHERE user_id=? AND scanner=? "
+                               "ORDER BY log_date DESC", (UID, "v2"), fetch=True)
+                except Exception:
+                    _logs = []
+                if not _logs:
+                    st.info("No logged signals yet — click 📸 after a scan.")
+                else:
+                    _lsyms = tuple(sorted({_l[1] for _l in _logs}))
+                    _lp = _cached_prices(_lsyms)
+                    _perf = []
+                    for _ld, _st2, _sc2, _en, _slp, _tg, _rr2 in _logs:
+                        _now_p = _lp.get(_st2)
+                        _ret = (round((_now_p / _en - 1) * 100, 1)
+                                if (_now_p and _en) else None)
+                        _stat = "…"
+                        if _now_p and _tg and _now_p >= _tg:   _stat = "🎯 Target"
+                        elif _now_p and _slp and _now_p <= _slp: _stat = "🛑 Stopped"
+                        _days = (datetime.now() -
+                                 datetime.strptime(_ld, "%Y-%m-%d")).days
+                        _perf.append({"Date": _ld, "Stock": _st2, "Days": _days,
+                                      "Entry": _en, "Now": _now_p,
+                                      "Ret %": _ret, "Status": _stat})
+                    _pdf2 = pd.DataFrame(_perf)
+                    st.dataframe(_pdf2, hide_index=True, use_container_width=True)
+                    _rets = _pdf2["Ret %"].dropna()
+                    if len(_rets) >= 3:
+                        _wins2 = int((_rets > 0).sum())
+                        st.markdown(
+                            f'<div style="font-size:.85rem;font-weight:700">'
+                            f'Hit rate: {_wins2}/{len(_rets)} '
+                            f'({_wins2/len(_rets)*100:.0f}%) · '
+                            f'Avg return: {_rets.mean():+.1f}%</div>',
+                            unsafe_allow_html=True)
+            st.caption("⚠️ Signals are algorithmic research candidates, not advice. "
+                       "Bear regimes suppress buy tiers by design — that's the "
+                       "system protecting you, not a bug.")
 
 # ── Metrics ──────────────────────────────────────────────────────────────────
 elif _page == 'metrics':
@@ -4100,1320 +4403,1266 @@ elif _page == 'smc':
         else:
             st.info("Click **🎯 Scan Setups** to find SMC trade setups across the universe.")
 
-# ── ETF Tracker ────────────────────────────────────────────────────────────────
+# ── ETF Tracker ──────────────────────────────────────────────────────────────
 elif _page == 'etfs':
-    st.markdown('<div class="sec">📈 ETF Tracker</div>', unsafe_allow_html=True)
     if not _FUNDS_AVAILABLE:
-        st.warning("⚠️ ETF/Fund module not available. Make sure `funds.py` is in the repo.")
+        st.warning("📈 ETF Tracker requires **funds.py** in your repo. "
+                   "Upload funds.py from the project outputs to enable this page.",
+                   icon="⚠️")
     else:
-        st.caption("NSE-listed ETFs — tracked separately from your stock portfolio. "
-                   "Data via Yahoo Finance (15-min delayed).")
+        st.markdown('<div class="sec">📈 NSE ETF Tracker — Live Prices & Signals</div>',
+                    unsafe_allow_html=True)
+        st.caption("Curated NSE-listed ETFs across equity, gold, silver, international "
+                   "and debt. Live prices via Yahoo Finance with RSI/trend signals.")
 
-        # Session cache for ETF scan
-        if "etf_scan_cache" not in st.session_state:
-            st.session_state.etf_scan_cache = None
+        etf_cats = _funds.get_etf_categories()
+        ec1, ec2, ec3 = st.columns([1.5, 1.5, 1])
+        with ec1:
+            sel_cat = st.selectbox("Category", ["All Categories"] + etf_cats,
+                                   label_visibility="collapsed")
+        with ec2:
+            etf_search = st.text_input("Search ETF", placeholder="Search name or symbol…",
+                                       label_visibility="collapsed")
+        with ec3:
+            run_etf_scan = st.button("📊 Scan ETFs", width="stretch")
 
-        c1, c2, c3 = st.columns([1, 1, 2])
-        with c1:
-            if st.button("🔍 Scan All ETFs", width="stretch"):
-                with st.spinner("Fetching ETF data…"):
-                    st.session_state.etf_scan_cache = _funds.scan_etfs()
-        with c2:
-            _cat = st.selectbox("Category", ["All", "Equity Index", "Sectoral",
-                                "Gold/Silver", "Debt/Liquid", "International"],
-                                label_visibility="collapsed")
+        if run_etf_scan:
+            cat_arg = None if sel_cat == "All Categories" else sel_cat
+            with st.spinner("Fetching live ETF data…"):
+                st.session_state.etf_scan_cache = _funds.scan_etfs(category=cat_arg)
 
-        # Single ETF lookup
-        st.markdown("##### 🔎 Look up a specific ETF")
-        etf_names = [f"{sym} — {name}" for sym, name in _funds.ETF_UNIVERSE.items()]
-        sel = st.selectbox("Select ETF", etf_names, label_visibility="collapsed")
-        sel_sym = sel.split(" — ")[0]
-        if st.button("📊 Get ETF Details"):
-            with st.spinner(f"Fetching {sel_sym}…"):
-                q = _funds.get_etf_quote(sel_sym)
-            if not q.get("has_data"):
-                st.error(f"Couldn't fetch data for {sel_sym}. Yahoo may be rate-limited — try again.")
-            else:
-                r = q["returns"]
-                day_clr = "var(--green)" if (q["day_chg"] or 0) >= 0 else "var(--red)"
-                # Signal badge styling
-                _sig = q.get("signal", "—")
-                _sig_clr = {"BUY": "#10b981", "SELL": "#ef4444",
-                            "HOLD": "#f59e0b"}.get(_sig, "#8e8e93")
-                _sig_bg  = {"BUY": "rgba(16,185,129,.15)", "SELL": "rgba(239,68,68,.15)",
-                            "HOLD": "rgba(245,158,11,.15)"}.get(_sig, "rgba(142,142,147,.15)")
-                st.markdown(f"""
-<div style="background:var(--card);border:1px solid var(--border);border-radius:12px;
-            padding:1.2rem 1.5rem;margin:.5rem 0">
-  <div style="display:flex;justify-content:space-between;align-items:flex-start;flex-wrap:wrap;gap:.5rem">
-    <div>
-      <div style="font-size:1.1rem;font-weight:800;color:var(--accent)">{q['name']}</div>
-      <div style="font-size:.8rem;color:var(--muted)">{sel_sym}.NS</div>
-    </div>
-    <div style="text-align:right">
-      <span style="background:{_sig_bg};color:{_sig_clr};font-weight:800;font-size:1rem;
-                   padding:.35rem .9rem;border-radius:8px;border:1px solid {_sig_clr}">
-            {_sig}</span>
-      <div style="font-size:.7rem;color:var(--muted);margin-top:.25rem">
-           Score {q.get('signal_score',0)} · {q.get('signal_confidence','—')} conf · RSI {q.get('rsi','—')}</div>
-    </div>
-  </div>
-  <div style="display:flex;gap:2rem;flex-wrap:wrap;margin-top:.8rem">
-    <div><span style="color:var(--muted);font-size:.75rem">CMP</span><br>
-         <b style="font-size:1.3rem">₹{q['cmp']}</b></div>
-    <div><span style="color:var(--muted);font-size:.75rem">Day</span><br>
-         <b style="font-size:1.3rem;color:{day_clr}">{(q['day_chg'] or 0):+.2f}%</b></div>
-    <div><span style="color:var(--muted);font-size:.75rem">50-DMA</span><br>
-         <b style="font-size:1.1rem">₹{q.get('dma50','—')}</b></div>
-    <div><span style="color:var(--muted);font-size:.75rem">200-DMA</span><br>
-         <b style="font-size:1.1rem">₹{q.get('dma200') or '—'}</b></div>
-    <div><span style="color:var(--muted);font-size:.75rem">52W High</span><br>
-         <b style="font-size:1.1rem">₹{q['high52']}</b></div>
-    <div><span style="color:var(--muted);font-size:.75rem">52W Low</span><br>
-         <b style="font-size:1.1rem">₹{q['low52']}</b></div>
-  </div>
-  <div style="margin-top:1rem;display:flex;gap:1.5rem;flex-wrap:wrap">
-    {''.join(f'<div><span style="color:var(--muted);font-size:.72rem">{k}</span><br>'
-             f'<b style="color:{"var(--green)" if (v or 0)>=0 else "var(--red)"}">'
-             f'{("+" if (v or 0)>=0 else "")}{v if v is not None else "—"}'
-             f'{"%" if v is not None else ""}</b></div>'
-             for k, v in r.items())}
-  </div>
-  {('<div style="margin-top:1rem;padding-top:.8rem;border-top:1px solid var(--border)">'
-    '<span style="color:var(--muted);font-size:.72rem">📋 Why this signal:</span><br>'
-    '<span style="font-size:.82rem">' + ' · '.join(q.get('signal_reasons', [])) + '</span></div>')
-   if q.get('signal_reasons') else ''}
-  {('<div style="margin-top:.8rem;font-size:.85rem">'
-    f'<b>Entry</b> ₹{q.get("entry")} &nbsp; <b>Target</b> ₹{q.get("target")} &nbsp; '
-    f'<b>Stop</b> ₹{q.get("stop_loss")}</div>')
-   if q.get('signal')=='BUY' and q.get('target') else ''}
-</div>""", unsafe_allow_html=True)
-                st.caption("⚠️ Signals are algorithmic (trend + momentum), not financial advice. "
-                           "ETFs carry market risk — do your own research.")
-
-        # Full scan results
-        if st.session_state.etf_scan_cache is not None:
-            edf = st.session_state.etf_scan_cache
-            if edf is not None and not edf.empty:
-                st.markdown(f"##### 📋 All ETFs ({len(edf)}) — sorted by 1Y return")
-                _h = min(max(len(edf) * 36 + 40, 200), 600)
-                st.dataframe(edf, width="stretch", height=_h, hide_index=True,
-                             column_config={"Symbol": st.column_config.TextColumn(pinned=True)})
-                st.download_button(
-                    "⬇️ Export ETF Data CSV",
-                    edf.to_csv(index=False).encode("utf-8"),
-                    file_name=f"etfs_{datetime.now().strftime('%Y%m%d_%H%M')}.csv",
-                    mime="text/csv")
-            else:
-                st.info("No ETF data returned. Yahoo Finance may be rate-limited — try again shortly.")
+        etf_data = st.session_state.etf_scan_cache
+        if etf_data is None:
+            st.info("💡 Click **📊 Scan ETFs** to fetch live prices, returns and signals "
+                    "for all curated NSE ETFs.")
+        elif etf_data.empty:
+            st.warning("No ETF data returned — Yahoo may be rate-limited. Try again shortly.")
         else:
-            st.info("Click **🔍 Scan All ETFs** to load the full ETF list with returns.")
+            display_etf = etf_data.copy()
+            if sel_cat != "All Categories":
+                display_etf = display_etf[display_etf["Category"] == sel_cat]
+            if etf_search.strip():
+                q = etf_search.strip().upper()
+                display_etf = display_etf[
+                    display_etf["Symbol"].str.upper().str.contains(q) |
+                    display_etf["Name"].str.upper().str.contains(q)]
 
-# ── Mutual Fund Tracker ────────────────────────────────────────────────────────
+            # Summary chips per category
+            chip_html = ""
+            for cat in etf_data["Category"].unique():
+                n = len(etf_data[etf_data["Category"] == cat])
+                chip_html += (f'<span style="background:var(--card2);border:1px solid '
+                              f'var(--border);border-radius:6px;padding:.25rem .6rem;'
+                              f'font-size:.72rem;font-weight:700;color:var(--text);'
+                              f'margin-right:.3rem">{cat} <b>{n}</b></span>')
+            st.markdown(f'<div style="margin-bottom:.8rem">{chip_html}</div>',
+                        unsafe_allow_html=True)
+
+            _etf_h = min(max(len(display_etf) * 36 + 40, 200), 620)
+            st.dataframe(
+                display_etf, hide_index=True, height=_etf_h, use_container_width=True,
+                column_config={
+                    "Symbol":   st.column_config.TextColumn("Symbol", width="small", pinned=True),
+                    "Name":     st.column_config.TextColumn("Name", width="medium"),
+                    "Category": st.column_config.TextColumn("Category", width="small"),
+                    "CMP":      st.column_config.NumberColumn("CMP", format="₹%.2f"),
+                    "1D %":     st.column_config.NumberColumn("1D %", format="%.2f"),
+                    "1W %":     st.column_config.NumberColumn("1W %", format="%.2f"),
+                    "1M %":     st.column_config.NumberColumn("1M %", format="%.2f"),
+                    "3M %":     st.column_config.NumberColumn("3M %", format="%.2f"),
+                    "1Y %":     st.column_config.NumberColumn("1Y %", format="%.2f"),
+                    "RSI":      st.column_config.NumberColumn("RSI", format="%.1f"),
+                    "Vol(₹Cr)": st.column_config.NumberColumn("Vol ₹Cr", format="%.1f"),
+                })
+            st.download_button(
+                "⬇️ Export ETF Data CSV",
+                display_etf.to_csv(index=False).encode("utf-8"),
+                file_name=f"etf_scan_{datetime.now().strftime('%Y%m%d_%H%M')}.csv",
+                mime="text/csv")
+
+# ── Mutual Funds ─────────────────────────────────────────────────────────────
 elif _page == 'mutual_funds':
-    st.markdown('<div class="sec">🏛 Mutual Fund Tracker</div>', unsafe_allow_html=True)
     if not _FUNDS_AVAILABLE:
-        st.warning("⚠️ ETF/Fund module not available. Make sure `funds.py` is in the repo.")
+        st.warning("🏛 Mutual Funds requires **funds.py** in your repo. "
+                   "Upload funds.py from the project outputs to enable this page.",
+                   icon="⚠️")
     else:
-        st.caption("Search any Indian mutual fund by name. NAV & returns via AMFI "
-                   "(official, updated daily). Kept separate from your stock portfolio.")
+        st.markdown('<div class="sec">🏛 Mutual Fund Explorer — NAV, Returns & SIP</div>',
+                    unsafe_allow_html=True)
+        st.caption("Search 40,000+ Indian mutual funds via the free MFAPI (AMFI data). "
+                   "NAV history, trailing returns, CAGR and SIP calculator.")
 
-        # Session state for MF
-        for k, v in [("mf_search_results", []), ("mf_selected", None),
-                     ("mf_compare_list", [])]:
-            if k not in st.session_state:
-                st.session_state[k] = v
+        mf_t1, mf_t2, mf_t3 = st.tabs(["🔍 Search & Analyse", "⚖️ Compare Funds", "🧮 SIP Calculator"])
 
-        tab_search, tab_compare = st.tabs(["🔎 Search & Track", "⚖️ Compare Funds"])
+        # ── Search & Analyse ───────────────────────────────────────────────────
+        with mf_t1:
+            ms1, ms2 = st.columns([3, 1])
+            with ms1:
+                mf_query = st.text_input(
+                    "Fund search", placeholder="e.g. Parag Parikh Flexi, HDFC Mid Cap, Nippon Small…",
+                    label_visibility="collapsed")
+            with ms2:
+                mf_go = st.button("🔍 Search Funds", width="stretch")
 
-        with tab_search:
-            q = st.text_input("Search mutual fund",
-                              placeholder="e.g. 'parag parikh flexi cap' or 'hdfc small cap'",
-                              label_visibility="collapsed")
-            if st.button("🔎 Search") and q:
+            if mf_go and mf_query.strip():
                 with st.spinner("Searching AMFI database…"):
-                    st.session_state.mf_search_results = _funds.search_mf(q)
-                if not st.session_state.mf_search_results:
-                    st.warning("No funds found (need 3+ characters). Try the fund house + scheme name.")
+                    st.session_state.mf_search_results = _funds.search_mutual_funds(
+                        mf_query.strip())
+                    st.session_state.mf_selected = None
 
             results = st.session_state.mf_search_results
             if results:
-                opts = [f"{r['schemeName']}" for r in results]
-                pick = st.selectbox(f"Found {len(results)} funds — select one:", opts)
-                pick_code = next((r["schemeCode"] for r in results
-                                  if r["schemeName"] == pick), None)
+                st.markdown(
+                    f'<div style="font-size:.78rem;color:var(--muted);margin:.4rem 0">'
+                    f'{len(results)} funds found — select one to analyse</div>',
+                    unsafe_allow_html=True)
+                fund_names = [f"{r['schemeName']}" for r in results[:50]]
+                sel_fund_name = st.selectbox("Select fund", fund_names,
+                                             label_visibility="collapsed")
+                sel_fund = next((r for r in results
+                                 if r["schemeName"] == sel_fund_name), None)
 
-                cc1, cc2 = st.columns([1, 1])
-                with cc1:
-                    if st.button("📊 View Fund Details", width="stretch"):
-                        st.session_state.mf_selected = pick_code
-                with cc2:
-                    if st.button("➕ Add to Compare", width="stretch"):
-                        if pick_code and pick_code not in st.session_state.mf_compare_list:
-                            st.session_state.mf_compare_list.append(pick_code)
-                            st.toast(f"Added to compare ({len(st.session_state.mf_compare_list)})")
+                if sel_fund and st.button("📊 Analyse This Fund", width="stretch"):
+                    with st.spinner("Fetching NAV history & computing returns…"):
+                        st.session_state.mf_selected = _funds.get_fund_details(
+                            sel_fund["schemeCode"])
 
-            # Render selected fund card
-            if st.session_state.mf_selected:
-                with st.spinner("Loading fund data…"):
-                    s = _funds.mf_summary(st.session_state.mf_selected)
-                if not s.get("has_history"):
-                    st.error("Couldn't load this fund's NAV history. Try again shortly.")
-                else:
-                    r = s["returns"]
-                    _rt = s.get("rating", {})
-                    _rt_clr = {"STRONG": "#10b981", "GOOD": "#22c55e",
-                               "AVERAGE": "#f59e0b", "WEAK": "#f97316",
-                               "POOR": "#ef4444"}.get(_rt.get("rating"), "#8e8e93")
-                    _rt_bg = {"STRONG": "rgba(16,185,129,.15)", "GOOD": "rgba(34,197,94,.12)",
-                              "AVERAGE": "rgba(245,158,11,.15)", "WEAK": "rgba(249,115,22,.15)",
-                              "POOR": "rgba(239,68,68,.15)"}.get(_rt.get("rating"), "rgba(142,142,147,.15)")
-                    st.markdown(f"""
-<div style="background:var(--card);border:1px solid var(--border);border-radius:12px;
-            padding:1.2rem 1.5rem;margin:.5rem 0">
-  <div style="display:flex;justify-content:space-between;align-items:flex-start;flex-wrap:wrap;gap:.5rem">
-    <div>
-      <div style="font-size:1.05rem;font-weight:800;color:var(--accent)">{s['scheme_name']}</div>
-      <div style="font-size:.78rem;color:var(--muted)">
-           {s.get('fund_house','')} · {s.get('scheme_category','')}</div>
-    </div>
-    <div style="text-align:right">
-      <span style="background:{_rt_bg};color:{_rt_clr};font-weight:800;font-size:.95rem;
-                   padding:.35rem .9rem;border-radius:8px;border:1px solid {_rt_clr}">
-            {'⭐'*_rt.get('stars',0)} {_rt.get('rating','—')}</span>
-      <div style="font-size:.7rem;color:var(--muted);margin-top:.25rem">Quality score {_rt.get('score',0)}/100</div>
-    </div>
-  </div>
-  <div style="display:flex;gap:2rem;flex-wrap:wrap;margin-top:.8rem">
-    <div><span style="color:var(--muted);font-size:.75rem">NAV</span><br>
-         <b style="font-size:1.3rem">₹{s['nav']}</b></div>
-    <div><span style="color:var(--muted);font-size:.75rem">As of</span><br>
-         <b style="font-size:1rem">{s['nav_date']}</b></div>
-    <div><span style="color:var(--muted);font-size:.75rem">52W High</span><br>
-         <b style="font-size:1.1rem">₹{s['high52']}</b></div>
-    <div><span style="color:var(--muted);font-size:.75rem">52W Low</span><br>
-         <b style="font-size:1.1rem">₹{s['low52']}</b></div>
-  </div>
-  <div style="margin-top:1rem;display:flex;gap:1.5rem;flex-wrap:wrap">
-    {''.join(f'<div><span style="color:var(--muted);font-size:.72rem">{k}{" (CAGR)" if k in ("3Y","5Y") else ""}</span><br>'
-             f'<b style="color:{"var(--green)" if (v or 0)>=0 else "var(--red)"}">'
-             f'{("+" if (v or 0)>=0 else "")}{v if v is not None else "—"}'
-             f'{"%" if v is not None else ""}</b></div>'
-             for k, v in r.items())}
-  </div>
-  <div style="margin-top:1rem;padding-top:.8rem;border-top:1px solid var(--border);font-size:.85rem">
-       💡 <b>{_rt.get('action','—')}</b></div>
-</div>""", unsafe_allow_html=True)
-                    st.caption("⚠️ Ratings reflect past performance (returns + consistency), "
-                               "not a buy/sell timing call. Mutual funds are long-term "
-                               "instruments — past returns don't guarantee future results.")
+            fund = st.session_state.mf_selected
+            if fund and not fund.get("error"):
+                meta = fund["meta"]
+                st.markdown(
+                    f'<div style="background:var(--card);border:1px solid var(--accent);'
+                    f'border-radius:12px;padding:1.2rem;margin:1rem 0">'
+                    f'<div style="font-size:1.05rem;font-weight:800;color:var(--text)">'
+                    f'{meta.get("scheme_name","—")}</div>'
+                    f'<div style="font-size:.78rem;color:var(--muted);margin-top:.3rem">'
+                    f'{meta.get("fund_house","—")} · {meta.get("scheme_category","—")} · '
+                    f'Code {meta.get("scheme_code","—")}</div>'
+                    f'<div style="font-size:1.6rem;font-weight:800;color:var(--accent);'
+                    f'margin-top:.5rem">₹{fund["latest_nav"]:,.4f} '
+                    f'<span style="font-size:.75rem;color:var(--muted);font-weight:600">'
+                    f'NAV · {fund["latest_date"]}</span></div>'
+                    f'</div>',
+                    unsafe_allow_html=True)
 
-                    # NAV history chart
-                    hist = _funds.get_mf_history(st.session_state.mf_selected)
-                    if hist is not None and not hist.empty:
-                        chart_df = hist.set_index("date")["nav"].tail(365)
-                        st.line_chart(chart_df, height=260)
+                # Returns cards
+                ret = fund["returns"]
+                ret_html = '<div class="cards">'
+                for label in ["1M", "3M", "6M", "1Y", "3Y", "5Y"]:
+                    v = ret.get(label)
+                    if v is None:
+                        ret_html += card(label, "—")
+                    else:
+                        ret_html += card(label, f"{v:+.1f}%", "",
+                                         "green" if v >= 0 else "red")
+                cagr3 = ret.get("3Y CAGR"); cagr5 = ret.get("5Y CAGR")
+                if cagr3 is not None:
+                    ret_html += card("3Y CAGR", f"{cagr3:.1f}%", "",
+                                     "green" if cagr3 >= 0 else "red")
+                if cagr5 is not None:
+                    ret_html += card("5Y CAGR", f"{cagr5:.1f}%", "",
+                                     "green" if cagr5 >= 0 else "red")
+                ret_html += '</div>'
+                st.markdown(ret_html, unsafe_allow_html=True)
 
-        with tab_compare:
+                # NAV chart
+                nav_df = fund.get("nav_history")
+                if nav_df is not None and not nav_df.empty:
+                    nfig = go.Figure(go.Scatter(
+                        x=nav_df["date"], y=nav_df["nav"],
+                        line=dict(color=theme_t["accent"], width=2),
+                        fill="tozeroy",
+                        fillcolor="rgba(212,175,55,0.06)"))
+                    nfig.update_layout(
+                        title="NAV History (5Y)", height=320,
+                        margin=dict(l=10, r=10, t=40, b=10),
+                        paper_bgcolor="rgba(0,0,0,0)", plot_bgcolor="rgba(0,0,0,0)",
+                        font=dict(color=theme_t.get("text", "#fff")))
+                    nfig.update_xaxes(gridcolor="rgba(255,255,255,0.05)")
+                    nfig.update_yaxes(gridcolor="rgba(255,255,255,0.05)", tickprefix="₹")
+                    st.plotly_chart(nfig, use_container_width=True)
+
+                if st.button("➕ Add to Compare List"):
+                    entry = {"code": meta.get("scheme_code"),
+                             "name": meta.get("scheme_name")}
+                    if entry not in st.session_state.mf_compare_list:
+                        st.session_state.mf_compare_list.append(entry)
+                        st.toast(f"Added to compare ({len(st.session_state.mf_compare_list)})")
+            elif fund and fund.get("error"):
+                st.error(f"Could not fetch fund details: {fund['error']}")
+            elif not results:
+                st.info("💡 Search any Indian mutual fund by name — e.g. 'Parag Parikh', "
+                        "'Quant Small Cap', 'HDFC Index'.")
+
+        # ── Compare Funds ──────────────────────────────────────────────────────
+        with mf_t2:
             clist = st.session_state.mf_compare_list
             if not clist:
-                st.info("Add funds via the **Search & Track** tab → '➕ Add to Compare'.")
+                st.info("Add funds to compare from the Search tab (➕ Add to Compare List).")
             else:
-                st.markdown(f"##### Comparing {len(clist)} funds")
-                if st.button("🗑 Clear comparison"):
+                st.markdown(
+                    f'<div style="font-size:.8rem;color:var(--muted);margin-bottom:.6rem">'
+                    f'Comparing {len(clist)} funds</div>', unsafe_allow_html=True)
+                if st.button("🗑 Clear Compare List"):
                     st.session_state.mf_compare_list = []
                     st.rerun()
-                with st.spinner("Building comparison…"):
-                    cmp_df = _funds.compare_mfs(clist)
-                if cmp_df is not None and not cmp_df.empty:
-                    st.dataframe(cmp_df, width="stretch", hide_index=True,
-                                 column_config={"Fund": st.column_config.TextColumn(pinned=True)})
-                    st.download_button(
-                        "⬇️ Export Comparison CSV",
-                        cmp_df.to_csv(index=False).encode("utf-8"),
-                        file_name=f"mf_compare_{datetime.now().strftime('%Y%m%d_%H%M')}.csv",
-                        mime="text/csv")
+                if st.button("⚖️ Run Comparison", width="stretch"):
+                    with st.spinner("Fetching all funds…"):
+                        comp_df = _funds.compare_funds(
+                            [c["code"] for c in clist])
+                    if comp_df is not None and not comp_df.empty:
+                        st.dataframe(
+                            comp_df, hide_index=True, use_container_width=True,
+                            column_config={
+                                "Fund": st.column_config.TextColumn("Fund", width="large"),
+                                "NAV":  st.column_config.NumberColumn("NAV", format="₹%.2f"),
+                            })
+                    else:
+                        st.warning("Comparison failed — try again.")
 
-# ── Position Sizing Calculator ─────────────────────────────────────────────────
+        # ── SIP Calculator ─────────────────────────────────────────────────────
+        with mf_t3:
+            sp1, sp2, sp3 = st.columns(3)
+            with sp1:
+                sip_amt = st.number_input("Monthly SIP ₹", min_value=500,
+                                          value=10000, step=500)
+            with sp2:
+                sip_yrs = st.number_input("Years", min_value=1, value=10, step=1)
+            with sp3:
+                sip_ret = st.number_input("Expected annual return %", min_value=1.0,
+                                          value=12.0, step=0.5)
+            res = _funds.sip_calculator(sip_amt, sip_yrs, sip_ret)
+            st.markdown(
+                '<div class="cards">'
+                + card("Invested", fi(res["invested"]))
+                + card("Est. Value", fi(res["future_value"]), "", "green")
+                + card("Wealth Gain", fi(res["gain"]),
+                       f'{res["gain_pct"]:.0f}% growth', "green")
+                + '</div>',
+                unsafe_allow_html=True)
+            st.caption("Assumes monthly compounding at the expected return. "
+                       "Actual returns vary — this is an illustration, not a projection.")
+
+# ── Position Sizing Calculator ───────────────────────────────────────────────
 elif _page == 'sizing':
     st.markdown('<div class="sec">🧮 Position Sizing Calculator</div>',
                 unsafe_allow_html=True)
-    st.caption("Risk-based position sizing — never lose more than your chosen % "
-               "on a single trade. This is the most important discipline in trading.")
+    st.caption("Risk-based position sizing: never risk more than a fixed % of capital "
+               "on a single trade. The golden rule of surviving as a trader.")
 
-    colA, colB = st.columns(2)
-    with colA:
-        _cap = st.number_input("💰 Total Trading Capital (₹)", min_value=1000.0,
-                               value=float(st.session_state.get("_sz_cap", 100000.0)),
-                               step=5000.0, key="sz_cap")
-        st.session_state._sz_cap = _cap
-        _risk_pct = st.slider("⚠️ Risk per Trade (%)", 0.25, 5.0,
-                              float(st.session_state.get("_sz_risk", 1.0)), 0.25,
-                              key="sz_risk",
-                              help="Pros risk 1-2% per trade. Never exceed 2% as a beginner.")
-        st.session_state._sz_risk = _risk_pct
-    with colB:
-        _entry = st.number_input("📈 Entry Price (₹)", min_value=0.0,
-                                 value=float(st.session_state.get("_sz_entry", 100.0)),
-                                 step=1.0, key="sz_entry")
-        st.session_state._sz_entry = _entry
-        _stop = st.number_input("🛑 Stop Loss Price (₹)", min_value=0.0,
-                                value=float(st.session_state.get("_sz_stop", 95.0)),
-                                step=1.0, key="sz_stop")
-        st.session_state._sz_stop = _stop
+    pz1, pz2 = st.columns([1, 1])
+    with pz1:
+        st.markdown('<div style="font-size:.85rem;font-weight:800;margin-bottom:.5rem">'
+                    '💰 Capital & Risk</div>', unsafe_allow_html=True)
+        cap_total = st.number_input("Total Trading Capital ₹", min_value=1000.0,
+                                    value=float(st.session_state.get("_sz_cap", 100000.0)),
+                                    step=5000.0, format="%.0f")
+        st.session_state._sz_cap = cap_total
+        risk_pct = st.slider("Risk per trade (%)", 0.25, 5.0, 1.0, 0.25)
+        max_risk = cap_total * risk_pct / 100
 
-    # Calculations
-    if _entry > 0 and _stop > 0 and _entry != _stop:
-        risk_amount = _cap * (_risk_pct / 100)          # max ₹ to lose
-        risk_per_share = abs(_entry - _stop)             # ₹ risk per share
-        qty = int(risk_amount / risk_per_share) if risk_per_share > 0 else 0
-        position_value = qty * _entry
-        position_pct = (position_value / _cap * 100) if _cap > 0 else 0
-        is_long = _stop < _entry
-        direction = "LONG" if is_long else "SHORT"
+    with pz2:
+        st.markdown('<div style="font-size:.85rem;font-weight:800;margin-bottom:.5rem">'
+                    '🎯 Trade Setup</div>', unsafe_allow_html=True)
+        entry_p = st.number_input("Entry Price ₹", min_value=0.01, value=100.0,
+                                  step=0.5, format="%.2f")
+        sl_p = st.number_input("Stop Loss ₹", min_value=0.01, value=95.0,
+                               step=0.5, format="%.2f")
+        tgt_p = st.number_input("Target ₹ (optional)", min_value=0.0, value=110.0,
+                                step=0.5, format="%.2f")
 
-        # Warnings
-        warn = ""
-        if position_value > _cap:
-            warn = ("⚠️ This position needs more capital than you have — "
-                    "your stop is too wide for this risk %. Widen the stop "
-                    "distance or lower risk %.")
-        elif position_pct > 50:
-            warn = (f"⚠️ This position is {position_pct:.0f}% of your capital — "
-                    "very concentrated. Consider a tighter stop or smaller risk %.")
-
-        st.markdown(f"""
-<div style="background:var(--card);border:1px solid var(--border);border-radius:12px;
-            padding:1.4rem 1.6rem;margin:1rem 0">
-  <div style="font-size:.75rem;color:var(--muted);text-transform:uppercase;
-              letter-spacing:.08em;margin-bottom:.8rem">{direction} Position</div>
-  <div style="display:flex;gap:2.5rem;flex-wrap:wrap">
-    <div><span style="color:var(--muted);font-size:.78rem">Shares to Buy</span><br>
-         <b style="font-size:1.8rem;color:var(--accent)">{qty:,}</b></div>
-    <div><span style="color:var(--muted);font-size:.78rem">Position Value</span><br>
-         <b style="font-size:1.5rem">₹{position_value:,.0f}</b>
-         <span style="font-size:.8rem;color:var(--muted)"> ({position_pct:.1f}%)</span></div>
-    <div><span style="color:var(--muted);font-size:.78rem">Max Loss (your risk)</span><br>
-         <b style="font-size:1.5rem;color:var(--red)">₹{risk_amount:,.0f}</b></div>
-    <div><span style="color:var(--muted);font-size:.78rem">Risk / Share</span><br>
-         <b style="font-size:1.5rem">₹{risk_per_share:.2f}</b></div>
-  </div>
-</div>""", unsafe_allow_html=True)
-        if warn:
-            st.warning(warn)
-
-        # Target calculator with R-multiples
-        st.markdown("##### 🎯 Target Levels (Risk:Reward)")
-        tcols = st.columns(4)
-        for i, rmult in enumerate([1, 2, 3, 5]):
-            if is_long:
-                tgt = _entry + rmult * risk_per_share
-            else:
-                tgt = _entry - rmult * risk_per_share
-            reward = qty * abs(tgt - _entry)
-            with tcols[i]:
-                st.markdown(f"""
-<div style="background:var(--card);border:1px solid var(--border);border-radius:8px;
-            padding:.7rem;text-align:center">
-  <div style="font-size:.7rem;color:var(--muted)">{rmult}R Target</div>
-  <div style="font-size:1.1rem;font-weight:800;color:var(--green)">₹{tgt:.2f}</div>
-  <div style="font-size:.72rem;color:var(--muted)">+₹{reward:,.0f}</div>
-</div>""", unsafe_allow_html=True)
-
-        st.caption("💡 Quantity is calculated so that IF your stop loss hits, you lose "
-                   "exactly your chosen risk amount — no more. This is how professionals "
-                   "size every trade.")
+    if sl_p >= entry_p:
+        st.error("Stop loss must be BELOW entry price for a long trade.")
     else:
-        st.info("Enter entry and stop loss prices (they must differ) to calculate sizing.")
+        risk_per_share = entry_p - sl_p
+        qty = int(max_risk // risk_per_share) if risk_per_share > 0 else 0
+        position_value = qty * entry_p
+        pos_pct_capital = position_value / cap_total * 100 if cap_total > 0 else 0
+        actual_risk = qty * risk_per_share
+        rr = (tgt_p - entry_p) / risk_per_share if (tgt_p > entry_p and risk_per_share > 0) else None
+        potential_gain = qty * (tgt_p - entry_p) if tgt_p > entry_p else 0
 
-# ── Risk Dashboard ─────────────────────────────────────────────────────────────
+        st.markdown(
+            '<div class="cards">'
+            + card("Max Risk", fi(max_risk), f"{risk_pct}% of capital", "yellow")
+            + card("Quantity", f"{qty:,}", f"₹{risk_per_share:.2f} risk/share", "blue")
+            + card("Position Size", fi(position_value),
+                   f"{pos_pct_capital:.1f}% of capital",
+                   "red" if pos_pct_capital > 25 else "")
+            + card("Actual Risk", fi(actual_risk), "if SL hits", "red")
+            + (card("R:R Ratio", f"{rr:.2f}", f"Gain: {fi(potential_gain)}",
+                    "green" if rr and rr >= 2 else "yellow") if rr else "")
+            + '</div>',
+            unsafe_allow_html=True)
+
+        if pos_pct_capital > 25:
+            st.warning(f"⚠️ Position is {pos_pct_capital:.0f}% of capital — consider "
+                       "reducing. Concentration kills accounts faster than bad picks.")
+        if rr and rr < 1.5:
+            st.warning(f"⚠️ R:R of {rr:.2f} is below 1.5 — this trade needs a "
+                       ">{100/(1+rr):.0f}% win rate just to break even.")
+        elif rr and rr >= 2:
+            st.success(f"✅ R:R of {rr:.2f} — at this ratio you only need a "
+                       f"{100/(1+rr):.0f}% win rate to be profitable.")
+
+# ── Risk Dashboard ───────────────────────────────────────────────────────────
 elif _page == 'risk':
     st.markdown('<div class="sec">🛡 Portfolio Risk Dashboard</div>',
                 unsafe_allow_html=True)
-    st.caption("Portfolio-level risk exposure across all open positions.")
 
-    odf_risk = df[df["status"] == "Open"].copy() if not df.empty else pd.DataFrame()
-    if odf_risk.empty:
-        st.info("No open positions to analyze. Add trades to see your risk profile.")
+    if df.empty or odf.empty:
+        st.info("Risk dashboard requires open positions.")
     else:
-        total_cap = st.number_input("💰 Total Trading Capital (₹) — for risk context",
-                                    min_value=1000.0,
-                                    value=float(st.session_state.get("_sz_cap", 100000.0)),
-                                    step=5000.0, key="risk_cap")
-        st.session_state._sz_cap = total_cap
+        # ── Concentration analysis ───────────────────────────────────────────
+        conc = odf.groupby("stock")["invested"].sum().sort_values(ascending=False)
+        total_inv = conc.sum()
+        top1_pct = conc.iloc[0] / total_inv * 100 if total_inv > 0 else 0
+        top3_pct = conc.head(3).sum() / total_inv * 100 if total_inv > 0 else 0
 
-        total_invested = odf_risk["invested"].sum()
-        total_current  = odf_risk["current_amt"].sum()
-        n_positions    = len(odf_risk)
+        # ── Sector exposure ──────────────────────────────────────────────────
+        odf_s = odf.copy()
+        odf_s["sector"] = odf_s["stock"].apply(get_sector)
+        sec_exp = odf_s.groupby("sector")["invested"].sum().sort_values(ascending=False)
+        top_sec_pct = sec_exp.iloc[0] / total_inv * 100 if total_inv > 0 else 0
 
-        # Concentration: largest position
-        odf_risk["pos_value"] = odf_risk["current_amt"]
-        largest = odf_risk.loc[odf_risk["pos_value"].idxmax()]
-        largest_pct = (largest["pos_value"] / total_current * 100) if total_current > 0 else 0
+        # ── Unrealized drawdown per position ─────────────────────────────────
+        worst_pos = odf.nsmallest(3, "profit_pct")[["stock", "profit_pct", "profit"]]
 
-        # Capital deployed
-        deployed_pct = (total_invested / total_cap * 100) if total_cap > 0 else 0
+        risk_score = 0
+        risk_notes = []
+        if top1_pct > 30:
+            risk_score += 30
+            risk_notes.append(f"🔴 Single-stock concentration: {conc.index[0]} is "
+                              f"{top1_pct:.0f}% of portfolio")
+        elif top1_pct > 20:
+            risk_score += 15
+            risk_notes.append(f"🟡 {conc.index[0]} is {top1_pct:.0f}% of portfolio")
+        if top_sec_pct > 40:
+            risk_score += 25
+            risk_notes.append(f"🔴 Sector concentration: {sec_exp.index[0]} is "
+                              f"{top_sec_pct:.0f}% of portfolio")
+        elif top_sec_pct > 30:
+            risk_score += 12
+            risk_notes.append(f"🟡 {sec_exp.index[0]} sector is {top_sec_pct:.0f}%")
+        deep_loss = odf[odf["profit_pct"] < -10]
+        if not deep_loss.empty:
+            risk_score += 20
+            risk_notes.append(f"🔴 {len(deep_loss)} position(s) down >10% — "
+                              "review stop discipline")
+        n_pos = len(odf["stock"].unique())
+        if n_pos < 3:
+            risk_score += 15
+            risk_notes.append(f"🟡 Only {n_pos} position(s) — low diversification")
+        elif n_pos > 15:
+            risk_score += 10
+            risk_notes.append(f"🟡 {n_pos} positions — may be over-diversified to track")
 
-        # Sector concentration
-        odf_risk["sector"] = odf_risk["stock"].apply(get_sector)
-        sector_exposure = odf_risk.groupby("sector")["pos_value"].sum()
-        top_sector = sector_exposure.idxmax() if not sector_exposure.empty else "—"
-        top_sector_pct = (sector_exposure.max() / total_current * 100) if total_current > 0 else 0
+        regime_now = market.get("regime", "Unknown")
+        if regime_now in ("Bear", "Strong Bear"):
+            risk_score += 15
+            risk_notes.append(f"🔴 Market regime is {regime_now} — elevated systemic risk")
 
-        # Risk badges
-        def _risk_badge(value, warn_thresh, danger_thresh, reverse=False):
-            if reverse:
-                lvl = "danger" if value < danger_thresh else "warn" if value < warn_thresh else "ok"
-            else:
-                lvl = "danger" if value > danger_thresh else "warn" if value > warn_thresh else "ok"
-            clr = {"ok": "#10b981", "warn": "#f59e0b", "danger": "#ef4444"}[lvl]
-            return clr
+        risk_score = min(risk_score, 100)
+        r_clr = ("#10b981" if risk_score < 30 else
+                 "#f59e0b" if risk_score < 60 else "#ef4444")
+        r_label = ("LOW" if risk_score < 30 else
+                   "MODERATE" if risk_score < 60 else "HIGH")
 
-        m1, m2, m3, m4 = st.columns(4)
-        with m1:
-            clr = _risk_badge(deployed_pct, 80, 95)
-            st.markdown(f"""<div style="background:var(--card);border:1px solid var(--border);
-                border-radius:10px;padding:1rem;text-align:center">
-                <div style="font-size:.72rem;color:var(--muted)">Capital Deployed</div>
-                <div style="font-size:1.6rem;font-weight:800;color:{clr}">{deployed_pct:.0f}%</div>
-                <div style="font-size:.7rem;color:var(--muted)">₹{total_invested:,.0f}</div>
-                </div>""", unsafe_allow_html=True)
-        with m2:
-            clr = _risk_badge(largest_pct, 25, 40)
-            st.markdown(f"""<div style="background:var(--card);border:1px solid var(--border);
-                border-radius:10px;padding:1rem;text-align:center">
-                <div style="font-size:.72rem;color:var(--muted)">Largest Position</div>
-                <div style="font-size:1.6rem;font-weight:800;color:{clr}">{largest_pct:.0f}%</div>
-                <div style="font-size:.7rem;color:var(--muted)">{largest['stock']}</div>
-                </div>""", unsafe_allow_html=True)
-        with m3:
-            clr = _risk_badge(top_sector_pct, 40, 60)
-            st.markdown(f"""<div style="background:var(--card);border:1px solid var(--border);
-                border-radius:10px;padding:1rem;text-align:center">
-                <div style="font-size:.72rem;color:var(--muted)">Top Sector</div>
-                <div style="font-size:1.6rem;font-weight:800;color:{clr}">{top_sector_pct:.0f}%</div>
-                <div style="font-size:.7rem;color:var(--muted)">{top_sector}</div>
-                </div>""", unsafe_allow_html=True)
-        with m4:
-            st.markdown(f"""<div style="background:var(--card);border:1px solid var(--border);
-                border-radius:10px;padding:1rem;text-align:center">
-                <div style="font-size:.72rem;color:var(--muted)">Open Positions</div>
-                <div style="font-size:1.6rem;font-weight:800;color:var(--accent)">{n_positions}</div>
-                <div style="font-size:.7rem;color:var(--muted)">holdings</div>
-                </div>""", unsafe_allow_html=True)
+        st.markdown(
+            f'<div style="display:flex;gap:1.5rem;align-items:center;flex-wrap:wrap;'
+            f'background:var(--card);border:1px solid {r_clr};border-radius:14px;'
+            f'padding:1.3rem 1.6rem;margin-bottom:1.5rem">'
+            f'<div><div style="font-size:.7rem;color:var(--muted);font-weight:700;'
+            f'text-transform:uppercase;letter-spacing:.1em">Portfolio Risk Score</div>'
+            f'<div style="font-size:2.4rem;font-weight:800;color:{r_clr}">'
+            f'{risk_score}<span style="font-size:1rem;color:var(--muted)">/100</span> '
+            f'<span style="font-size:1rem;color:{r_clr}">{r_label}</span></div></div>'
+            f'<div style="flex:1;min-width:220px">'
+            f'<div style="height:10px;background:var(--input);border-radius:5px">'
+            f'<div style="height:10px;border-radius:5px;background:{r_clr};'
+            f'width:{risk_score}%"></div></div></div>'
+            f'</div>',
+            unsafe_allow_html=True)
 
-        # Sector exposure breakdown
-        st.markdown("##### 🥧 Sector Exposure")
-        sec_df = (sector_exposure / total_current * 100).round(1).reset_index()
-        sec_df.columns = ["Sector", "% of Portfolio"]
-        sec_df = sec_df.sort_values("% of Portfolio", ascending=False)
-        st.dataframe(sec_df, width="stretch", hide_index=True)
-
-        # Position-level risk table
-        st.markdown("##### 📊 Position Breakdown")
-        pos_df = odf_risk[["stock", "invested", "current_amt", "profit", "profit_pct"]].copy()
-        pos_df["% of Portfolio"] = (pos_df["current_amt"] / total_current * 100).round(1)
-        pos_df = pos_df.rename(columns={"stock": "Stock", "invested": "Invested",
-                                        "current_amt": "Current", "profit": "P&L",
-                                        "profit_pct": "P&L %"})
-        pos_df = pos_df.sort_values("% of Portfolio", ascending=False)
-        st.dataframe(pos_df, width="stretch", hide_index=True)
-
-        # Health summary
-        st.markdown("##### 🩺 Risk Health Check")
-        issues = []
-        if deployed_pct > 95:
-            issues.append("🔴 Nearly fully invested — no dry powder for opportunities or averaging.")
-        if largest_pct > 40:
-            issues.append(f"🔴 {largest['stock']} is {largest_pct:.0f}% of your portfolio — "
-                          "a single stock shock could badly hurt you.")
-        if top_sector_pct > 60:
-            issues.append(f"🔴 {top_sector} sector is {top_sector_pct:.0f}% of holdings — "
-                          "heavy concentration risk if that sector falls.")
-        if not issues:
-            st.success("✅ Portfolio risk looks reasonably balanced — no major concentration flags.")
+        if risk_notes:
+            notes_html = "".join(
+                f'<div style="padding:.5rem .8rem;font-size:.85rem;'
+                f'border-left:3px solid var(--border);margin-bottom:.4rem;'
+                f'background:var(--card2);border-radius:0 6px 6px 0">{n}</div>'
+                for n in risk_notes)
+            st.markdown(notes_html, unsafe_allow_html=True)
         else:
-            for i in issues:
-                st.warning(i)
+            st.success("✅ No major risk flags — concentration, sector exposure "
+                       "and drawdowns all within healthy bounds.")
 
-# ── Price Alerts ───────────────────────────────────────────────────────────────
+        rk1, rk2 = st.columns(2)
+        with rk1:
+            st.markdown('<div style="font-size:.85rem;font-weight:800;margin:.8rem 0 .4rem">'
+                        '🏗 Stock Concentration</div>', unsafe_allow_html=True)
+            cfig = go.Figure(go.Bar(
+                x=conc.values, y=conc.index, orientation="h",
+                marker_color=[theme_t["red"] if v/total_inv > 0.25
+                              else theme_t["accent"] for v in conc.values]))
+            cfig.update_layout(
+                height=max(200, len(conc)*35 + 60),
+                margin=dict(l=10, r=10, t=10, b=10), showlegend=False,
+                paper_bgcolor="rgba(0,0,0,0)", plot_bgcolor="rgba(0,0,0,0)",
+                font=dict(color=theme_t.get("text", "#fff")))
+            cfig.update_xaxes(gridcolor="rgba(255,255,255,0.05)", tickprefix="₹")
+            st.plotly_chart(cfig, use_container_width=True)
+
+        with rk2:
+            st.markdown('<div style="font-size:.85rem;font-weight:800;margin:.8rem 0 .4rem">'
+                        '🏭 Sector Exposure</div>', unsafe_allow_html=True)
+            sfig = go.Figure(go.Pie(
+                labels=sec_exp.index, values=sec_exp.values, hole=.55,
+                marker=dict(colors=px.colors.qualitative.Dark24)))
+            sfig.update_layout(
+                height=max(200, len(conc)*35 + 60),
+                margin=dict(l=10, r=10, t=10, b=10),
+                paper_bgcolor="rgba(0,0,0,0)", plot_bgcolor="rgba(0,0,0,0)",
+                font=dict(color=theme_t.get("text", "#fff")))
+            st.plotly_chart(sfig, use_container_width=True)
+
+        if not worst_pos.empty:
+            st.markdown('<div style="font-size:.85rem;font-weight:800;margin:.8rem 0 .4rem">'
+                        '📉 Weakest Open Positions</div>', unsafe_allow_html=True)
+            wp = worst_pos.copy()
+            wp.columns = ["Stock", "P&L %", "P&L ₹"]
+            st.dataframe(wp, hide_index=True, use_container_width=True)
+
+# ── Price Alerts ─────────────────────────────────────────────────────────────
 elif _page == 'alerts':
     st.markdown('<div class="sec">🔔 Price Alerts</div>', unsafe_allow_html=True)
-    st.caption("Set price targets on any stock. Alerts trigger when crossed and "
-               "(if Telegram is configured) send you a message.")
+    st.caption("Set above/below price triggers on any NSE stock. Alerts are checked "
+               "each time the dashboard refreshes (~5 min) and can push to Telegram.")
 
-    with st.expander("➕ Create New Alert", expanded=True):
-        ac1, ac2, ac3 = st.columns([2, 1, 1])
-        with ac1:
-            _al_stock = st.text_input("Stock symbol (NSE)", key="al_stock",
-                                      placeholder="e.g. RELIANCE")
-        with ac2:
-            _al_cond = st.selectbox("Condition", ["above", "below"], key="al_cond")
-        with ac3:
-            _al_price = st.number_input("Target ₹", min_value=0.0, step=1.0, key="al_price")
-        _al_note = st.text_input("Note (optional)", key="al_note",
-                                 placeholder="e.g. breakout level / support")
-        if st.button("🔔 Create Alert", width="stretch"):
-            if _al_stock and _al_price > 0:
-                add_price_alert(UID, _al_stock, _al_cond, _al_price, _al_note)
-                st.success(f"Alert set: {_al_stock.upper()} {_al_cond} ₹{_al_price}")
-                st.rerun()
-            else:
-                st.error("Enter a stock symbol and a target price above 0.")
+    with st.form("alert_form", clear_on_submit=True):
+        al1, al2, al3, al4 = st.columns([2, 1, 1.2, 1])
+        with al1:
+            al_stock = st.text_input("Stock", placeholder="e.g. RELIANCE",
+                                     label_visibility="collapsed")
+        with al2:
+            al_cond = st.selectbox("Condition", ["above", "below"],
+                                   label_visibility="collapsed")
+        with al3:
+            al_price = st.number_input("Price ₹", min_value=0.01, step=0.5,
+                                       value=100.0, format="%.2f",
+                                       label_visibility="collapsed")
+        with al4:
+            al_submit = st.form_submit_button("➕ Set Alert", width="stretch")
+        al_note = st.text_input("Note (optional)", placeholder="e.g. breakout level / support retest",
+                                label_visibility="collapsed")
+        if al_submit and al_stock.strip():
+            add_price_alert(UID, al_stock, al_cond, al_price, al_note)
+            st.toast(f"🔔 Alert set: {al_stock.upper()} {al_cond} ₹{al_price}")
+            st.rerun()
 
-    # Active alerts — check against live prices
-    active = get_price_alerts(UID, status="Active")
-    if active:
-        st.markdown(f"##### 🟢 Active Alerts ({len(active)})")
-        # Fetch current prices for all alert stocks
-        alert_syms = tuple(sorted({a[1] for a in active}))
-        alert_prices = _cached_prices(alert_syms)
-
-        for a in active:
-            aid, stock, cond, target, status, note, created, _ = a
-            cur_price = alert_prices.get(stock)
-            triggered = False
-            if cur_price is not None:
-                if cond == "above" and cur_price >= target:
-                    triggered = True
-                elif cond == "below" and cur_price <= target:
-                    triggered = True
-
-            cur_str = f"₹{cur_price}" if cur_price is not None else "—"
-            arrow = "▲" if cond == "above" else "▼"
-            row_clr = "#10b981" if triggered else "var(--border)"
-
-            cc1, cc2 = st.columns([5, 1])
-            with cc1:
-                trig_html = ('<span style="background:rgba(16,185,129,.2);color:#10b981;'
-                             'padding:.15rem .5rem;border-radius:4px;font-size:.7rem;'
-                             'font-weight:800;margin-left:.5rem">🎯 TRIGGERED</span>') if triggered else ''
-                st.markdown(f"""
-<div style="background:var(--card);border:1px solid {row_clr};border-radius:8px;
-            padding:.7rem 1rem;margin-bottom:.5rem">
-  <b style="font-size:.95rem">{stock}</b> {arrow} ₹{target}
-  <span style="color:var(--muted);font-size:.8rem">· now {cur_str}</span>{trig_html}
-  {('<br><span style="font-size:.72rem;color:var(--muted)">📝 ' + note + '</span>') if note else ''}
-</div>""", unsafe_allow_html=True)
-            with cc2:
-                if st.button("🗑", key=f"del_alert_{aid}"):
-                    delete_price_alert(aid, UID)
-                    st.rerun()
-
-            # If triggered, mark it + optionally send Telegram
-            if triggered:
+    # ── Check active alerts against live prices ────────────────────────────────
+    active_alerts = get_price_alerts(UID, status="Active")
+    if active_alerts:
+        alert_syms = tuple(sorted({a[1] for a in active_alerts}))
+        live_p = _cached_prices(alert_syms)
+        triggered_now = []
+        for aid, stock, cond, tprice, status, note, cdate, tdate in active_alerts:
+            lp = live_p.get(stock)
+            if lp is None:
+                continue
+            if (cond == "above" and lp >= tprice) or (cond == "below" and lp <= tprice):
                 trigger_price_alert(aid, UID)
-                if saved_tok and saved_cid:
-                    try:
-                        send_telegram(saved_tok, saved_cid,
-                            f"🎯 <b>PRICE ALERT</b>\n{stock} is now {cur_str} "
-                            f"({arrow} target ₹{target})\n{note}")
-                    except Exception:
-                        pass
+                triggered_now.append((stock, cond, tprice, lp))
+        if triggered_now:
+            for stock, cond, tprice, lp in triggered_now:
+                st.toast(f"🚨 {stock} is {cond} ₹{tprice} (now ₹{lp})", icon="🔔")
+            # Telegram push if configured
+            if saved_tok and saved_cid:
+                try:
+                    msg = "🔔 <b>PRICE ALERTS TRIGGERED</b>\n" + "\n".join(
+                        f"• {s} crossed {c} ₹{t} — now ₹{l}"
+                        for s, c, t, l in triggered_now)
+                    send_telegram(saved_tok, saved_cid, msg)
+                except Exception:
+                    pass
+            active_alerts = get_price_alerts(UID, status="Active")
+
+    # ── Render active alerts ───────────────────────────────────────────────────
+    st.markdown('<div class="sec" style="margin-top:1rem">⏳ Active Alerts</div>',
+                unsafe_allow_html=True)
+    if not active_alerts:
+        st.info("No active alerts. Set one above.")
     else:
-        st.info("No active alerts. Create one above.")
+        alert_syms = tuple(sorted({a[1] for a in active_alerts}))
+        live_p = _cached_prices(alert_syms)
+        rows = ""
+        for aid, stock, cond, tprice, status, note, cdate, tdate in active_alerts:
+            lp = live_p.get(stock)
+            lp_str = f"₹{lp:,.2f}" if lp else "—"
+            if lp:
+                dist = ((tprice - lp) / lp * 100) if cond == "above" else ((lp - tprice) / lp * 100)
+                dist_str = f"{dist:+.1f}% away"
+                dist_clr = "var(--yellow)" if abs(dist) < 3 else "var(--muted)"
+            else:
+                dist_str, dist_clr = "—", "var(--muted)"
+            cond_badge = ("🔼" if cond == "above" else "🔽")
+            rows += (
+                f"<tr>"
+                f"<td style='text-align:left;font-weight:800'>{stock}</td>"
+                f"<td>{cond_badge} {cond} ₹{tprice:,.2f}</td>"
+                f"<td>{lp_str}</td>"
+                f"<td style='color:{dist_clr};font-weight:600'>{dist_str}</td>"
+                f"<td style='text-align:left;font-size:.78rem;color:var(--muted)'>{note or '—'}</td>"
+                f"<td style='font-size:.75rem;color:var(--muted)'>{cdate}</td>"
+                f"</tr>"
+            )
+        st.markdown(
+            f'<div class="tbl-wrap"><table class="t"><thead><tr>'
+            f'<th class="l">Stock</th><th>Trigger</th><th>Live</th>'
+            f'<th>Distance</th><th class="l">Note</th><th>Set On</th>'
+            f'</tr></thead><tbody>{rows}</tbody></table></div>',
+            unsafe_allow_html=True)
 
-    # Triggered history
-    triggered_alerts = get_price_alerts(UID, status="Triggered")
-    if triggered_alerts:
-        with st.expander(f"📜 Triggered History ({len(triggered_alerts)})"):
-            for a in triggered_alerts:
-                aid, stock, cond, target, status, note, created, trig_date = a
-                arrow = "▲" if cond == "above" else "▼"
-                tc1, tc2 = st.columns([5, 1])
-                with tc1:
-                    st.markdown(f"**{stock}** {arrow} ₹{target} · triggered {trig_date or '—'}")
-                with tc2:
-                    if st.button("🗑", key=f"del_trig_{aid}"):
-                        delete_price_alert(aid, UID)
-                        st.rerun()
+        del_opts = [f"{a[0]} — {a[1]} {a[2]} ₹{a[3]}" for a in active_alerts]
+        dc1, dc2 = st.columns([3, 1])
+        with dc1:
+            sel_del = st.selectbox("Delete alert", del_opts, label_visibility="collapsed")
+        with dc2:
+            if st.button("🗑 Delete", width="stretch"):
+                delete_price_alert(int(sel_del.split(" — ")[0]), UID)
+                st.rerun()
 
-# ── Stock Candlestick Chart ────────────────────────────────────────────────────
+    # ── Triggered history ──────────────────────────────────────────────────────
+    trig = get_price_alerts(UID, status="Triggered")
+    if trig:
+        with st.expander(f"✅ Triggered History ({len(trig)})"):
+            for aid, stock, cond, tprice, status, note, cdate, tdate in trig[:20]:
+                st.markdown(
+                    f'<div style="font-size:.82rem;padding:.3rem 0;color:var(--muted)">'
+                    f'🔔 <b style="color:var(--text)">{stock}</b> crossed {cond} '
+                    f'₹{tprice:,.2f} on {tdate}'
+                    f'{(" · " + note) if note else ""}</div>',
+                    unsafe_allow_html=True)
+
+# ── Stock Chart ──────────────────────────────────────────────────────────────
 elif _page == 'chart':
-    st.markdown('<div class="sec">📈 Stock Chart</div>', unsafe_allow_html=True)
-    st.caption("Candlestick chart with EMAs, Bollinger Bands, and support/resistance. "
-               "Pick a holding, watchlist stock, or type any NSE symbol.")
+    st.markdown('<div class="sec">📈 Interactive Stock Chart</div>',
+                unsafe_allow_html=True)
 
-    # Build symbol options: holdings + watchlist + manual
-    hold_syms = sorted(df["stock"].unique().tolist()) if not df.empty else []
-    try:
-        wl = get_watchlist(UID)
-        wl_syms = sorted(wl["stock"].unique().tolist()) if (wl is not None and not wl.empty) else []
-    except Exception:
-        wl_syms = []
-    combined = sorted(set(hold_syms + wl_syms))
+    open_syms = (raw[raw["status"]=="Open"]["stock"].unique().tolist()
+                 if not raw.empty else [])
+    ch1, ch2, ch3 = st.columns([2, 1.5, 1.2])
+    with ch1:
+        chart_options = open_syms + ["— Custom —"]
+        ch_sel = st.selectbox("Stock", chart_options, label_visibility="collapsed")
+    with ch2:
+        ch_custom = st.text_input("Custom symbol", placeholder="e.g. TCS",
+                                  label_visibility="collapsed")
+    with ch3:
+        ch_tf = st.selectbox("Timeframe", list(_CHART_TIMEFRAMES.keys()),
+                             index=3, label_visibility="collapsed")
 
-    cc1, cc2, cc3 = st.columns([2, 1, 1])
-    with cc1:
-        if combined:
-            _picked = st.selectbox("Your stocks", ["— type below —"] + combined, key="chart_pick")
-        else:
-            _picked = "— type below —"
-    with cc2:
-        _typed = st.text_input("Or NSE symbol", key="chart_typed", placeholder="e.g. TCS")
-    with cc3:
-        _tf_label = st.selectbox("Timeframe", list(_CHART_TIMEFRAMES.keys()),
-                                 index=3, key="chart_tf")
-    _period, _interval = _CHART_TIMEFRAMES[_tf_label]
+    ch_sym = (ch_custom.strip().upper() if ch_custom.strip()
+              else (ch_sel if ch_sel != "— Custom —" else None))
 
-    chart_sym = (_typed.strip().upper() if _typed.strip()
-                 else (_picked if _picked != "— type below —" else None))
-
-    if not chart_sym:
-        st.info("Select or type a stock symbol to view its chart.")
+    if not ch_sym:
+        st.info("💡 Pick a holding or enter any NSE symbol to render its chart.")
     else:
-        with st.spinner(f"Loading {chart_sym} {_tf_label} chart…"):
-            cdf = fetch_chart_data(chart_sym, _period, _interval)
-            # Live CMP (real-time last price, same source as portfolio)
-            live_cmp = None
-            try:
-                _lp = _cached_prices((chart_sym,))
-                live_cmp = _lp.get(chart_sym)
-            except Exception:
-                pass
+        period, interval = _CHART_TIMEFRAMES[ch_tf]
+        with st.spinner(f"Loading {ch_sym} ({ch_tf})…"):
+            cdf_chart = fetch_chart_data(ch_sym, period, interval)
 
-        if cdf is None or cdf.empty or len(cdf) < 5:
-            st.error(f"Couldn't load {_tf_label} data for {chart_sym}. "
-                     f"Intraday data may be unavailable (markets closed / newly listed), "
-                     f"or Yahoo is rate-limited. Try the Daily timeframe.")
+        if cdf_chart is None or cdf_chart.empty:
+            st.error(f"No data for {ch_sym} at {ch_tf}. Try a different timeframe "
+                     "or verify the symbol.")
         else:
-            c = cdf.copy()
-            # Indicators for overlay
-            close = c["Close"]
-            _ema_fast = 20 if len(c) >= 20 else max(2, len(c) // 2)
-            _ema_slow = 50 if len(c) >= 50 else max(3, len(c) // 2)
-            c["EMA20"] = close.ewm(span=_ema_fast, adjust=False).mean()
-            c["EMA50"] = close.ewm(span=_ema_slow, adjust=False).mean()
-            _bb_win = min(20, len(c))
-            bb_mid = close.rolling(_bb_win).mean()
-            bb_std = close.rolling(_bb_win).std()
-            c["BB_up"] = bb_mid + 2 * bb_std
-            c["BB_dn"] = bb_mid - 2 * bb_std
-            support = float(c["Low"].rolling(min(20, len(c))).min().iloc[-1])
-            resistance = float(c["High"].rolling(min(20, len(c))).max().iloc[-1])
+            show_ema = st.checkbox("Show EMA 9/21", value=True)
+            fig = go.Figure(go.Candlestick(
+                x=cdf_chart.index, open=cdf_chart["Open"], high=cdf_chart["High"],
+                low=cdf_chart["Low"], close=cdf_chart["Close"],
+                increasing_line_color=theme_t["green"],
+                decreasing_line_color=theme_t["red"], name=ch_sym))
+            if show_ema and len(cdf_chart) >= 21:
+                ema9s  = cdf_chart["Close"].ewm(span=9,  adjust=False).mean()
+                ema21s = cdf_chart["Close"].ewm(span=21, adjust=False).mean()
+                fig.add_trace(go.Scatter(x=cdf_chart.index, y=ema9s, name="EMA 9",
+                                         line=dict(color=theme_t["yellow"], width=1.2)))
+                fig.add_trace(go.Scatter(x=cdf_chart.index, y=ema21s, name="EMA 21",
+                                         line=dict(color=theme_t["blue"], width=1.2)))
 
-            fig = go.Figure()
-            # Bollinger band fill
-            fig.add_trace(go.Scatter(x=c.index, y=c["BB_up"], line=dict(width=0),
-                                     showlegend=False, hoverinfo="skip"))
-            fig.add_trace(go.Scatter(x=c.index, y=c["BB_dn"], line=dict(width=0),
-                                     fill="tonexty", fillcolor="rgba(120,120,200,0.08)",
-                                     showlegend=False, hoverinfo="skip", name="BB"))
-            # Candles
-            fig.add_trace(go.Candlestick(
-                x=c.index, open=c["Open"], high=c["High"], low=c["Low"], close=c["Close"],
-                name=chart_sym, increasing_line_color="#10b981",
-                decreasing_line_color="#ef4444"))
-            # EMAs
-            fig.add_trace(go.Scatter(x=c.index, y=c["EMA20"],
-                                     line=dict(color="#f59e0b", width=1.3),
-                                     name=f"EMA {_ema_fast}"))
-            fig.add_trace(go.Scatter(x=c.index, y=c["EMA50"],
-                                     line=dict(color="#3b82f6", width=1.3),
-                                     name=f"EMA {_ema_slow}"))
-            # S/R lines
-            fig.add_hline(y=resistance, line=dict(color="#ef4444", width=1, dash="dash"),
-                          annotation_text=f"R ₹{resistance:.1f}", annotation_position="right")
-            fig.add_hline(y=support, line=dict(color="#10b981", width=1, dash="dash"),
-                          annotation_text=f"S ₹{support:.1f}", annotation_position="right")
-            # Live CMP line (real-time, distinct from last candle close)
-            if live_cmp:
-                fig.add_hline(y=live_cmp, line=dict(color="#d4af37", width=1.2, dash="dot"),
-                              annotation_text=f"CMP ₹{live_cmp:.1f}",
-                              annotation_position="left")
+            # Mark buy price if it's a holding
+            if ch_sym in open_syms and not raw.empty:
+                b_at = raw[(raw["stock"] == ch_sym) & (raw["status"] == "Open")]["buy_at"].mean()
+                fig.add_hline(y=b_at, line_dash="dash", line_color=theme_t["accent"],
+                              annotation_text=f"Avg Buy ₹{b_at:,.2f}",
+                              annotation_font_color=theme_t["accent"])
 
             fig.update_layout(
-                height=520, margin=dict(l=10, r=10, t=30, b=10),
-                dragmode="pan",   # drag = pan (smooth), not the clunky zoom-box default
-                xaxis_rangeslider_visible=True,   # bottom mini-slider for left/right scroll
-                xaxis_rangeslider_thickness=0.06,
+                height=560, xaxis_rangeslider_visible=False,
+                margin=dict(l=10, r=10, t=30, b=10),
                 paper_bgcolor="rgba(0,0,0,0)", plot_bgcolor="rgba(0,0,0,0)",
                 font=dict(color=theme_t.get("text", "#fff")),
-                legend=dict(orientation="h", yanchor="bottom", y=1.0, x=0),
-                hovermode="x unified")
-            fig.update_xaxes(gridcolor="rgba(255,255,255,0.05)", rangeslider_thickness=0.06)
-            fig.update_yaxes(gridcolor="rgba(255,255,255,0.05)", fixedrange=False)
-            _chart_config = {
-                "scrollZoom": True,        # mouse wheel / pinch zoom — smooth in/out
-                "displaylogo": False,
-                "modeBarButtonsToRemove": ["lasso2d", "select2d"],
-                "doubleClick": "autosize", # double-click resets zoom
-            }
-            st.plotly_chart(fig, use_container_width=True, config=_chart_config)
+                legend=dict(orientation="h", y=1.02))
+            fig.update_xaxes(gridcolor="rgba(255,255,255,0.05)")
+            fig.update_yaxes(gridcolor="rgba(255,255,255,0.05)", tickprefix="₹")
+            st.plotly_chart(fig, use_container_width=True)
 
-            # Volume chart below — x-axis matched to price chart range for sync scroll
-            vfig = go.Figure()
-            vol_clr = ["#10b981" if c["Close"].iloc[i] >= c["Open"].iloc[i]
-                       else "#ef4444" for i in range(len(c))]
-            vfig.add_trace(go.Bar(x=c.index, y=c["Volume"], marker_color=vol_clr,
-                                  name="Volume"))
-            vfig.update_layout(height=160, margin=dict(l=10, r=10, t=10, b=10),
-                               dragmode="pan",
-                               paper_bgcolor="rgba(0,0,0,0)", plot_bgcolor="rgba(0,0,0,0)",
-                               font=dict(color=theme_t.get("text", "#fff")), showlegend=False)
-            vfig.update_xaxes(gridcolor="rgba(255,255,255,0.05)",
-                              range=[c.index[0], c.index[-1]])
-            vfig.update_yaxes(gridcolor="rgba(255,255,255,0.05)")
-            st.plotly_chart(vfig, use_container_width=True, config=_chart_config)
-            st.caption("🖱️ Scroll to zoom · Drag to pan · Double-click to reset · "
-                       "Use the slider strip below the chart to jump left/right")
+            # Volume subchart
+            vfig = go.Figure(go.Bar(
+                x=cdf_chart.index, y=cdf_chart["Volume"],
+                marker_color=[theme_t["green"] if c >= o else theme_t["red"]
+                              for c, o in zip(cdf_chart["Close"], cdf_chart["Open"])]))
+            vfig.update_layout(
+                height=160, margin=dict(l=10, r=10, t=5, b=10), showlegend=False,
+                paper_bgcolor="rgba(0,0,0,0)", plot_bgcolor="rgba(0,0,0,0)",
+                font=dict(color=theme_t.get("text", "#fff")))
+            vfig.update_xaxes(gridcolor="rgba(255,255,255,0.03)")
+            vfig.update_yaxes(gridcolor="rgba(255,255,255,0.03)")
+            st.plotly_chart(vfig, use_container_width=True)
 
-            # Quick stats row — lead with LIVE CMP, not stale candle close
-            last_close = float(c["Close"].iloc[-1])
-            prev_close = float(c["Close"].iloc[-2]) if len(c) >= 2 else last_close
-            display_price = live_cmp if live_cmp else last_close
-            chg = (display_price / prev_close - 1) * 100 if prev_close else 0
-            sc1, sc2, sc3, sc4 = st.columns(4)
-            sc1.metric("CMP (live)" if live_cmp else "Last Close",
-                       f"₹{display_price:.2f}", f"{chg:+.2f}%")
-            sc2.metric("Support", f"₹{support:.2f}")
-            sc3.metric("Resistance", f"₹{resistance:.2f}")
-            sc4.metric("Bars", f"{len(c)}")
-            if live_cmp and abs(live_cmp - last_close) > 0.01:
-                st.caption(f"💡 Gold dotted line = live CMP ₹{live_cmp:.2f}. "
-                           f"Last {_tf_label} candle closed at ₹{last_close:.2f} "
-                           f"(candles lag live price, especially intraday/after-hours).")
-
-# ── Trade Journal ──────────────────────────────────────────────────────────────
+# ── Trade Journal ────────────────────────────────────────────────────────────
 elif _page == 'journal':
     st.markdown('<div class="sec">📓 Trade Journal</div>', unsafe_allow_html=True)
-    st.caption("Log why you entered each trade and what you learned. Over time this "
-               "becomes your most valuable asset — you'll spot patterns in your own decisions.")
+    st.caption("The habit that separates professionals from gamblers: log every trade's "
+               "setup, reasoning, emotion and lesson. Your edge lives in this data.")
 
-    with st.expander("➕ New Journal Entry", expanded=False):
-        jc1, jc2, jc3 = st.columns(3)
-        with jc1:
-            j_stock = st.text_input("Stock", key="j_stock", placeholder="RELIANCE")
-            j_date = st.date_input("Trade date", key="j_date")
-            j_dir = st.selectbox("Direction", ["Long", "Short"], key="j_dir")
-        with jc2:
-            j_entry = st.number_input("Entry ₹", min_value=0.0, step=1.0, key="j_entry")
-            j_exit = st.number_input("Exit ₹ (0 if open)", min_value=0.0, step=1.0, key="j_exit")
-            j_setup = st.selectbox("Setup", ["Breakout", "Pullback", "Reversal", "Trend-follow",
-                                   "SMC / Order Block", "Trap reversal", "Sector rotation",
-                                   "News-based", "Other"], key="j_setup")
-        with jc3:
-            j_emotion = st.selectbox("Emotion at entry", ["Confident", "Neutral", "FOMO",
-                                     "Fearful", "Greedy", "Revenge", "Disciplined"], key="j_emotion")
-            j_outcome = st.selectbox("Outcome", ["Open", "Win", "Loss", "Breakeven"], key="j_outcome")
-            j_rating = st.slider("Execution rating", 1, 5, 3, key="j_rating",
-                                 help="How well did you follow your plan? (not P&L)")
-        j_rationale = st.text_area("Why did you enter? (your thesis)", key="j_rationale",
-                                   placeholder="e.g. broke 200-DMA on volume, sector rotating in…")
-        j_lesson = st.text_area("Lesson learned / notes", key="j_lesson",
-                                placeholder="e.g. exited too early out of fear, should have trusted the stop")
-        if st.button("💾 Save Entry", width="stretch"):
-            if j_stock:
-                add_journal_entry(UID, j_stock, str(j_date), j_dir, j_entry,
-                                  j_exit if j_exit > 0 else None, j_setup, j_rationale,
-                                  j_emotion, j_outcome, j_lesson, j_rating)
-                st.success(f"Journal entry saved for {j_stock.upper()}")
-                st.rerun()
-            else:
-                st.error("Enter at least a stock symbol.")
+    with st.expander("➕ Log a Trade", expanded=False):
+        with st.form("journal_form", clear_on_submit=True):
+            j1, j2, j3 = st.columns(3)
+            with j1:
+                j_stock = st.text_input("Stock *", placeholder="e.g. TATAPOWER")
+                j_date = st.date_input("Trade Date")
+                j_dir = st.selectbox("Direction", ["Long", "Short"])
+            with j2:
+                j_entry = st.number_input("Entry ₹", min_value=0.0, step=0.5, format="%.2f")
+                j_exit = st.number_input("Exit ₹ (0 if open)", min_value=0.0, step=0.5, format="%.2f")
+                j_setup = st.selectbox("Setup", [
+                    "Breakout", "Pullback to EMA", "VCP / Base", "Bear Trap Reversal",
+                    "SMC Order Block", "Sector Momentum", "Earnings Play",
+                    "Support Bounce", "Other"])
+            with j3:
+                j_emotion = st.selectbox("Emotional state", [
+                    "Calm / Planned", "FOMO", "Revenge trade", "Fearful",
+                    "Overconfident", "Bored / Impulsive"])
+                j_outcome = st.selectbox("Outcome", ["Open", "Win", "Loss", "Breakeven"])
+                j_rating = st.slider("Execution rating", 1, 5, 3,
+                                     help="Rate the QUALITY of your process, not the P&L")
+            j_rationale = st.text_area("Why did you take this trade? *",
+                                       placeholder="Setup, confluence, plan…", height=80)
+            j_lesson = st.text_area("Lesson / what would you do differently?",
+                                    placeholder="Filled after close ideally", height=60)
+            if st.form_submit_button("💾 Save Entry", width="stretch"):
+                if j_stock.strip() and j_rationale.strip():
+                    add_journal_entry(
+                        UID, j_stock, j_date.strftime("%Y-%m-%d"), j_dir,
+                        j_entry if j_entry > 0 else None,
+                        j_exit if j_exit > 0 else None,
+                        j_setup, j_rationale, j_emotion, j_outcome,
+                        j_lesson, j_rating)
+                    st.toast(f"📓 Logged {j_stock.upper()}")
+                    st.rerun()
+                else:
+                    st.error("Stock and rationale are required.")
 
     entries = get_journal_entries(UID)
     if not entries:
-        st.info("No journal entries yet. Log your first trade above — your future self will thank you.")
+        st.info("No journal entries yet. Log your first trade above — future you "
+                "will thank present you.")
     else:
-        # Insight summary
-        wins = sum(1 for e in entries if e[9] == "Win")
-        losses = sum(1 for e in entries if e[9] == "Loss")
-        closed = wins + losses
-        avg_rating = sum(e[11] or 0 for e in entries) / len(entries) if entries else 0
-        # Most common setup & emotion
-        from collections import Counter
-        setups = Counter(e[6] for e in entries if e[6])
-        emotions = Counter(e[8] for e in entries if e[8])
-        top_setup = setups.most_common(1)[0][0] if setups else "—"
-        top_emotion = emotions.most_common(1)[0][0] if emotions else "—"
+        # ── Journal analytics ──────────────────────────────────────────────────
+        jdf = pd.DataFrame(entries, columns=[
+            "id", "stock", "trade_date", "direction", "entry_price", "exit_price",
+            "setup", "rationale", "emotion", "outcome", "lesson", "rating",
+            "created_date"])
+        closed_j = jdf[jdf["outcome"].isin(["Win", "Loss", "Breakeven"])]
 
-        ic1, ic2, ic3, ic4 = st.columns(4)
-        ic1.metric("Entries", len(entries))
-        ic2.metric("Win Rate", f"{(wins/closed*100):.0f}%" if closed else "—",
-                   f"{wins}W / {losses}L")
-        ic3.metric("Avg Execution", f"{avg_rating:.1f}/5")
-        ic4.metric("Top Setup", top_setup)
+        if not closed_j.empty:
+            n_win = len(closed_j[closed_j["outcome"] == "Win"])
+            n_all = len(closed_j)
+            win_rt = n_win / n_all * 100 if n_all else 0
+            best_setup = (closed_j[closed_j["outcome"] == "Win"]["setup"].mode().iloc[0]
+                          if n_win > 0 else "—")
+            worst_emotion = (closed_j[closed_j["outcome"] == "Loss"]["emotion"].mode().iloc[0]
+                             if len(closed_j[closed_j["outcome"] == "Loss"]) > 0 else "—")
+            avg_rating = closed_j["rating"].mean()
 
-        # Win rate by setup — the real insight
-        st.markdown("##### 📊 Win Rate by Setup")
-        setup_stats = {}
-        for e in entries:
-            s, oc = e[6], e[9]
-            if oc in ("Win", "Loss"):
-                setup_stats.setdefault(s, {"w": 0, "l": 0})
-                setup_stats[s]["w" if oc == "Win" else "l"] += 1
-        if setup_stats:
-            rows = []
-            for s, st_ in setup_stats.items():
-                tot = st_["w"] + st_["l"]
-                wr = st_["w"] / tot * 100 if tot else 0
-                rows.append({"Setup": s, "Trades": tot, "Wins": st_["w"],
-                             "Losses": st_["l"], "Win %": round(wr, 0)})
-            sdf = pd.DataFrame(rows).sort_values("Win %", ascending=False)
-            st.dataframe(sdf, width="stretch", hide_index=True)
-            st.caption("💡 Focus on the setups where you actually win. Cut the ones that lose.")
+            st.markdown(
+                '<div class="cards">'
+                + card("Journaled Trades", str(len(jdf)))
+                + card("Win Rate", f"{win_rt:.0f}%", f"{n_win}/{n_all} closed",
+                       "green" if win_rt >= 50 else "red")
+                + card("Best Setup", best_setup, "most wins", "green")
+                + card("Loss Emotion", worst_emotion, "most common in losses", "red")
+                + card("Avg Execution", f"{avg_rating:.1f}/5", "process quality",
+                       "green" if avg_rating >= 3.5 else "yellow")
+                + '</div>',
+                unsafe_allow_html=True)
 
-        # Entry cards
-        st.markdown("##### 📒 Entries")
-        for e in entries:
-            (jid, stock, tdate, direction, entry_p, exit_p, setup, rationale,
-             emotion, outcome, lesson, rating, created) = e
-            oc_clr = {"Win": "#10b981", "Loss": "#ef4444",
-                      "Breakeven": "#f59e0b", "Open": "#8e8e93"}.get(outcome, "#8e8e93")
+            # Setup performance table
+            setup_perf = closed_j.groupby("setup").agg(
+                trades=("id", "count"),
+                wins=("outcome", lambda x: (x == "Win").sum())).reset_index()
+            setup_perf["win %"] = (setup_perf["wins"] / setup_perf["trades"] * 100).round(0)
+            setup_perf = setup_perf.sort_values("win %", ascending=False)
+            with st.expander("📊 Win Rate by Setup"):
+                st.dataframe(setup_perf, hide_index=True, use_container_width=True)
+
+        # ── Entry cards ────────────────────────────────────────────────────────
+        st.markdown('<div class="sec" style="margin-top:1rem">📜 Entries</div>',
+                    unsafe_allow_html=True)
+        for e in entries[:30]:
+            (jid, stock, tdate, jdir, entry_p, exit_p, setup, rationale,
+             emotion, outcome, lesson, rating, cdate) = e
+            o_clr = {"Win": "var(--green)", "Loss": "var(--red)",
+                     "Breakeven": "var(--yellow)"}.get(outcome, "var(--muted)")
             pnl_str = ""
             if entry_p and exit_p:
-                pnl = ((exit_p / entry_p - 1) * 100) if direction == "Long" else ((entry_p / exit_p - 1) * 100)
-                pnl_str = f" · {pnl:+.1f}%"
-            jcol1, jcol2 = st.columns([6, 1])
-            with jcol1:
-                st.markdown(f"""
-<div style="background:var(--card);border:1px solid var(--border);border-left:3px solid {oc_clr};
-            border-radius:8px;padding:.8rem 1rem;margin-bottom:.6rem">
-  <div style="display:flex;justify-content:space-between;flex-wrap:wrap">
-    <b style="font-size:.95rem">{stock} <span style="color:var(--muted);font-weight:400">
-       {direction} · {setup}</span></b>
-    <span style="color:{oc_clr};font-weight:700;font-size:.85rem">{outcome}{pnl_str}</span>
-  </div>
-  <div style="font-size:.78rem;color:var(--muted);margin-top:.2rem">
-    {tdate} · Entry ₹{entry_p or '—'} → Exit ₹{exit_p or '—'} · Emotion: {emotion} · ⭐{rating}/5</div>
-  {('<div style="font-size:.82rem;margin-top:.4rem"><b>Thesis:</b> ' + rationale + '</div>') if rationale else ''}
-  {('<div style="font-size:.82rem;margin-top:.3rem;color:var(--accent)"><b>Lesson:</b> ' + lesson + '</div>') if lesson else ''}
-</div>""", unsafe_allow_html=True)
-            with jcol2:
-                if st.button("🗑", key=f"del_journal_{jid}"):
+                pnl_pct = ((exit_p - entry_p) / entry_p * 100 *
+                           (1 if jdir == "Long" else -1))
+                pnl_str = f' · <b style="color:{o_clr}">{pnl_pct:+.1f}%</b>'
+            stars = "⭐" * int(rating or 0)
+            with st.expander(f"{stock} · {tdate} · {setup} · {outcome} {stars}"):
+                st.markdown(
+                    f'<div style="font-size:.85rem;line-height:1.8">'
+                    f'<b>{jdir}</b> — Entry ₹{entry_p or "—"} → Exit ₹{exit_p or "open"}'
+                    f'{pnl_str}<br>'
+                    f'<b>Emotion:</b> {emotion} · <b>Outcome:</b> '
+                    f'<span style="color:{o_clr};font-weight:700">{outcome}</span><br>'
+                    f'<b>Why:</b> {rationale}<br>'
+                    f'{("<b>Lesson:</b> " + lesson) if lesson else ""}'
+                    f'</div>',
+                    unsafe_allow_html=True)
+                if st.button("🗑 Delete entry", key=f"jdel_{jid}"):
                     delete_journal_entry(jid, UID)
                     st.rerun()
 
-# ── Market Breadth ─────────────────────────────────────────────────────────────
+# ── Market Breadth ───────────────────────────────────────────────────────────
 elif _page == 'breadth':
-    st.markdown('<div class="sec">📊 Market Breadth</div>', unsafe_allow_html=True)
-    st.caption("Overall market health from the universe scan. Strong breadth = broad "
-               "participation (safer for longs). Weak breadth = narrow/risky market.")
-
-    scan_df = st.session_state.get("scanner_cache")
-    if scan_df is None or (hasattr(scan_df, "empty") and scan_df.empty):
-        st.info("Breadth needs universe scan data. Click below to run it "
-                "(or it fills automatically via the background deep scan).")
-        if st.button("🔍 Run Universe Scan for Breadth"):
-            with st.spinner("Scanning universe…"):
-                st.session_state.scanner_cache = generate_market_scanner()
-            st.rerun()
-    else:
-        total = len(scan_df)
-        # Breadth metrics from scanner columns
-        uptrend = len(scan_df[scan_df["Trend"].isin(["Uptrend", "Strong Uptrend"])])
-        downtrend = len(scan_df[scan_df["Trend"].isin(["Downtrend", "Strong Downtrend"])])
-        bullish_pct = round(uptrend / total * 100, 1) if total else 0
-        bearish_pct = round(downtrend / total * 100, 1) if total else 0
-        # RSI-based
-        overbought = len(scan_df[scan_df["RSI"] >= 70])
-        oversold = len(scan_df[scan_df["RSI"] <= 30])
-        # Signal distribution
-        strong_buy = len(scan_df[scan_df["Signal"].str.contains("STRONG BUY", na=False)])
-        avoid = len(scan_df[scan_df["Signal"].str.contains("AVOID", na=False)])
-
-        # Overall breadth verdict
-        if bullish_pct >= 60:
-            verdict, vclr = "STRONG — broad participation, favorable for longs", "#10b981"
-        elif bullish_pct >= 40:
-            verdict, vclr = "NEUTRAL — mixed market, be selective", "#f59e0b"
-        else:
-            verdict, vclr = "WEAK — narrow market, longs carry extra risk", "#ef4444"
-
-        st.markdown(f"""
-<div style="background:var(--card);border:1px solid {vclr};border-radius:12px;
-            padding:1.2rem 1.5rem;margin:.5rem 0">
-  <div style="font-size:.75rem;color:var(--muted);text-transform:uppercase;
-              letter-spacing:.08em">Market Breadth Verdict</div>
-  <div style="font-size:1.2rem;font-weight:800;color:{vclr};margin-top:.3rem">{verdict}</div>
-  <div style="font-size:.8rem;color:var(--muted);margin-top:.3rem">
-       Based on {total:,} liquid stocks scanned</div>
-</div>""", unsafe_allow_html=True)
-
-        b1, b2, b3, b4 = st.columns(4)
-        b1.metric("🟢 In Uptrend", f"{bullish_pct}%", f"{uptrend} stocks")
-        b2.metric("🔴 In Downtrend", f"{bearish_pct}%", f"{downtrend} stocks")
-        b3.metric("⚠️ Overbought (RSI≥70)", overbought)
-        b4.metric("💧 Oversold (RSI≤30)", oversold)
-
-        # Advance/decline style bar
-        st.markdown("##### 📈 Trend Distribution")
-        trend_counts = scan_df["Trend"].value_counts()
-        tfig = go.Figure(go.Bar(
-            x=trend_counts.values, y=trend_counts.index, orientation="h",
-            marker_color=["#10b981" if "Up" in str(t) else "#ef4444" if "Down" in str(t)
-                          else "#8e8e93" for t in trend_counts.index]))
-        tfig.update_layout(height=280, margin=dict(l=10, r=10, t=10, b=10),
-                           paper_bgcolor="rgba(0,0,0,0)", plot_bgcolor="rgba(0,0,0,0)",
-                           font=dict(color=theme_t.get("text", "#fff")))
-        tfig.update_xaxes(gridcolor="rgba(255,255,255,0.05)")
-        st.plotly_chart(tfig, use_container_width=True)
-
-        # Sector breadth
-        st.markdown("##### 🏭 Sector Breadth (% of sector in uptrend)")
-        sec_breadth = []
-        for sec in scan_df["Sector"].unique():
-            sub = scan_df[scan_df["Sector"] == sec]
-            up = len(sub[sub["Trend"].isin(["Uptrend", "Strong Uptrend"])])
-            pct = round(up / len(sub) * 100, 0) if len(sub) else 0
-            sec_breadth.append({"Sector": sec, "Stocks": len(sub),
-                                "In Uptrend": up, "Bullish %": pct})
-        sb_df = pd.DataFrame(sec_breadth).sort_values("Bullish %", ascending=False)
-        st.dataframe(sb_df, width="stretch", hide_index=True)
-        st.caption("💡 Sectors at the top have the strongest internal breadth — "
-                   "where the buying is concentrated right now.")
-
-# ── Custom Screener ────────────────────────────────────────────────────────────
-elif _page == 'screener':
-    st.markdown('<div class="sec">🔬 Custom Screener</div>', unsafe_allow_html=True)
-    st.caption("Filter the universe by your own criteria. Runs on the latest universe "
-               "scan data (no extra fetch needed).")
-
-    scan_df = st.session_state.get("scanner_cache")
-    if scan_df is None or (hasattr(scan_df, "empty") and scan_df.empty):
-        st.info("Screener needs universe scan data first.")
-        if st.button("🔍 Run Universe Scan"):
-            with st.spinner("Scanning universe…"):
-                st.session_state.scanner_cache = generate_market_scanner()
-            st.rerun()
-    else:
-        st.markdown(f"##### Filters ({len(scan_df):,} stocks in universe)")
-        f1, f2, f3 = st.columns(3)
-        with f1:
-            rsi_range = st.slider("RSI range", 0, 100, (40, 70), key="scr_rsi")
-            min_score = st.slider("Min signal score", -10, 20, 2, key="scr_score")
-        with f2:
-            trend_filter = st.multiselect(
-                "Trend", ["Strong Uptrend", "Uptrend", "Sideways",
-                          "Downtrend", "Strong Downtrend", "Recovery"],
-                default=["Strong Uptrend", "Uptrend"], key="scr_trend")
-            min_turnover = st.number_input("Min turnover (₹ Cr)", 0.0, 1000.0, 1.0,
-                                           key="scr_turnover")
-        with f3:
-            sectors_avail = sorted(scan_df["Sector"].unique().tolist())
-            sector_filter = st.multiselect("Sectors (blank = all)", sectors_avail,
-                                           default=[], key="scr_sector")
-            signal_filter = st.multiselect(
-                "Signal", ["🔥 STRONG BUY", "🟢 BUY SETUP", "🟡 ACCUMULATE",
-                           "⚪ NEUTRAL", "🔴 AVOID"],
-                default=[], key="scr_signal")
-
-        # Apply filters
-        res = scan_df.copy()
-        res = res[(res["RSI"] >= rsi_range[0]) & (res["RSI"] <= rsi_range[1])]
-        res = res[res["Score"] >= min_score]
-        if trend_filter:
-            res = res[res["Trend"].isin(trend_filter)]
-        if "Turnover_Cr" in res.columns:
-            res = res[res["Turnover_Cr"] >= min_turnover]
-        if sector_filter:
-            res = res[res["Sector"].isin(sector_filter)]
-        if signal_filter:
-            res = res[res["Signal"].isin(signal_filter)]
-
-        st.markdown(f"##### 🎯 {len(res)} matches")
-        if res.empty:
-            st.warning("No stocks match these filters. Try loosening them.")
-        else:
-            show_cols = ["Stock", "Sector", "Signal", "Score", "CMP", "RSI",
-                         "Trend", "VCP", "Trap", "RS", "Entry", "Target", "SL", "Turnover_Cr"]
-            show_cols = [c for c in show_cols if c in res.columns]
-            res_show = res[show_cols].sort_values("Score", ascending=False)
-            _h = min(max(len(res_show) * 36 + 40, 200), 600)
-            st.dataframe(res_show, width="stretch", height=_h, hide_index=True,
-                         column_config={"Stock": st.column_config.TextColumn(pinned=True)})
-            st.download_button(
-                "⬇️ Export Screener Results CSV",
-                res_show.to_csv(index=False).encode("utf-8"),
-                file_name=f"screener_{datetime.now().strftime('%Y%m%d_%H%M')}.csv",
-                mime="text/csv")
-
-# ── Earnings Calendar ──────────────────────────────────────────────────────────
-elif _page == 'earnings':
-    st.markdown('<div class="sec">📆 Earnings Calendar</div>', unsafe_allow_html=True)
-    st.caption("Upcoming results & key dates for your holdings. Helps you avoid being "
-               "caught holding through a risky earnings event.")
-
-    if df.empty:
-        st.info("Add holdings to see their upcoming earnings dates.")
-    else:
-        hold_syms = sorted(df[df["status"] == "Open"]["stock"].unique().tolist())
-        if not hold_syms:
-            st.info("No open positions. Earnings calendar tracks your active holdings.")
-        else:
-            if st.button("📅 Fetch Earnings Dates", width="stretch"):
-                import yfinance as _yf
-                rows = []
-                prog = st.progress(0.0)
-                for i, sym in enumerate(hold_syms):
-                    try:
-                        t = _yf.Ticker(sym + ".NS")
-                        cal = None
-                        try:
-                            cal = t.calendar
-                        except Exception:
-                            cal = None
-                        edate = None
-                        if isinstance(cal, dict):
-                            ev = cal.get("Earnings Date")
-                            if ev:
-                                edate = ev[0] if isinstance(ev, list) else ev
-                        elif cal is not None and hasattr(cal, "loc"):
-                            try:
-                                edate = cal.loc["Earnings Date"][0]
-                            except Exception:
-                                edate = None
-                        rows.append({"Stock": sym,
-                                     "Next Earnings": str(edate)[:10] if edate else "—"})
-                    except Exception:
-                        rows.append({"Stock": sym, "Next Earnings": "—"})
-                    prog.progress((i + 1) / len(hold_syms))
-                prog.empty()
-                st.session_state._earnings_cache = pd.DataFrame(rows)
-
-            ecache = st.session_state.get("_earnings_cache")
-            if ecache is not None and not ecache.empty:
-                st.dataframe(ecache, width="stretch", hide_index=True)
-                st.caption("⚠️ Earnings dates from Yahoo can be estimates and aren't "
-                           "always available for every NSE stock. Verify with the "
-                           "company / exchange before trading around results.")
-            else:
-                st.info("Click **Fetch Earnings Dates** to load upcoming results for "
-                        "your holdings.")
-
-# ── IPO Tracker ────────────────────────────────────────────────────────────────
-elif _page == 'ipo':
-    st.markdown('<div class="sec">🆕 IPO Tracker</div>', unsafe_allow_html=True)
-    st.caption("Recently listed stocks and their performance since listing.")
-
-    st.info("📌 **Honest note:** Reliable free IPO/GMP data is hard to get "
-            "programmatically (NSE blocks cloud IPs; GMP sources are unofficial). "
-            "This tracker lets you manually add stocks you're watching and tracks "
-            "their performance via Yahoo once they're listed.")
-
-    # Manual IPO watchlist using a session list
-    if "_ipo_watch" not in st.session_state:
-        st.session_state._ipo_watch = []
-
-    ic1, ic2 = st.columns([3, 1])
-    with ic1:
-        _ipo_sym = st.text_input("Add newly listed stock (NSE symbol)", key="ipo_sym",
-                                 placeholder="e.g. VEDPOWER")
-    with ic2:
-        st.markdown("<br>", unsafe_allow_html=True)
-        if st.button("➕ Track", width="stretch"):
-            if _ipo_sym and _ipo_sym.upper() not in st.session_state._ipo_watch:
-                st.session_state._ipo_watch.append(_ipo_sym.upper().strip())
-                st.rerun()
-
-    if st.session_state._ipo_watch:
-        if st.button("🔄 Refresh IPO Performance"):
-            st.session_state._ipo_refresh = True
-
-        rows = []
-        for sym in st.session_state._ipo_watch:
-            try:
-                hist = fetch_chart_data(sym, "1mo", "1d")
-                if hist is not None and not hist.empty:
-                    listing_price = float(hist["Open"].iloc[0])
-                    cur = float(hist["Close"].iloc[-1])
-                    # live CMP if available
-                    try:
-                        lp = _cached_prices((sym,)).get(sym)
-                        if lp: cur = lp
-                    except Exception:
-                        pass
-                    chg = (cur / listing_price - 1) * 100 if listing_price else 0
-                    rows.append({"Stock": sym, "Listing ~Price": round(listing_price, 2),
-                                 "CMP": round(cur, 2), "Since Listing %": round(chg, 1),
-                                 "Days": len(hist)})
-                else:
-                    rows.append({"Stock": sym, "Listing ~Price": "—", "CMP": "—",
-                                 "Since Listing %": "—", "Days": 0})
-            except Exception:
-                rows.append({"Stock": sym, "Listing ~Price": "—", "CMP": "—",
-                             "Since Listing %": "—", "Days": 0})
-
-        ipo_df = pd.DataFrame(rows)
-        st.dataframe(ipo_df, width="stretch", hide_index=True)
-
-        # Remove option
-        _rm = st.selectbox("Remove from tracker", ["—"] + st.session_state._ipo_watch,
-                           key="ipo_rm")
-        if _rm != "—" and st.button("🗑 Remove"):
-            st.session_state._ipo_watch.remove(_rm)
-            st.rerun()
-        st.caption("💡 'Listing ~Price' is the first available open from Yahoo, which "
-                   "approximates the listing-day open. Newly listed stocks need ~20 "
-                   "trading days before full technical signals work (see Active Signals).")
-    else:
-        st.info("Add a recently listed stock above to start tracking its performance.")
-
-# ── VCP Scanner ────────────────────────────────────────────────────────────────
-elif _page == 'vcp':
-    st.markdown('<div class="sec">📐 VCP Scanner — Volatility Contraction Pattern</div>',
+    st.markdown('<div class="sec">📊 Market Breadth — Universe Internals</div>',
                 unsafe_allow_html=True)
-    st.caption("Minervini's VCP: a leader basing through progressively tighter pullbacks "
-               "with volume drying up, coiled under a pivot. Ready bases are near breakout.")
+    st.caption("The market's true health: how many stocks are actually participating. "
+               "Breadth divergence often leads price at turning points.")
+
+    if st.button("📊 Compute Breadth", width="stretch"):
+        with st.spinner(f"Analysing breadth across {len(SECTOR_MAP)} stocks… (uses cached data when available)"):
+            all_syms = list(SECTOR_MAP.keys())
+            bulk = _bulk_fetch_history(all_syms, period="6mo")
+            up_day = dn_day = 0
+            above20 = above50 = above200 = 0
+            nh_20 = nl_20 = 0
+            total_valid = 0
+            adv_vol = dec_vol = 0.0
+            for sym, bdf in bulk.items():
+                try:
+                    if bdf is None or len(bdf) < 50:
+                        continue
+                    close = bdf["Close"]
+                    c_now = float(close.iloc[-1]); c_prev = float(close.iloc[-2])
+                    total_valid += 1
+                    v_now = float(bdf["Volume"].iloc[-1]) * c_now
+                    if c_now > c_prev:
+                        up_day += 1; adv_vol += v_now
+                    elif c_now < c_prev:
+                        dn_day += 1; dec_vol += v_now
+                    e20 = float(close.ewm(span=20, adjust=False).mean().iloc[-1])
+                    e50 = float(close.ewm(span=50, adjust=False).mean().iloc[-1])
+                    if c_now > e20: above20 += 1
+                    if c_now > e50: above50 += 1
+                    if len(close) >= 200:
+                        e200 = float(close.ewm(span=200, adjust=False).mean().iloc[-1])
+                        if c_now > e200: above200 += 1
+                    if c_now >= float(close.iloc[-20:].max()) * 0.999: nh_20 += 1
+                    if c_now <= float(close.iloc[-20:].min()) * 1.001: nl_20 += 1
+                except Exception:
+                    continue
+
+            st.session_state["_breadth_cache"] = {
+                "up": up_day, "dn": dn_day, "total": total_valid,
+                "a20": above20, "a50": above50, "a200": above200,
+                "nh": nh_20, "nl": nl_20,
+                "adv_vol": adv_vol, "dec_vol": dec_vol,
+                "ts": datetime.now().strftime("%H:%M"),
+            }
+
+    br = st.session_state.get("_breadth_cache")
+    if not br:
+        st.info("💡 Click **📊 Compute Breadth** to measure universe participation. "
+                "Fast if a deep scan already ran (shares its cache).")
+    else:
+        tot = max(br["total"], 1)
+        adr = br["up"] / max(br["dn"], 1)
+        pct20  = br["a20"] / tot * 100
+        pct50  = br["a50"] / tot * 100
+        pct200 = br["a200"] / tot * 100
+        vol_ratio = br["adv_vol"] / max(br["dec_vol"], 1)
+
+        breadth_score = (
+            (25 if pct50 > 60 else 12 if pct50 > 45 else 0) +
+            (25 if pct20 > 60 else 12 if pct20 > 45 else 0) +
+            (25 if adr > 1.5 else 12 if adr > 1.0 else 0) +
+            (25 if br["nh"] > br["nl"] * 2 else 12 if br["nh"] > br["nl"] else 0))
+        b_clr = ("#10b981" if breadth_score >= 70 else
+                 "#f59e0b" if breadth_score >= 40 else "#ef4444")
+        b_label = ("HEALTHY" if breadth_score >= 70 else
+                   "MIXED" if breadth_score >= 40 else "WEAK")
+
+        st.markdown(
+            f'<div style="display:flex;gap:1.5rem;align-items:center;flex-wrap:wrap;'
+            f'background:var(--card);border:1px solid {b_clr};border-radius:14px;'
+            f'padding:1.3rem 1.6rem;margin-bottom:1.5rem">'
+            f'<div><div style="font-size:.7rem;color:var(--muted);font-weight:700;'
+            f'text-transform:uppercase;letter-spacing:.1em">Breadth Health</div>'
+            f'<div style="font-size:2.4rem;font-weight:800;color:{b_clr}">'
+            f'{breadth_score}<span style="font-size:1rem;color:var(--muted)">/100</span> '
+            f'<span style="font-size:1rem;color:{b_clr}">{b_label}</span></div></div>'
+            f'<div style="font-size:.78rem;color:var(--muted)">'
+            f'{br["total"]} stocks analysed · as of {br["ts"]}</div>'
+            f'</div>',
+            unsafe_allow_html=True)
+
+        st.markdown(
+            '<div class="cards">'
+            + card("Adv / Dec", f'{br["up"]} / {br["dn"]}',
+                   f"ratio {adr:.2f}", "green" if adr > 1 else "red")
+            + card("Above 20 EMA", f"{pct20:.0f}%", f'{br["a20"]} stocks',
+                   "green" if pct20 > 50 else "red")
+            + card("Above 50 EMA", f"{pct50:.0f}%", f'{br["a50"]} stocks',
+                   "green" if pct50 > 50 else "red")
+            + card("Above 200 EMA", f"{pct200:.0f}%", f'{br["a200"]} stocks',
+                   "green" if pct200 > 50 else "red")
+            + card("20d Highs / Lows", f'{br["nh"]} / {br["nl"]}', "",
+                   "green" if br["nh"] > br["nl"] else "red")
+            + card("Up:Down Volume", f"{vol_ratio:.2f}", "₹ weighted",
+                   "green" if vol_ratio > 1 else "red")
+            + '</div>',
+            unsafe_allow_html=True)
+
+        st.markdown(
+            f'<div style="background:var(--card2);border-radius:8px;padding:.8rem 1rem;'
+            f'font-size:.82rem;color:var(--muted);line-height:1.7">'
+            f'💡 <b style="color:var(--text)">Reading breadth:</b> '
+            f'A rising Nifty with breadth &lt;40 is a narrow, fragile rally (few large caps '
+            f'carrying it). Breadth &gt;70 with new highs expanding confirms broad '
+            f'participation — the safest environment for swing longs. '
+            f'20d Lows expanding while the index holds up is an early warning.</div>',
+            unsafe_allow_html=True)
+
+# ── Custom Screener ──────────────────────────────────────────────────────────
+elif _page == 'screener':
+    st.markdown('<div class="sec">🔬 Custom Stock Screener</div>',
+                unsafe_allow_html=True)
+    st.caption("Build your own filter across the loaded universe. Runs on cached "
+               "indicator data — instant if a deep scan already completed.")
+
+    scf1, scf2, scf3, scf4 = st.columns(4)
+    with scf1:
+        f_rsi_min = st.number_input("RSI min", 0, 100, 0)
+        f_rsi_max = st.number_input("RSI max", 0, 100, 100)
+    with scf2:
+        f_trend = st.multiselect("Trend", ["Strong Uptrend", "Uptrend", "Recovery",
+                                           "Sideways", "Downtrend", "Strong Downtrend"],
+                                 default=[])
+        f_supertrend = st.selectbox("Supertrend", ["Any", "Bullish", "Bearish"])
+    with scf3:
+        f_price_min = st.number_input("Price min ₹", 0.0, value=0.0, step=10.0)
+        f_price_max = st.number_input("Price max ₹", 0.0, value=0.0, step=10.0,
+                                      help="0 = no max")
+    with scf4:
+        f_vol_surge = st.checkbox("Volume surge (>1.5x avg)")
+        f_macd_bull = st.checkbox("MACD bullish")
+        f_bb_squeeze = st.checkbox("BB squeeze")
+        f_liquid = st.checkbox("Liquid only (₹1Cr+)", value=True)
+
+    f_sectors = st.multiselect("Sectors (empty = all)",
+                               sorted(set(SECTOR_MAP.values())), default=[])
+
+    if st.button("🔬 Run Screen", width="stretch"):
+        with st.spinner(f"Screening {len(SECTOR_MAP)} stocks…"):
+            syms = [s for s in SECTOR_MAP
+                    if not f_sectors or SECTOR_MAP[s] in f_sectors]
+            bulk = _bulk_fetch_history(syms, period="6mo")
+            hits = []
+            for sym in syms:
+                try:
+                    ind = compute_indicators(sym, period="6mo",
+                                             prefetched_df=bulk.get(sym))
+                    if not ind:
+                        continue
+                    rsi_v = ind.get("rsi") or 0
+                    cmp_v = ind.get("cmp") or 0
+                    if not (f_rsi_min <= rsi_v <= f_rsi_max):
+                        continue
+                    if f_price_min and cmp_v < f_price_min:
+                        continue
+                    if f_price_max and cmp_v > f_price_max:
+                        continue
+                    if f_trend and ind.get("trend") not in f_trend:
+                        continue
+                    if f_supertrend == "Bullish" and not ind.get("supertrend_bullish"):
+                        continue
+                    if f_supertrend == "Bearish" and ind.get("supertrend_bullish"):
+                        continue
+                    if f_vol_surge and (ind.get("vol_ratio") or 0) < 1.5:
+                        continue
+                    if f_macd_bull and not ind.get("macd_bullish"):
+                        continue
+                    if f_bb_squeeze and not ind.get("bb_squeeze"):
+                        continue
+                    if f_liquid and not ind.get("liquidity_ok", True):
+                        continue
+                    hits.append({
+                        "Stock": sym, "Sector": SECTOR_MAP[sym],
+                        "CMP": cmp_v, "RSI": rsi_v,
+                        "Trend": ind.get("trend", "—"),
+                        "ST": "🟢" if ind.get("supertrend_bullish") else "🔴",
+                        "MACD": "🟢" if ind.get("macd_bullish") else "—",
+                        "Vol x": round(ind.get("vol_ratio") or 0, 1),
+                        "Support": ind.get("support"),
+                        "Resist": ind.get("resistance"),
+                    })
+                except Exception:
+                    continue
+            st.session_state["_screener_hits"] = hits
+
+    hits = st.session_state.get("_screener_hits")
+    if hits is None:
+        st.info("Set your filters and click **🔬 Run Screen**.")
+    elif not hits:
+        st.warning("0 stocks matched. Loosen the filters.")
+    else:
+        hdf = pd.DataFrame(hits)
+        st.markdown(
+            f'<div style="font-size:.78rem;color:var(--muted);margin:.5rem 0;'
+            f'font-weight:600">✅ {len(hdf)} matches</div>',
+            unsafe_allow_html=True)
+        _sh = min(max(len(hdf) * 36 + 40, 200), 600)
+        st.dataframe(
+            hdf, hide_index=True, height=_sh, use_container_width=True,
+            column_config={
+                "Stock":   st.column_config.TextColumn("Stock", width="small", pinned=True),
+                "CMP":     st.column_config.NumberColumn("CMP", format="₹%.2f"),
+                "RSI":     st.column_config.NumberColumn("RSI", format="%.1f"),
+                "Support": st.column_config.NumberColumn("Support", format="₹%.2f"),
+                "Resist":  st.column_config.NumberColumn("Resist", format="₹%.2f"),
+            })
+        st.download_button(
+            "⬇️ Export Screen CSV",
+            hdf.to_csv(index=False).encode("utf-8"),
+            file_name=f"screen_{datetime.now().strftime('%Y%m%d_%H%M')}.csv",
+            mime="text/csv")
+
+# ── Earnings Calendar ────────────────────────────────────────────────────────
+elif _page == 'earnings':
+    st.markdown('<div class="sec">📆 Earnings Calendar — Your Holdings & Watchlist</div>',
+                unsafe_allow_html=True)
+    st.caption("Upcoming result dates from Yahoo Finance. Earnings = volatility events: "
+               "size positions accordingly or step aside.")
+
+    open_syms = (raw[raw["status"]=="Open"]["stock"].unique().tolist()
+                 if not raw.empty else [])
+    wl_df = get_watchlist(UID)
+    wl_syms = wl_df["stock"].tolist() if not wl_df.empty else []
+    all_track = sorted(set(open_syms + wl_syms))
+
+    if not all_track:
+        st.info("Add holdings or watchlist stocks to see their earnings dates.")
+    else:
+        if st.button("📆 Fetch Earnings Dates", width="stretch"):
+            import yfinance as _yf2
+            rows = []
+            with st.spinner(f"Checking {len(all_track)} stocks…"):
+                for sym in all_track:
+                    try:
+                        t = _yf2.Ticker(sym + ".NS")
+                        cal = t.calendar
+                        e_date = None
+                        if cal is not None:
+                            if isinstance(cal, dict):
+                                ed = cal.get("Earnings Date")
+                                if ed:
+                                    e_date = ed[0] if isinstance(ed, (list, tuple)) else ed
+                            elif hasattr(cal, "empty") and not cal.empty:
+                                if "Earnings Date" in cal.index:
+                                    e_date = cal.loc["Earnings Date"].iloc[0]
+                        if e_date is not None:
+                            e_ts = pd.Timestamp(e_date)
+                            days = (e_ts - pd.Timestamp.now()).days
+                            rows.append({
+                                "Stock": sym,
+                                "Type": "📌 Holding" if sym in open_syms else "👁 Watchlist",
+                                "Earnings Date": e_ts.strftime("%d %b %Y"),
+                                "Days Away": days,
+                            })
+                    except Exception:
+                        continue
+            st.session_state._earnings_cache = rows
+
+        e_rows = st.session_state.get("_earnings_cache")
+        if e_rows is None:
+            st.info("Click **📆 Fetch Earnings Dates** to load result dates.")
+        elif not e_rows:
+            st.warning("No earnings dates found — Yahoo may not have published them yet.")
+        else:
+            edf = pd.DataFrame(e_rows).sort_values("Days Away")
+            imminent = edf[edf["Days Away"].between(0, 7)]
+            if not imminent.empty:
+                names = ", ".join(imminent["Stock"].tolist())
+                st.warning(f"⚡ Results within 7 days: **{names}** — expect volatility; "
+                           "review position sizes.", icon="📆")
+            st.dataframe(
+                edf, hide_index=True, use_container_width=True,
+                column_config={
+                    "Days Away": st.column_config.NumberColumn("Days", format="%d"),
+                })
+
+# ── IPO Tracker ──────────────────────────────────────────────────────────────
+elif _page == 'ipo':
+    st.markdown('<div class="sec">🆕 Recent IPO Tracker</div>', unsafe_allow_html=True)
+    st.caption("Track recently listed NSE stocks — early bases on strong debuts are "
+               "classic swing setups (but volatile; size small).")
+
+    with st.form("ipo_form", clear_on_submit=True):
+        ip1, ip2 = st.columns([3, 1])
+        with ip1:
+            ipo_sym = st.text_input("Add recently listed symbol",
+                                    placeholder="e.g. SWIGGY, NTPCGREEN",
+                                    label_visibility="collapsed")
+        with ip2:
+            if st.form_submit_button("➕ Track", width="stretch") and ipo_sym.strip():
+                s = ipo_sym.strip().upper()
+                if s not in st.session_state._ipo_watch:
+                    st.session_state._ipo_watch.append(s)
+
+    ipo_list = st.session_state.get("_ipo_watch", [])
+    if not ipo_list:
+        st.info("Add recently listed symbols above. (Session-only list — clears on restart.)")
+    else:
+        with st.spinner("Fetching IPO performance…"):
+            ipo_bulk = _bulk_fetch_history(ipo_list, period="6mo")
+        cards_row = ""
+        for sym in ipo_list:
+            bdf = ipo_bulk.get(sym)
+            if bdf is None or bdf.empty:
+                cards_row += (
+                    f'<div style="background:var(--card);border:1px solid var(--border);'
+                    f'border-radius:10px;padding:1rem;min-width:200px;flex:1">'
+                    f'<b>{sym}</b><br><span style="font-size:.78rem;color:var(--red)">'
+                    f'No data — verify symbol</span></div>')
+                continue
+            close = bdf["Close"]
+            list_price = float(close.iloc[0])
+            cmp_now = float(close.iloc[-1])
+            chg = (cmp_now / list_price - 1) * 100
+            days_listed = len(close)
+            hi = float(close.max()); lo = float(close.min())
+            from_high = (cmp_now / hi - 1) * 100
+            clr = "var(--green)" if chg >= 0 else "var(--red)"
+            cards_row += (
+                f'<div style="background:var(--card);border:1px solid var(--border);'
+                f'border-radius:10px;padding:1rem;min-width:220px;flex:1">'
+                f'<div style="font-weight:800">{sym} '
+                f'<span style="font-size:.68rem;color:var(--muted)">'
+                f'{days_listed} sessions</span></div>'
+                f'<div style="font-size:1.3rem;font-weight:800;color:{clr};margin:.2rem 0">'
+                f'{chg:+.1f}%<span style="font-size:.7rem;color:var(--muted)"> since data start</span></div>'
+                f'<div style="font-size:.72rem;color:var(--muted);line-height:1.6">'
+                f'CMP ₹{cmp_now:,.1f} · Range ₹{lo:,.0f}–₹{hi:,.0f}<br>'
+                f'From high: <b style="color:{"var(--red)" if from_high < -15 else "var(--text)"}">'
+                f'{from_high:+.1f}%</b></div></div>')
+        st.markdown(
+            f'<div style="display:flex;gap:.8rem;flex-wrap:wrap">{cards_row}</div>',
+            unsafe_allow_html=True)
+
+        if st.button("🗑 Clear IPO list"):
+            st.session_state._ipo_watch = []
+            st.rerun()
+
+# ── VCP Scanner ──────────────────────────────────────────────────────────────
+elif _page == 'vcp':
+    st.markdown('<div class="sec">📐 VCP Scanner — Volatility Contraction Patterns</div>',
+                unsafe_allow_html=True)
+    st.caption("Mark Minervini's signature setup: a base of 2-4 progressively tighter "
+               "pullbacks on drying volume, coiling under a pivot. The tighter the "
+               "final contraction, the more explosive the breakout tends to be.")
 
     if scan_for_vcp is None:
-        st.warning("⚠️ VCP scanner not available — make sure the latest `signals.py` is deployed.")
+        st.warning("📐 VCP Scanner requires the updated **signals.py** (v12+) with "
+                   "scan_for_vcp. Deploy the latest signals.py to enable.", icon="⚠️")
     else:
-        vc1, vc2, vc3 = st.columns([1, 1, 1])
+        vc1, vc2, vc3 = st.columns([1.2, 1.2, 1])
         with vc1:
-            _vcp_quality = st.selectbox("Min base quality", ["C", "B", "A", "A+"],
-                                        index=1, key="vcp_q")
+            vcp_min_q = st.selectbox("Min quality", ["C", "B", "A", "A+"], index=1,
+                                     label_visibility="collapsed")
         with vc2:
-            _vcp_ready = st.checkbox("Pivot-ready only", value=False, key="vcp_ready_only",
-                                     help="Only bases coiled right under the breakout pivot")
+            vcp_ready_only = st.checkbox("🎯 Pivot-ready only", value=False,
+                                         help="Only bases within 3% of the buy pivot")
         with vc3:
-            st.markdown("<br>", unsafe_allow_html=True)
-            _run_vcp = st.button("🔍 Scan for VCP", width="stretch")
+            run_vcp = st.button("📐 Scan VCP", width="stretch")
 
-        if _run_vcp:
-            with st.spinner("Scanning universe for VCP bases… (this can take a minute)"):
+        if run_vcp:
+            with st.spinner(f"Scanning {len(SECTOR_MAP)} stocks for VCP bases…"):
                 st.session_state.vcp_scan_cache = scan_for_vcp(
-                    min_quality=_vcp_quality, ready_only=_vcp_ready)
+                    min_quality=vcp_min_q, ready_only=vcp_ready_only)
+                vs = st.session_state.vcp_scan_cache
+                st.toast(f"✅ {vs['count']} VCP bases · {vs['ready_count']} pivot-ready",
+                         icon="📐")
 
-        vres = st.session_state.get("vcp_scan_cache")
-        if vres is None:
-            st.info("Click **Scan for VCP** to find contraction bases across the universe.")
-        elif not vres.get("vcp_setups"):
-            st.warning(f"No VCP bases found at {_vcp_quality}+ quality. "
-                       f"Scanned {vres.get('liquid',0)} liquid stocks. "
-                       "Try lowering the quality filter or unchecking pivot-ready.")
+        vs = st.session_state.get("vcp_scan_cache")
+        if vs is None:
+            st.info("💡 Click **📐 Scan VCP** to sweep the universe for coiling bases.")
+        elif not vs.get("setups"):
+            st.warning("No VCP bases found at this quality filter. Try grade C or "
+                       "uncheck pivot-ready.")
         else:
-            setups = vres["vcp_setups"]
-            st.markdown(f"##### 🎯 {len(setups)} VCP bases "
-                        f"({vres.get('ready_count',0)} pivot-ready) · "
-                        f"scanned {vres.get('liquid',0)} liquid stocks")
-
-            # ── Top 5 candidates card (already ranked: ready first, then quality) ──
-            top5 = setups[:5]
-            if top5:
-                cards = ""
-                for i, s in enumerate(top5, 1):
-                    rdy = "⚡" if s["vcp_ready"] else ""
-                    cards += (
-                        f'<div style="display:flex;justify-content:space-between;'
-                        f'padding:.5rem .7rem;border-bottom:1px solid var(--border)">'
-                        f'<span><b style="color:var(--accent)">{i}.</b> '
-                        f'<b>{s["stock"]}</b> {rdy} '
-                        f'<span style="color:var(--muted);font-size:.78rem">{s["sector"]}</span></span>'
-                        f'<span style="font-family:monospace;font-size:.82rem">'
-                        f'VCP {s["quality"]} · pivot ₹{s["pivot"]} '
-                        f'({s.get("pivot_distance_pct",0):+.1f}%)</span></div>')
-                st.markdown(
-                    f'<div style="background:var(--gradient);border:1px solid var(--accent);'
-                    f'border-radius:12px;padding:1rem 1.2rem;margin-bottom:1.2rem">'
-                    f'<div style="font-size:.8rem;font-weight:800;color:var(--accent);'
-                    f'text-transform:uppercase;letter-spacing:.06em;margin-bottom:.5rem">'
-                    f'⭐ Top 5 Candidates to Research</div>{cards}'
-                    f'<div style="font-size:.72rem;color:var(--muted);margin-top:.6rem">'
-                    f'Ranked: pivot-ready first, then base quality. These are research '
-                    f'candidates — confirm the breakout above pivot before entering.</div>'
-                    f'</div>', unsafe_allow_html=True)
-
-            for s in setups:
-                q = s["quality"]
-                q_clr = {"A+": "#10b981", "A": "#22c55e",
-                         "B": "#f59e0b", "C": "#8e8e93"}.get(q, "#8e8e93")
-                ready_badge = ('<span style="background:rgba(16,185,129,.2);color:#10b981;'
-                               'padding:.15rem .5rem;border-radius:5px;font-size:.7rem;'
-                               'font-weight:800;margin-left:.5rem">⚡ PIVOT-READY</span>'
-                               if s["vcp_ready"] else '')
-                contractions_str = " → ".join(f"-{x}%" for x in s.get("contractions", []))
-                rr_str = f"1:{s['risk_reward']}" if s.get("risk_reward") else "—"
-                st.markdown(f"""
-<div style="background:var(--card);border:1px solid var(--border);
-            border-left:3px solid {q_clr};border-radius:10px;
-            padding:1rem 1.2rem;margin-bottom:.7rem">
-  <div style="display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:.4rem">
-    <div>
-      <b style="font-size:1.02rem">{s['stock']}</b>
-      <span style="color:var(--muted);font-size:.78rem;margin-left:.4rem">{s['sector']}</span>
-      <span style="background:{q_clr}22;color:{q_clr};padding:.12rem .5rem;border-radius:5px;
-            font-size:.72rem;font-weight:800;margin-left:.5rem">VCP {q}</span>{ready_badge}
-    </div>
-    <div style="font-family:'JetBrains Mono',monospace;font-size:.82rem;color:var(--muted)">
-      CMP ₹{s['cmp']} · Pivot ₹{s['pivot']}
-    </div>
-  </div>
-  <div style="font-size:.82rem;color:var(--muted);margin-top:.5rem">
-    📉 Contractions: <b style="color:var(--text)">{contractions_str}</b>
-    &nbsp;·&nbsp; {s.get('detail','')}
-  </div>
-  <div style="font-size:.85rem;margin-top:.5rem">
-    <b>Entry</b> ₹{s.get('entry','—')} &nbsp;·&nbsp;
-    <b>Target</b> ₹{s.get('target','—')} &nbsp;·&nbsp;
-    <b>Stop</b> ₹{s.get('stop_loss','—')} &nbsp;·&nbsp;
-    <b>R:R</b> {rr_str}
-  </div>
-</div>""", unsafe_allow_html=True)
-
-            # CSV export
-            import pandas as _pd
-            exp_df = _pd.DataFrame([{
-                "Stock": s["stock"], "Sector": s["sector"], "Quality": s["quality"],
-                "Ready": s["vcp_ready"], "CMP": s["cmp"], "Pivot": s["pivot"],
-                "Pivot Dist %": s.get("pivot_distance_pct"),
-                "Contractions": " → ".join(f"-{x}%" for x in s.get("contractions", [])),
-                "Entry": s.get("entry"), "Target": s.get("target"),
-                "Stop": s.get("stop_loss"), "R:R": s.get("risk_reward"),
-            } for s in setups])
-            st.download_button(
-                "⬇️ Export VCP Results CSV",
-                exp_df.to_csv(index=False).encode("utf-8"),
-                file_name=f"vcp_{datetime.now().strftime('%Y%m%d_%H%M')}.csv",
-                mime="text/csv")
-            st.caption("⚠️ VCP works best on liquid leaders in an uptrend. A base forming "
-                       "is not a buy by itself — the classic entry is a breakout ABOVE the "
-                       "pivot on a volume surge. Always confirm before entering.")
-
-# ── Relative Strength Leaders ──────────────────────────────────────────────────
-elif _page == 'rs':
-    st.markdown('<div class="sec">💪 Relative Strength Leaders</div>',
+            st.markdown(
+                f'<div style="font-size:.75rem;color:var(--muted);margin:.5rem 0">'
+                f'Scanned {vs["scanned"]} · {vs["liquid"]} liquid · '
+                f'{vs["count"]} bases · {vs["ready_count"]} at pivot · '
+                f'{vs["timestamp"]}</div>',
                 unsafe_allow_html=True)
-    st.caption("How each stock performs versus Nifty. RS Rating is a 1-99 percentile "
-               "(IBD-style): 80+ = market leader, under 30 = laggard. Leaders tend to "
-               "keep leading — the best longs are high-RS stocks, not cheap laggards.")
+
+            vrows = []
+            for s in vs["setups"]:
+                vrows.append({
+                    "Stock": s["stock"], "Sector": s["sector"],
+                    "Grade": s["quality"],
+                    "Ready": "🎯" if s["pivot_ready"] else "",
+                    "CMP": s["cmp"], "Pivot": s["pivot"],
+                    "To Pivot %": s["pct_to_pivot"],
+                    "Contractions": s["n_contractions"],
+                    "Tightness": s["tightness"],
+                    "Vol Dry": "✅" if s["volume_dryup"] else "—",
+                    "Depth %": s["base_depth"],
+                    "Weeks": s["base_weeks"],
+                    "SL": s["stop_loss"], "Target": s["target"],
+                    "RR": s["risk_reward"],
+                })
+            vdf = pd.DataFrame(vrows)
+            _vh = min(max(len(vdf) * 36 + 40, 200), 600)
+            st.dataframe(
+                vdf, hide_index=True, height=_vh, use_container_width=True,
+                column_config={
+                    "Stock": st.column_config.TextColumn("Stock", width="small", pinned=True),
+                    "CMP":   st.column_config.NumberColumn("CMP", format="₹%.2f"),
+                    "Pivot": st.column_config.NumberColumn("Pivot", format="₹%.2f"),
+                    "To Pivot %": st.column_config.NumberColumn("→Pivot", format="%.1f%%"),
+                    "Tightness":  st.column_config.NumberColumn("Tight", format="%.1f%%"),
+                    "Depth %":    st.column_config.NumberColumn("Depth", format="%.1f%%"),
+                    "SL":     st.column_config.NumberColumn("SL", format="₹%.2f"),
+                    "Target": st.column_config.NumberColumn("Target", format="₹%.2f"),
+                    "RR":     st.column_config.NumberColumn("R:R", format="%.2f"),
+                })
+            st.download_button(
+                "⬇️ Export VCP CSV",
+                vdf.to_csv(index=False).encode("utf-8"),
+                file_name=f"vcp_scan_{datetime.now().strftime('%Y%m%d_%H%M')}.csv",
+                mime="text/csv")
+
+            st.markdown(
+                '<div style="background:var(--card2);border-radius:8px;padding:.8rem 1rem;'
+                'font-size:.8rem;color:var(--muted);line-height:1.7;margin-top:.8rem">'
+                '💡 <b style="color:var(--text)">Trading a VCP:</b> buy the pivot break '
+                'on volume expansion (ideally 1.5x+ average), stop below the final '
+                'contraction low. Grade A+ = 3+ contractions, tight final coil, clear '
+                'volume dry-up. Combine with 💪 RS Leaders — a VCP in a leading stock '
+                'is the highest-probability setup this engine can find.</div>',
+                unsafe_allow_html=True)
+
+# ── RS Leaders ───────────────────────────────────────────────────────────────
+elif _page == 'rs':
+    st.markdown('<div class="sec">💪 Relative Strength Leaders — vs Nifty 50</div>',
+                unsafe_allow_html=True)
+    st.caption("IBD-style relative strength: multi-period outperformance vs the index, "
+               "percentile-ranked 1-99 across the universe. Leaders lead — buy strength, "
+               "not hope.")
 
     if scan_relative_strength is None:
-        st.warning("⚠️ RS scanner not available — make sure the latest `signals.py` is deployed.")
+        st.warning("💪 RS Leaders requires the updated **signals.py** (v12+) with "
+                   "scan_relative_strength. Deploy the latest signals.py to enable.",
+                   icon="⚠️")
     else:
-        rc1, rc2, rc3 = st.columns([1, 1, 1])
-        with rc1:
-            _rs_min = st.slider("Min RS Rating", 0, 99, 70, key="rs_min",
-                                help="80+ = strong leaders. Filter out laggards.")
-        with rc2:
-            _rs_top = st.selectbox("Show top", ["All", "20", "50", "100"], index=2, key="rs_top")
-        with rc3:
-            st.markdown("<br>", unsafe_allow_html=True)
-            _run_rs = st.button("🔍 Rank Universe by RS", width="stretch")
+        rs1, rs2, rs3 = st.columns([1.2, 1.2, 1])
+        with rs1:
+            rs_min_rating = st.slider("Min RS rating", 50, 99, 80, 5,
+                                      label_visibility="collapsed")
+        with rs2:
+            rs_uptrend_only = st.checkbox("📈 Uptrend only", value=True)
+        with rs3:
+            run_rs = st.button("💪 Scan RS", width="stretch")
 
-        if _run_rs:
-            top_n = None if _rs_top == "All" else int(_rs_top)
-            with st.spinner("Ranking the universe by relative strength… (takes a minute)"):
+        if run_rs:
+            with st.spinner(f"Ranking {len(SECTOR_MAP)} stocks by relative strength…"):
                 st.session_state.rs_scan_cache = scan_relative_strength(
-                    top_n=top_n, min_rating=_rs_min)
+                    min_rating=rs_min_rating, uptrend_only=rs_uptrend_only)
+                rsc = st.session_state.rs_scan_cache
+                st.toast(f"✅ {rsc['count']} RS leaders (rating ≥ {rs_min_rating})",
+                         icon="💪")
 
-        rres = st.session_state.get("rs_scan_cache")
-        if rres is None:
-            st.info("Click **Rank Universe by RS** to find the market leaders.")
-        elif rres.get("error"):
-            st.error(f"⚠️ {rres['error']}. Nifty data may be temporarily unavailable — try again.")
-        elif not rres.get("leaders"):
-            st.warning(f"No stocks at RS Rating ≥ {_rs_min}. Lower the filter to see more.")
+        rsc = st.session_state.get("rs_scan_cache")
+        if rsc is None:
+            st.info("💡 Click **💪 Scan RS** to rank the universe by relative strength.")
+        elif not rsc.get("leaders"):
+            st.warning("No stocks passed the RS filter. Lower the minimum rating.")
         else:
-            leaders = rres["leaders"]
-            nifty = rres.get("nifty_returns", {})
-            # Nifty benchmark context
             st.markdown(
-                f'<div style="background:var(--card);border:1px solid var(--border);'
-                f'border-radius:10px;padding:.8rem 1.1rem;margin-bottom:1rem;'
-                f'font-family:\'JetBrains Mono\',monospace;font-size:.82rem;color:var(--muted)">'
-                f'📊 Nifty benchmark — 1M: <b style="color:var(--text)">{nifty.get("21",0):+.1f}%</b> · '
-                f'3M: <b style="color:var(--text)">{nifty.get("63",0):+.1f}%</b> · '
-                f'6M: <b style="color:var(--text)">{nifty.get("126",0):+.1f}%</b> · '
-                f'1Y: <b style="color:var(--text)">{nifty.get("252",0):+.1f}%</b></div>',
+                f'<div style="font-size:.75rem;color:var(--muted);margin:.5rem 0">'
+                f'Ranked {rsc["ranked"]} stocks · {rsc["count"]} leaders · '
+                f'Nifty 3M: {rsc["nifty_3m"]:+.1f}% · {rsc["timestamp"]}</div>',
                 unsafe_allow_html=True)
 
-            st.markdown(f"##### 🏆 {len(leaders)} leaders (RS ≥ {_rs_min}) · "
-                        f"scanned {rres.get('liquid',0)} liquid stocks")
-
-            # ── Top 5 leaders card (already sorted by RS rating desc) ──────────
-            top5 = leaders[:5]
-            if top5:
-                cards = ""
-                for i, l in enumerate(top5, 1):
-                    vcp_mark = "🎯" if l.get("vcp") else ""
-                    cards += (
-                        f'<div style="display:flex;justify-content:space-between;'
-                        f'padding:.5rem .7rem;border-bottom:1px solid var(--border)">'
-                        f'<span><b style="color:var(--accent)">{i}.</b> '
-                        f'<b>{l["stock"]}</b> {vcp_mark} '
-                        f'<span style="color:var(--muted);font-size:.78rem">{l["sector"]}</span></span>'
-                        f'<span style="font-family:monospace;font-size:.82rem">'
-                        f'RS {l["rs_rating"]}/99 · 3M {l.get("ret_63d",0):+.0f}%</span></div>')
-                st.markdown(
-                    f'<div style="background:var(--gradient);border:1px solid var(--accent);'
-                    f'border-radius:12px;padding:1rem 1.2rem;margin-bottom:1.2rem">'
-                    f'<div style="font-size:.8rem;font-weight:800;color:var(--accent);'
-                    f'text-transform:uppercase;letter-spacing:.06em;margin-bottom:.5rem">'
-                    f'⭐ Top 5 Strongest Leaders</div>{cards}'
-                    f'<div style="font-size:.72rem;color:var(--muted);margin-top:.6rem">'
-                    f'Ranked by RS rating. 🎯 = also forming a VCP base. Research '
-                    f'candidates, not buy signals — confirm your entry setup first.</div>'
-                    f'</div>', unsafe_allow_html=True)
-
-            # ── A-TIER OVERLAP: leaders that ALSO have a VCP base (best setups) ──
-            overlap = [l for l in leaders if l.get("vcp")]
-            if overlap:
-                ov_cards = ""
-                for l in overlap[:8]:
-                    rdy = "⚡READY" if l.get("vcp_ready") else "base"
-                    ov_cards += (
-                        f'<div style="display:flex;justify-content:space-between;'
-                        f'padding:.45rem .7rem;border-bottom:1px solid rgba(16,185,129,.2)">'
-                        f'<span><b>{l["stock"]}</b> '
-                        f'<span style="color:var(--muted);font-size:.76rem">{l["sector"]}</span></span>'
-                        f'<span style="font-family:monospace;font-size:.8rem;color:#10b981">'
-                        f'RS {l["rs_rating"]} · VCP {rdy}</span></div>')
-                st.markdown(
-                    f'<div style="background:rgba(16,185,129,.08);border:1px solid #10b981;'
-                    f'border-radius:12px;padding:1rem 1.2rem;margin-bottom:1.2rem">'
-                    f'<div style="font-size:.8rem;font-weight:800;color:#10b981;'
-                    f'text-transform:uppercase;letter-spacing:.06em;margin-bottom:.5rem">'
-                    f'💎 A-Tier Setups — Leader + VCP Base ({len(overlap)})</div>{ov_cards}'
-                    f'<div style="font-size:.72rem;color:var(--muted);margin-top:.6rem">'
-                    f'These appear on BOTH lists: strong RS leadership AND a low-risk VCP '
-                    f'base. This overlap is the classic Minervini setup — your highest-'
-                    f'conviction shortlist. Still confirm the breakout before entering.</div>'
-                    f'</div>', unsafe_allow_html=True)
-
-            # Build a clean table
-            import pandas as _pd
-            tbl = _pd.DataFrame([{
-                "Stock": l["stock"],
-                "RS Rating": l["rs_rating"],
-                "RS Ratio": l["rs_ratio"],
-                "Sector": l["sector"],
-                "CMP": l["cmp"],
-                "1M %": l.get("ret_21d"),
-                "3M %": l.get("ret_63d"),
-                "1Y %": l.get("ret_252d"),
-                "Trend": l.get("trend"),
-                "VCP": "🎯" if l.get("vcp") else "",
-            } for l in leaders])
-            _h = min(max(len(tbl) * 36 + 40, 200), 640)
-            st.dataframe(tbl, width="stretch", height=_h, hide_index=True,
-                         column_config={
-                             "Stock": st.column_config.TextColumn(pinned=True),
-                             "RS Rating": st.column_config.ProgressColumn(
-                                 "RS Rating", min_value=0, max_value=99, format="%d"),
-                         })
+            lrows = []
+            for s in rsc["leaders"]:
+                lrows.append({
+                    "Rank": s["rank"], "Stock": s["stock"], "Sector": s["sector"],
+                    "RS Rating": s["rs_rating"],
+                    "RS Ratio": s["rs_ratio"],
+                    "1M vs N": s["rs_1m"],
+                    "3M vs N": s["rs_3m"],
+                    "CMP": s["cmp"], "RSI": s["rsi"],
+                    "Trend": s["trend"],
+                    "VCP": "📐" if s.get("has_vcp") else "",
+                    "New High": "🚀" if s.get("near_high") else "",
+                })
+            ldf = pd.DataFrame(lrows)
+            _lh = min(max(len(ldf) * 36 + 40, 200), 600)
+            st.dataframe(
+                ldf, hide_index=True, height=_lh, use_container_width=True,
+                column_config={
+                    "Rank":  st.column_config.NumberColumn("#", format="%d", width="small"),
+                    "Stock": st.column_config.TextColumn("Stock", width="small", pinned=True),
+                    "RS Rating": st.column_config.ProgressColumn(
+                        "RS", min_value=0, max_value=99, format="%d"),
+                    "RS Ratio": st.column_config.NumberColumn("Ratio", format="%.2f"),
+                    "1M vs N":  st.column_config.NumberColumn("1M±", format="%+.1f%%"),
+                    "3M vs N":  st.column_config.NumberColumn("3M±", format="%+.1f%%"),
+                    "CMP":  st.column_config.NumberColumn("CMP", format="₹%.2f"),
+                    "RSI":  st.column_config.NumberColumn("RSI", format="%.0f"),
+                })
             st.download_button(
-                "⬇️ Export RS Rankings CSV",
-                tbl.to_csv(index=False).encode("utf-8"),
+                "⬇️ Export RS Leaders CSV",
+                ldf.to_csv(index=False).encode("utf-8"),
                 file_name=f"rs_leaders_{datetime.now().strftime('%Y%m%d_%H%M')}.csv",
                 mime="text/csv")
-            st.caption("💡 The sweet spot: a high-RS leader (80+) forming a VCP base (🎯) "
-                       "near its pivot. That's the classic Minervini long setup — strength "
-                       "plus a low-risk entry point.")
 
-# ── Post-render background deep scan ───────────────────────────────────────────
-# The ENTIRE page has now rendered — you can see and interact with everything.
-# Only NOW do we run one deep-scan stage (silently, in the background), then
-# trigger a gentle rerun to advance to the next stage. Because this happens AFTER
-# render, your current page/scroll/inputs are never interrupted mid-view.
-if st.session_state.get("_run_deep_now", False):
-    st.session_state._run_deep_now = False
+            st.markdown(
+                '<div style="background:var(--card2);border-radius:8px;padding:.8rem 1rem;'
+                'font-size:.8rem;color:var(--muted);line-height:1.7;margin-top:.8rem">'
+                '💡 <b style="color:var(--text)">Using RS:</b> institutions accumulate '
+                'leaders — stocks making relative highs before the index confirms. '
+                'RS 90+ with a 📐 VCP base and a 🚀 near-high flag is the A+ confluence. '
+                'Avoid buying laggards because they "look cheap"; weakness usually '
+                'has a reason.</div>',
+                unsafe_allow_html=True)
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# POST-RENDER DEEP SCAN — runs AFTER the page has fully painted.
+# Each rerun executes ONE stage, then triggers the next rerun. The user sees
+# the dashboard instantly; stages complete in the background between paints.
+# Stage order: sector → universe → smc → traps → vcp → rs
+# ══════════════════════════════════════════════════════════════════════════════
+if st.session_state.get("_run_deep_now", False) and st.session_state.get("_deep_running", False):
     _stage = st.session_state.get("_deep_stage", "sector")
-    st.session_state._deep_progress = _stage
-
-    if _stage == "sector":
-        try:
+    try:
+        if _stage == "sector":
             st.session_state.sector_cache = sector_rotation()
             if (st.session_state.sector_cache is not None and
                     not st.session_state.sector_cache.empty):
@@ -5423,67 +5672,61 @@ if st.session_state.get("_run_deep_now", False):
                     st.session_state.sector_cache.head(5)["sector"].tolist(), 3)
             else:
                 st.session_state.outlook_cache = pd.DataFrame()
-                st.session_state.picks_cache   = []
-        except Exception:
-            pass
-        st.session_state._deep_stage = "universe"
+                st.session_state.picks_cache = []
+            st.session_state._deep_stage = "universe"
 
-    elif _stage == "universe":
-        try:
-            _usd = generate_market_scanner()
-            st.session_state.scanner_cache = (
-                _usd if (_usd is not None and not _usd.empty) else pd.DataFrame())
-        except Exception:
-            pass
-        st.session_state._deep_stage = "smc"
+        elif _stage == "universe":
+            sd = generate_market_scanner()
+            st.session_state.scanner_cache = sd if (sd is not None and not sd.empty) \
+                else pd.DataFrame()
+            st.session_state._deep_stage = "smc"
 
-    elif _stage == "smc":
-        try:
-            if scan_for_smc_setups is not None:
+        elif _stage == "smc":
+            if _SMC_SCANNER_AVAILABLE:
                 st.session_state.smc_scan_cache = scan_for_smc_setups(
                     min_quality="B", action_filter="All")
-        except Exception:
-            pass
-        st.session_state._deep_stage = "traps"
+            st.session_state._deep_stage = "traps"
 
-    elif _stage == "traps":
-        try:
-            if scan_for_traps is not None:
-                st.session_state.trap_scan_cache = scan_for_traps(min_confidence=55)
-        except Exception:
-            pass
-        st.session_state._deep_stage = "vcp"
+        elif _stage == "traps":
+            if _TRAP_SCANNER_AVAILABLE:
+                st.session_state.trap_scan_cache = scan_for_traps(min_confidence=60)
+            st.session_state._deep_stage = "vcp"
 
-    elif _stage == "vcp":
-        try:
+        elif _stage == "vcp":
             if scan_for_vcp is not None:
                 st.session_state.vcp_scan_cache = scan_for_vcp(
                     min_quality="B", ready_only=False)
-        except Exception:
-            pass
-        st.session_state._deep_stage = "rs"
+            st.session_state._deep_stage = "rs"
 
-    elif _stage == "rs":
-        try:
+        elif _stage == "rs":
             if scan_relative_strength is not None:
                 st.session_state.rs_scan_cache = scan_relative_strength(
-                    top_n=None, min_rating=0)
+                    min_rating=80, uptrend_only=True)
+            # Sequence complete
+            st.session_state._deep_running = False
+            st.session_state._deep_stage = "sector"
+            st.session_state.last_slow_scan = time.time()
+            st.toast("✅ Deep scan complete — all scanners refreshed", icon="🔄")
+    except Exception as _deep_e:
+        # Never let a stage failure stall the sequence — skip to next stage
+        _order = ["sector", "universe", "smc", "traps", "vcp", "rs"]
+        try:
+            _nxt = _order[_order.index(_stage) + 1]
+            st.session_state._deep_stage = _nxt
         except Exception:
-            pass
-        st.session_state._deep_stage = "sector"        # reset for next cycle
-        st.session_state._deep_running = False          # whole sequence complete
-        st.session_state._deep_progress = "done"
-        st.session_state.last_slow_scan = time.time()   # mark deep scan complete
+            st.session_state._deep_running = False
+            st.session_state._deep_stage = "sector"
+            st.session_state.last_slow_scan = time.time()
+        st.toast(f"⚠️ {_stage} stage error: {_deep_e}", icon="⚠️")
 
-    # Advance to the next stage on the next pass. If the sequence is still
-    # running, gently rerun; otherwise stop (no more forced reruns).
+    # Chain the next stage (or finish) with an immediate rerun
     if st.session_state.get("_deep_running", False):
-        time.sleep(0.05)
         st.rerun()
 
-# ── First-paint kickoff (login) ────────────────────────────────────────────────
-# On first login, trigger one rerun so the deferred fast/deep scans begin.
+# ── First-paint kickoff ────────────────────────────────────────────────────────
+# After the very first render post-login, immediately rerun once so the fast
+# scan (signals + news) fires right away instead of waiting for the next
+# user interaction or autorefresh tick.
 if st.session_state.get("_kickoff_scan", False):
     st.session_state._kickoff_scan = False
-    time.sleep(0.1)
     st.rerun()
