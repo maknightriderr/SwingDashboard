@@ -14,6 +14,9 @@ Implements the audit's High-priority scanner fixes on top of the existing engine
 
 Everything degrades gracefully: any per-symbol failure just skips that symbol.
 Reuses signals.py's bulk fetch + indicator cache (no duplicate Yahoo traffic).
+
+v2.1 adds: single-stock lookup (score_single_stock) for checking any NSE symbol
+on demand, sharing the exact same scoring logic as the full universe scan.
 """
 
 import pandas as pd
@@ -39,7 +42,6 @@ def _fresh_breakout(df):
             return False, None, None
         high, low, close = df["High"], df["Low"], df["Close"]
         for k in range(1, FRESH_BARS + 1):
-            # range BEFORE the candidate breakout bar
             prior_high = float(high.iloc[-(20 + k):-k].max())
             prior_low  = float(low.iloc[-(20 + k):-k].min())
             bar_close  = float(close.iloc[-k])
@@ -58,14 +60,13 @@ def _structural_stop(df, cmp, atr):
     try:
         swing_low = float(df["Low"].iloc[-10:].min())
         structural = round(swing_low - 0.25 * atr, 2)
-        # structure must be meaningfully below price but not absurdly wide
         if structural < cmp - 0.5 * atr:
             stop, basis = structural, "swing low"
         else:
             stop, basis = atr_stop, "1.5×ATR"
     except Exception:
         stop, basis = atr_stop, "1.5×ATR"
-    if stop >= cmp:                      # final sanity
+    if stop >= cmp:
         stop, basis = atr_stop, "1.5×ATR"
     risk_pct = round((cmp - stop) / cmp * 100, 2) if cmp else 0.0
     return stop, basis, risk_pct
@@ -78,6 +79,128 @@ def _target(cmp, atr, resistance, fresh, brk_level, range_low):
         measured = brk_level + (brk_level - range_low)
         return round(max(measured, cmp + 2.0 * atr), 2), "measured move"
     return round(max(resistance or 0, cmp + 2.5 * atr), 2), "resistance/ATR"
+
+
+def _score_symbol(symbol, ind, df, is_bear, is_caution):
+    """Scores ONE symbol given its precomputed indicators + OHLCV frame.
+    Returns a row dict (same shape used in the bulk scan table), or None if
+    the symbol can't be scored (missing cmp/atr). Shared by both the full
+    universe scan and the single-stock lookup so the numbers always match."""
+    cmp   = ind.get("cmp");  atr = ind.get("atr")
+    rsi   = ind.get("rsi");  trend = ind.get("trend", "—")
+    if not cmp or not atr or atr <= 0:
+        return None
+    patterns = ind.get("patterns", []) or []
+    candles  = ind.get("candlesticks", []) or []
+
+    # ── 2. Momentum cluster (collinear features CAPPED at 4) ─────────────────
+    mom = 0.0
+    if trend in ("Uptrend", "Strong Uptrend"): mom += 2.0
+    if ind.get("supertrend_bullish"):          mom += 1.5
+    if ind.get("macd_bullish"):                mom += 1.0
+    if ind.get("macd_hist_expanding"):         mom += 0.5
+    score = min(mom, 4.0)
+
+    # ── 4. Relative strength gate ─────────────────────────────────────────────
+    rs = ind.get("rs_ratio")
+    if isinstance(rs, (int, float)):
+        if rs >= 1.05:   score += 2.0
+        elif rs >= 1.00: score += 1.0
+        elif rs < 0.95:  score -= 3.0
+    rs_disp = round(rs, 2) if isinstance(rs, (int, float)) else None
+
+    # ── 5. Fresh breakout only (stale ones get almost nothing) ───────────────
+    fresh, brk_level, range_low = _fresh_breakout(df)
+    vol_ok = (ind.get("vol_ratio") or 0) >= 1.5
+    if fresh and vol_ok:
+        score += 5.0
+    elif fresh:
+        score += 3.0
+    elif "🚀 Vol Breakout" in patterns:
+        score += 1.0
+    if "🚩 Bull Flag Breakout" in patterns:     score += 3.0
+    if "☕ Cup & Handle Breakout" in patterns:   score += 3.0
+    if "🟩 Bullish Engulfing" in candles:        score += 1.5
+    if ind.get("bb_squeeze"):                    score += 1.0
+
+    # ── 3. Extension penalty (don't buy stretched moves) ──────────────────────
+    ema_ref = ind.get("ema21") or ind.get("ema50") or ind.get("ema20")
+    ext_atr = None
+    if ema_ref and ema_ref > 0:
+        ext_atr = (cmp - float(ema_ref)) / atr
+        if ext_atr > EXT_HARD_ATR:   score -= 4.0
+        elif ext_atr > EXT_SOFT_ATR: score -= 2.0
+    if rsi and rsi > 80: score -= 3.0
+    elif rsi and 55 <= rsi <= 72: score += 1.0
+
+    if ("📈 Double Top" in patterns or
+            "🏔️ Head & Shoulders (Top)" in patterns or
+            "🟥 Bearish Engulfing" in candles):
+        score -= 5.0
+    if trend in ("Downtrend", "Strong Downtrend"):
+        score -= 5.0
+
+    # ── 1. Regime gating ───────────────────────────────────────────────────────
+    if is_bear:      score -= 4.0
+    elif is_caution: score -= 1.0
+
+    # ── 6 & 7. Structural stop + real target → meaningful RR ──────────────────
+    stop, stop_basis, risk_pct = _structural_stop(df, cmp, atr)
+    target, tgt_basis = _target(cmp, atr, ind.get("resistance"),
+                                fresh, brk_level, range_low)
+    if fresh and brk_level and cmp <= brk_level * 1.02:
+        entry_px = round(brk_level * 1.002, 2)
+    else:
+        entry_px = cmp
+    risk = entry_px - stop
+    rr = round((target - entry_px) / risk, 2) if risk > 0.01 else None
+    risk_pct = round(risk / entry_px * 100, 2) if entry_px else risk_pct
+    too_wide = risk_pct > MAX_RISK_PCT
+
+    return {
+        "Stock": symbol, "Sector": _sg.get_sector(symbol),
+        "Score": round(score, 1),
+        "CMP": cmp, "RSI": rsi, "Trend": trend,
+        "RS": rs_disp,
+        "Fresh": "⚡" if fresh else "",
+        "Ext(ATR)": round(ext_atr, 1) if ext_atr is not None else None,
+        "Entry": entry_px,
+        "SL": stop, "SL basis": stop_basis,
+        "Risk %": risk_pct,
+        "Target": target, "Tgt basis": tgt_basis,
+        "RR": rr,
+        "_too_wide": too_wide,
+    }
+
+
+def _tier_for_row(r, is_bear, pctl=None):
+    """Signal tier for a row. When pctl is available (bulk scan), uses
+    percentile-within-scan. When pctl is None (single-stock lookup — there's
+    no batch to rank against), falls back to absolute score thresholds,
+    clearly documented as such in the UI."""
+    rr_ok_buy    = (r["RR"] or 0) >= RR_MIN_BUY
+    rr_ok_strong = (r["RR"] or 0) >= RR_MIN_STRONG
+    if r["_too_wide"]:
+        return "⚠️ RISK WIDE"
+    if is_bear:
+        return ("👀 WATCH (bear regime)" if r["Score"] >= 5 and rr_ok_buy
+                else "⚪ NEUTRAL" if r["Score"] >= 2 else "🔴 AVOID")
+    if pctl is not None:
+        if pctl >= 90 and r["Score"] >= 8 and rr_ok_strong:
+            return "🔥 STRONG BUY"
+        if pctl >= 75 and r["Score"] >= 5 and rr_ok_buy:
+            return "🟢 BUY SETUP"
+    else:
+        # Absolute fallback for single-stock lookups (no percentile context)
+        if r["Score"] >= 8 and rr_ok_strong:
+            return "🔥 STRONG BUY (absolute score, no percentile context)"
+        if r["Score"] >= 5 and rr_ok_buy:
+            return "🟢 BUY SETUP (absolute score, no percentile context)"
+    if r["Score"] >= 2:
+        return "🟡 ACCUMULATE"
+    if r["Score"] <= 0:
+        return "🔴 AVOID"
+    return "⚪ NEUTRAL"
 
 
 def generate_market_scanner_v2(max_symbols=None):
@@ -112,97 +235,9 @@ def generate_market_scanner_v2(max_symbols=None):
             ind = _sg.compute_indicators(symbol, period="6mo", prefetched_df=df)
             if not ind:
                 continue
-            cmp   = ind.get("cmp");  atr = ind.get("atr")
-            rsi   = ind.get("rsi");  trend = ind.get("trend", "—")
-            if not cmp or not atr or atr <= 0:
-                continue
-            patterns = ind.get("patterns", []) or []
-            candles  = ind.get("candlesticks", []) or []
-
-            # ── 2. Momentum cluster (collinear features CAPPED at 4) ─────────
-            mom = 0.0
-            if trend in ("Uptrend", "Strong Uptrend"): mom += 2.0
-            if ind.get("supertrend_bullish"):          mom += 1.5
-            if ind.get("macd_bullish"):                mom += 1.0
-            if ind.get("macd_hist_expanding"):         mom += 0.5
-            score = min(mom, 4.0)
-
-            # ── 4. Relative strength gate ────────────────────────────────────
-            rs = ind.get("rs_ratio")
-            if isinstance(rs, (int, float)):
-                if rs >= 1.05:   score += 2.0
-                elif rs >= 1.00: score += 1.0
-                elif rs < 0.95:  score -= 3.0
-            rs_disp = round(rs, 2) if isinstance(rs, (int, float)) else None
-
-            # ── 5. Fresh breakout only (stale ones get almost nothing) ──────
-            fresh, brk_level, range_low = _fresh_breakout(df)
-            vol_ok = (ind.get("vol_ratio") or 0) >= 1.5
-            if fresh and vol_ok:
-                score += 5.0
-            elif fresh:
-                score += 3.0
-            elif "🚀 Vol Breakout" in patterns:
-                score += 1.0            # stale breakout: token credit only
-            if "🚩 Bull Flag Breakout" in patterns:     score += 3.0
-            if "☕ Cup & Handle Breakout" in patterns:   score += 3.0
-            if "🟩 Bullish Engulfing" in candles:        score += 1.5
-            if ind.get("bb_squeeze"):                    score += 1.0
-
-            # ── 3. Extension penalty (don't buy stretched moves) ─────────────
-            ema_ref = ind.get("ema21") or ind.get("ema50") or ind.get("ema20")
-            ext_atr = None
-            if ema_ref and ema_ref > 0:
-                ext_atr = (cmp - float(ema_ref)) / atr
-                if ext_atr > EXT_HARD_ATR:   score -= 4.0
-                elif ext_atr > EXT_SOFT_ATR: score -= 2.0
-            if rsi and rsi > 80: score -= 3.0
-            elif rsi and 55 <= rsi <= 72: score += 1.0
-
-            # bearish structures
-            if ("📈 Double Top" in patterns or
-                    "🏔️ Head & Shoulders (Top)" in patterns or
-                    "🟥 Bearish Engulfing" in candles):
-                score -= 5.0
-            if trend in ("Downtrend", "Strong Downtrend"):
-                score -= 5.0
-
-            # ── 1. Regime gating ─────────────────────────────────────────────
-            if is_bear:      score -= 4.0
-            elif is_caution: score -= 1.0
-
-            # ── 6 & 7. Structural stop + real target → meaningful RR ─────────
-            stop, stop_basis, risk_pct = _structural_stop(df, cmp, atr)
-            target, tgt_basis = _target(cmp, atr, ind.get("resistance"),
-                                        fresh, brk_level, range_low)
-            # Actionable entry: fresh breakout still NEAR the pivot → buy-stop
-            # just above the pivot; RR is computed from THAT price (what you'd
-            # actually pay), not from wherever CMP has drifted. If price has
-            # already run >2% past the pivot, it's a chase — RR from CMP shows
-            # the honest chase economics.
-            if fresh and brk_level and cmp <= brk_level * 1.02:
-                entry_px = round(brk_level * 1.002, 2)
-            else:
-                entry_px = cmp
-            risk = entry_px - stop
-            rr = round((target - entry_px) / risk, 2) if risk > 0.01 else None
-            risk_pct = round(risk / entry_px * 100, 2) if entry_px else risk_pct
-            too_wide = risk_pct > MAX_RISK_PCT
-
-            rows.append({
-                "Stock": symbol, "Sector": _sg.get_sector(symbol),
-                "Score": round(score, 1),
-                "CMP": cmp, "RSI": rsi, "Trend": trend,
-                "RS": rs_disp,
-                "Fresh": "⚡" if fresh else "",
-                "Ext(ATR)": round(ext_atr, 1) if ext_atr is not None else None,
-                "Entry": entry_px,
-                "SL": stop, "SL basis": stop_basis,
-                "Risk %": risk_pct,
-                "Target": target, "Tgt basis": tgt_basis,
-                "RR": rr,
-                "_too_wide": too_wide,
-            })
+            row = _score_symbol(symbol, ind, df, is_bear, is_caution)
+            if row is not None:
+                rows.append(row)
         except Exception:
             continue
 
@@ -214,28 +249,52 @@ def generate_market_scanner_v2(max_symbols=None):
 
     # ── 8. Percentile ranking within THIS scan ───────────────────────────────
     sdf["Pctl"] = (sdf["Score"].rank(pct=True) * 100).round(0)
-
-    def _tier(r):
-        rr_ok_buy    = (r["RR"] or 0) >= RR_MIN_BUY
-        rr_ok_strong = (r["RR"] or 0) >= RR_MIN_STRONG
-        if r["_too_wide"]:
-            return "⚠️ RISK WIDE"
-        if is_bear:
-            # no fresh-money STRONG BUYs in a bear regime — best is WATCH
-            return ("👀 WATCH (bear regime)" if r["Score"] >= 5 and rr_ok_buy
-                    else "⚪ NEUTRAL" if r["Score"] >= 2 else "🔴 AVOID")
-        if r["Pctl"] >= 90 and r["Score"] >= 8 and rr_ok_strong:
-            return "🔥 STRONG BUY"
-        if r["Pctl"] >= 75 and r["Score"] >= 5 and rr_ok_buy:
-            return "🟢 BUY SETUP"
-        if r["Score"] >= 2:
-            return "🟡 ACCUMULATE"
-        if r["Score"] <= 0:
-            return "🔴 AVOID"
-        return "⚪ NEUTRAL"
-
-    sdf["Signal"] = sdf.apply(_tier, axis=1)
+    sdf["Signal"] = sdf.apply(
+        lambda r: _tier_for_row(r, is_bear, pctl=r["Pctl"]), axis=1)
     sdf = sdf.drop(columns=["_too_wide"])
     sdf = sdf.sort_values(["Score", "RR"], ascending=[False, False]).reset_index(drop=True)
     out["df"] = sdf
     return out
+
+
+def score_single_stock(symbol):
+    """Score ONE arbitrary NSE symbol (doesn't need to be in the curated
+    universe — any symbol signals.py can fetch works) using the exact same
+    logic as the full scan. Returns a dict with the score row + regime, or
+    {'error': ...} if the symbol couldn't be fetched/scored.
+
+    NOTE: there's no percentile rank for a single stock (nothing to rank
+    against), so the Signal tier here uses absolute score thresholds and is
+    labelled accordingly — treat it as directional, not as strict as the
+    ranked STRONG BUY/BUY SETUP tiers from a full scan.
+    """
+    symbol = str(symbol).upper().strip()
+    try:
+        market = _sg.get_market_regime() or {}
+    except Exception:
+        market = {}
+    regime = market.get("regime", "Unknown")
+    is_bear    = regime in ("Bear", "Strong Bear")
+    is_caution = regime in ("Bull Pullback", "Bear Rally", "Neutral", "Unknown")
+
+    try:
+        bulk = _sg._bulk_fetch_history([symbol], period="6mo")
+        df = bulk.get(symbol)
+        ind = _sg.compute_indicators(symbol, period="6mo", prefetched_df=df)
+    except Exception as e:
+        return {"error": f"Could not fetch {symbol}: {e}"}
+
+    if not ind:
+        return {"error": f"No usable data for {symbol} — check the symbol, "
+                         f"or it may be too new / illiquid / delisted."}
+
+    row = _score_symbol(symbol, ind, df, is_bear, is_caution)
+    if row is None:
+        return {"error": f"{symbol} fetched but couldn't be scored "
+                         f"(missing price/ATR data)."}
+
+    row["Signal"] = _tier_for_row(row, is_bear, pctl=None)
+    row.pop("_too_wide", None)
+    row["regime"] = regime
+    row["timestamp"] = datetime.now().strftime("%d %b %H:%M")
+    return row
