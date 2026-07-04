@@ -1418,20 +1418,22 @@ ul[role="listbox"] li[aria-selected="true"] {{
 /* ═══ Sidebar buttons & popover triggers — text readable on every theme ═══ */
 /* Blanket rule: ALL sidebar button labels follow --text (fixes invisible
    popover section names on light themes, regardless of Streamlit version). */
-[data-testid="stSidebar"] button:not([kind="primary"]):not([kind="primaryFormSubmit"]) p,
-[data-testid="stSidebar"] button:not([kind="primary"]):not([kind="primaryFormSubmit"]) span,
-[data-testid="stSidebar"] button:not([kind="primary"]):not([kind="primaryFormSubmit"]) [data-testid="stMarkdownContainer"] p {{
+[data-testid="stSidebar"] button:not([kind*="primary"]) p,
+[data-testid="stSidebar"] button:not([kind*="primary"]) span,
+[data-testid="stSidebar"] button:not([kind*="primary"]) [data-testid="stMarkdownContainer"] p {{
     color: var(--text) !important;
 }}
-/* Primary / form-submit buttons IN the sidebar (e.g. "Execute Entry") must
-   read against their gold accent fill, not the generic --text colour. */
-[data-testid="stSidebar"] button[kind="primary"] p,
-[data-testid="stSidebar"] button[kind="primary"] span,
-[data-testid="stSidebar"] button[kind="primaryFormSubmit"] p,
-[data-testid="stSidebar"] button[kind="primaryFormSubmit"] span,
-[data-testid="stSidebar"] button[kind="primary"] [data-testid="stMarkdownContainer"] p,
-[data-testid="stSidebar"] button[kind="primaryFormSubmit"] [data-testid="stMarkdownContainer"] p {{
+/* Any button whose kind CONTAINS "primary" (covers "primary" AND
+   "primaryFormSubmit" in one rule — e.g. "Execute Entry") must read
+   against its gold accent fill, not the generic --text colour. */
+[data-testid="stSidebar"] button[kind*="primary"] p,
+[data-testid="stSidebar"] button[kind*="primary"] span,
+[data-testid="stSidebar"] button[kind*="primary"] [data-testid="stMarkdownContainer"] p {{
     color: var(--on-accent) !important;
+}}
+[data-testid="stSidebar"] button[kind*="primary"] {{
+    background: linear-gradient(145deg, var(--accent), var(--accent)) !important;
+    border: none !important;
 }}
 /* Sidebar popover TRIGGER buttons (e.g. "Portfolio ⌄") don't get Streamlit's
    normal button background — force the same themed card look as other
@@ -2349,7 +2351,8 @@ with st.sidebar:
             format="%.2f")
 
         if st.form_submit_button(
-                "💾 Update Trade" if em else "➕ Execute Entry", width="stretch"):
+                "💾 Update Trade" if em else "➕ Execute Entry", width="stretch",
+                type="primary"):
             if not s_in.strip():
                 st.error("Symbol required")
             elif b_in <= 0:
