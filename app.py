@@ -3547,6 +3547,70 @@ elif _page == 'scanner2':
             with st.spinner("Running regime-aware scan…"):
                 st.session_state.scan2_cache = _sv2.generate_market_scanner_v2()
 
+        # ── 🔍 Check any specific stock (doesn't need to be in the curated
+        #    universe — works for any NSE symbol signals.py can fetch) ────────
+        st.markdown('<div style="font-size:.85rem;font-weight:800;margin:1rem 0 .4rem">'
+                    '🔍 Check a Specific Stock</div>', unsafe_allow_html=True)
+        _lk1, _lk2 = st.columns([3, 1])
+        with _lk1:
+            _lookup_sym = st.text_input("Symbol", key="s2_lookup_sym",
+                                        placeholder="e.g. RELIANCE, TCS, IRFC…",
+                                        label_visibility="collapsed")
+        with _lk2:
+            _lookup_go = st.button("🔍 Check", width="stretch", key="s2_lookup_btn")
+
+        if _lookup_go and _lookup_sym.strip():
+            with st.spinner(f"Scoring {_lookup_sym.strip().upper()}…"):
+                _lk_result = _sv2.score_single_stock(_lookup_sym.strip())
+            if "error" in _lk_result:
+                st.error(f"⚠️ {_lk_result['error']}")
+            else:
+                _lk = _lk_result
+                _lk_clr = ("#10b981" if "STRONG BUY" in _lk["Signal"] or "BUY SETUP" in _lk["Signal"]
+                          else "#ef4444" if "AVOID" in _lk["Signal"] or "RISK WIDE" in _lk["Signal"]
+                          else "#f59e0b" if "WATCH" in _lk["Signal"] or "ACCUMULATE" in _lk["Signal"]
+                          else "#8e8e93")
+                st.markdown(
+                    f'<div style="background:var(--card);border:1px solid {_lk_clr};'
+                    f'border-radius:12px;padding:1.1rem 1.3rem;margin:.6rem 0">'
+                    f'<div style="display:flex;justify-content:space-between;'
+                    f'align-items:center;margin-bottom:.6rem">'
+                    f'<span style="font-size:1.1rem;font-weight:800">{_lk["Stock"]} '
+                    f'<span style="font-size:.75rem;color:var(--muted);font-weight:400">'
+                    f'{_lk["Sector"]}</span></span>'
+                    f'<span style="background:{_lk_clr}22;color:{_lk_clr};'
+                    f'padding:.25rem .7rem;border-radius:6px;font-size:.8rem;'
+                    f'font-weight:800">{_lk["Signal"]}</span></div>'
+                    f'<div style="display:grid;grid-template-columns:repeat(4,1fr);'
+                    f'gap:.6rem;font-size:.82rem">'
+                    f'<div><span style="color:var(--muted)">Score</span><br>'
+                    f'<b>{_lk["Score"]}</b></div>'
+                    f'<div><span style="color:var(--muted)">CMP</span><br>'
+                    f'<b>₹{_lk["CMP"]}</b></div>'
+                    f'<div><span style="color:var(--muted)">Entry</span><br>'
+                    f'<b>₹{_lk["Entry"]}</b></div>'
+                    f'<div><span style="color:var(--muted)">SL</span><br>'
+                    f'<b>₹{_lk["SL"]}</b> <span style="color:var(--muted);'
+                    f'font-size:.72rem">({_lk["SL basis"]})</span></div>'
+                    f'<div><span style="color:var(--muted)">Target</span><br>'
+                    f'<b>₹{_lk["Target"]}</b></div>'
+                    f'<div><span style="color:var(--muted)">R:R</span><br>'
+                    f'<b>{_lk["RR"] if _lk["RR"] is not None else "—"}</b></div>'
+                    f'<div><span style="color:var(--muted)">RS</span><br>'
+                    f'<b>{_lk["RS"] if _lk["RS"] is not None else "—"}</b></div>'
+                    f'<div><span style="color:var(--muted)">Fresh</span><br>'
+                    f'<b>{_lk["Fresh"] or "—"}</b></div>'
+                    f'</div>'
+                    f'<div style="font-size:.72rem;color:var(--muted);margin-top:.6rem">'
+                    f'Regime: {_lk["regime"]} · Trend: {_lk["Trend"]} · RSI {_lk["RSI"]} · '
+                    f'{_lk["timestamp"]}</div>'
+                    f'</div>', unsafe_allow_html=True)
+                st.caption("⚠️ Single-stock lookups use absolute score thresholds "
+                          "(no percentile rank — nothing to rank against with just "
+                          "one stock). Run the full scan for percentile-ranked "
+                          "STRONG BUY / BUY SETUP tiers.")
+
+
         _r2 = st.session_state.scan2_cache
         if _r2 is None:
             st.info("💡 Click **Run Scan 2.0**. First run fetches history "
@@ -3577,9 +3641,40 @@ elif _page == 'scanner2':
                 f'🔥 {_n_strong} strong · 🟢 {_n_buy} buy setups · '
                 f'{_r2["timestamp"]}</div>', unsafe_allow_html=True)
 
-            _h2 = min(max(len(_d2) * 36 + 40, 240), 620)
+            # ── Result filters ─────────────────────────────────────────────────
+            _f1, _f2, _f3, _f4 = st.columns([1.4, 1.2, 1.2, 1.4])
+            with _f1:
+                _sig_opts = sorted(_d2["Signal"].unique().tolist())
+                _sel_sig = st.multiselect("Signal", _sig_opts, default=[],
+                                          key="s2_sig_filter",
+                                          placeholder="All signals")
+            with _f2:
+                _min_score2 = st.number_input("Min score", value=-999.0, step=1.0,
+                                              key="s2_min_score")
+            with _f3:
+                _sec_opts = sorted(_d2["Sector"].unique().tolist())
+                _sel_sec = st.multiselect("Sector", _sec_opts, default=[],
+                                         key="s2_sec_filter",
+                                         placeholder="All sectors")
+            with _f4:
+                _search2 = st.text_input("Search stock", key="s2_search",
+                                         placeholder="e.g. RELIANCE")
+
+            _d2_view = _d2.copy()
+            if _sel_sig:
+                _d2_view = _d2_view[_d2_view["Signal"].isin(_sel_sig)]
+            if _min_score2 > -999:
+                _d2_view = _d2_view[_d2_view["Score"] >= _min_score2]
+            if _sel_sec:
+                _d2_view = _d2_view[_d2_view["Sector"].isin(_sel_sec)]
+            if _search2.strip():
+                _d2_view = _d2_view[_d2_view["Stock"].str.upper()
+                                    .str.contains(_search2.strip().upper())]
+            st.caption(f"Showing {len(_d2_view)} of {len(_d2)} results")
+
+            _h2 = min(max(len(_d2_view) * 36 + 40, 240), 620)
             st.dataframe(
-                _d2, hide_index=True, height=_h2, use_container_width=True,
+                _d2_view, hide_index=True, height=_h2, use_container_width=True,
                 column_config={
                     "Stock":   st.column_config.TextColumn("Stock", width="small", pinned=True),
                     "Score":   st.column_config.NumberColumn("Score", format="%.1f"),
@@ -3610,14 +3705,32 @@ elif _page == 'scanner2':
                            "log_date=? AND scanner=?", (UID, _today_lg, "v2"))
                         _top_lg = _d2[_d2["Signal"].isin(
                             ["🔥 STRONG BUY", "🟢 BUY SETUP"])]
+                        import builtins as _bi
+                        def _sf(_v, _default=0.0):
+                            """Safe float conversion — uses builtins.float
+                            explicitly (never shadowable) and handles
+                            None/NaN/pandas-na gracefully instead of raising."""
+                            try:
+                                if _v is None:
+                                    return _default
+                                if isinstance(_v, str) and not _v.strip():
+                                    return _default
+                                if pd.isna(_v):
+                                    return _default
+                            except Exception:
+                                pass
+                            try:
+                                return _bi.float(_v)
+                            except Exception:
+                                return _default
                         for _, _rw in _top_lg.iterrows():
                             db("INSERT INTO signal_log(user_id,log_date,scanner,"
                                "stock,score,entry,stop_loss,target,rr) "
                                "VALUES(?,?,?,?,?,?,?,?,?)",
-                               (UID, _today_lg, "v2", _rw["Stock"],
-                                float(_rw["Score"]), float(_rw["Entry"]),
-                                float(_rw["SL"]), float(_rw["Target"]),
-                                float(_rw["RR"] or 0)))
+                               (UID, _today_lg, "v2", str(_rw["Stock"]),
+                                _sf(_rw["Score"]), _sf(_rw["Entry"]),
+                                _sf(_rw["SL"]), _sf(_rw["Target"]),
+                                _sf(_rw["RR"])))
                         st.toast(f"📸 Logged {len(_top_lg)} signals for {_today_lg}")
                     except Exception as _lge:
                         st.error(f"Logging failed: {_lge}")
