@@ -3733,7 +3733,10 @@ elif _page == 'scanner2':
                                 _sf(_rw["RR"])))
                         st.toast(f"📸 Logged {len(_top_lg)} signals for {_today_lg}")
                     except Exception as _lge:
+                        import traceback as _tb
                         st.error(f"Logging failed: {_lge}")
+                        with st.expander("🔧 Full error detail (for debugging)"):
+                            st.code(_tb.format_exc(), language=None)
             with lg2:
                 st.caption("Log daily → within weeks you'll have real hit-rate data "
                            "per signal tier, so tuning becomes evidence-based.")
