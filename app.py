@@ -698,12 +698,24 @@ for k, v in [("user_id", None), ("username", None), ("edit_id", None), ("close_i
 
 # ── Auth Gate ──────────────────────────────────────────────────────────────────
 if st.session_state.user_id is None:
-    cookies = controller.getAll()
+    try:
+        cookies = controller.getAll()
+    except Exception:
+        cookies = None
 
+    # Bounded retry: the cookie component can return None on the first paint(s)
+    # while it initialises. Retry a few times, then FALL THROUGH to the login
+    # form with cookies treated as empty — never loop forever (that would keep
+    # the page stuck on "Loading..." and the login screen would never appear).
     if cookies is None:
-        st.info("Loading secure tunnel...")
-        time.sleep(0.5)
-        st.rerun()
+        _ck_tries = st.session_state.get("_ck_tries", 0)
+        if _ck_tries < 3:
+            st.session_state["_ck_tries"] = _ck_tries + 1
+            st.info("Loading secure tunnel...")
+            time.sleep(0.4)
+            st.rerun()
+        else:
+            cookies = {}   # cookie store unavailable — proceed to manual login
 
     if cookies and cookies.get("swing_user_id"):
         try:
@@ -2187,15 +2199,4 @@ else:
 
 
 # ── Portfolio metrics ──────────────────────────────────────────────────────────
-# Pre-initialise ALL portfolio totals so every downstream reference (KPI cards,
-# sparkline, snapshots) is guaranteed a bound name regardless of data state.
-odf = cdf = pd.DataFrame()
-t_inv = t_cur = t_real = t_unreal = t_pnl = t_pnl_pct = 0
-best = worst = "—"
-if not df.empty:
-    odf = df[df["status"] == "Open"]
-    cdf = df[df["status"] == "Closed"]
-    # Invested & current (portfolio) value reflect ONLY open positions — money
-    # tied up in stocks you still hold. Sold/closed positions are excluded
-    # because that capital has been freed up (their result lives in realized P&L).
-    t_inv    = odf["invested"].sum()    
+# Pre-init
