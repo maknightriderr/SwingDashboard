@@ -441,6 +441,8 @@ def init_db():
                 setup TEXT, rationale TEXT, emotion TEXT, outcome TEXT,
                 lesson TEXT, rating INTEGER,
                 created_date TEXT DEFAULT to_char(CURRENT_DATE,'YYYY-MM-DD'))""",
+            """CREATE TABLE IF NOT EXISTS user_settings(
+                user_id INTEGER PRIMARY KEY, theme TEXT)""",
         ]
         for ddl in table_ddls:
             try:
@@ -478,6 +480,8 @@ def init_db():
             trade_date TEXT, direction TEXT, entry_price REAL, exit_price REAL,
             setup TEXT, rationale TEXT, emotion TEXT, outcome TEXT,
             lesson TEXT, rating INTEGER, created_date TEXT DEFAULT(date('now')))""")
+        c.execute("""CREATE TABLE IF NOT EXISTS user_settings(
+            user_id INTEGER PRIMARY KEY, theme TEXT)""")
         c.commit(); c.close()
 
 def register_user(username, password):
@@ -494,6 +498,32 @@ def login_user(username, password):
     if user and verify_hash(password, user[0][1]):
         return user[0][0]
     return None
+
+
+def get_user_theme(user_id):
+    """Return the user's saved theme name, or None if not set / on error."""
+    try:
+        row = db("SELECT theme FROM user_settings WHERE user_id=?",
+                 (user_id,), fetch=True)
+        if row and row[0][0]:
+            return row[0][0]
+    except Exception:
+        pass
+    return None
+
+
+def set_user_theme(user_id, theme):
+    """Persist the user's chosen theme (upsert). Silent on failure."""
+    try:
+        if _USE_PG:
+            db("INSERT INTO user_settings(user_id, theme) VALUES(?,?) "
+               "ON CONFLICT (user_id) DO UPDATE SET theme=EXCLUDED.theme",
+               (user_id, theme))
+        else:
+            db("INSERT OR REPLACE INTO user_settings(user_id, theme) "
+               "VALUES(?,?)", (user_id, theme))
+    except Exception:
+        pass
 
 def get_trades(user_id):
     if _USE_PG:
@@ -2232,6 +2262,15 @@ else:
     t_inv = t_cur = t_real = t_unreal = t_pnl = t_pnl_pct = 0
     best = worst = "—"
 
+# Load the user's saved theme from DB once per session (persists across refresh
+# / restart). Runs only after login and only once, so live theme switches during
+# the session aren't clobbered.
+if not st.session_state.get("_theme_loaded") and st.session_state.get("user_id"):
+    _saved_theme = get_user_theme(st.session_state.user_id)
+    if _saved_theme and _saved_theme in THEMES:
+        st.session_state.theme = _saved_theme
+    st.session_state._theme_loaded = True
+
 theme_t = THEMES[st.session_state.theme]
 st.markdown(theme_css(theme_t), unsafe_allow_html=True)
 
@@ -2286,6 +2325,8 @@ with st.sidebar:
         label_visibility="collapsed")
     if new_theme != st.session_state.theme:
         st.session_state.theme = new_theme
+        if st.session_state.get("user_id"):
+            set_user_theme(st.session_state.user_id, new_theme)
         st.rerun()
 
     st.markdown("<hr style='margin:.8rem 0;border-color:var(--border)'>",
