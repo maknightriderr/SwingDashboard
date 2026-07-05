@@ -1,0 +1,16 @@
+[theme]
+# Streamlit's st.dataframe uses a canvas-based grid (glide-data-grid) that
+# renders from the app's BASE theme, NOT from custom CSS. Without this, result
+# tables show up dark/black on the light premium themes. Setting a light base
+# makes every result table render light and readable. (Custom dark themes still
+# get a light table, which stays perfectly readable — only the color-match on
+# dark themes is slightly looser, an acceptable trade for legible tables.)
+base = "light"
+primaryColor = "#b8860b"
+backgroundColor = "#ffffff"
+secondaryBackgroundColor = "#f4f1ea"
+textColor = "#1a1a1a"
+
+[server]
+# Keep the app responsive on Streamlit Community Cloud
+runOnSave = false
