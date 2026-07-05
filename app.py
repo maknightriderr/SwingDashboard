@@ -2187,14 +2187,15 @@ else:
 
 
 # ── Portfolio metrics ──────────────────────────────────────────────────────────
+# Pre-initialise ALL portfolio totals so every downstream reference (KPI cards,
+# sparkline, snapshots) is guaranteed a bound name regardless of data state.
+odf = cdf = pd.DataFrame()
+t_inv = t_cur = t_real = t_unreal = t_pnl = t_pnl_pct = 0
+best = worst = "—"
 if not df.empty:
     odf = df[df["status"] == "Open"]
     cdf = df[df["status"] == "Closed"]
     # Invested & current (portfolio) value reflect ONLY open positions — money
     # tied up in stocks you still hold. Sold/closed positions are excluded
     # because that capital has been freed up (their result lives in realized P&L).
-    t_inv    = odf["invested"].sum()    if not odf.empty else 0
-    t_cur    = odf["current_amt"].sum() if not odf.empty else 0
-    t_real   = cdf["profit"].sum()   if not cdf.empty else 0   # realized (closed)
-    t_unreal = odf["profit"].sum()   if not odf.empty else 0   # unrealized (open)
-    t_p
+    t_inv    = odf["invested"].sum()    
