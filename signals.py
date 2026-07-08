@@ -3269,6 +3269,8 @@ def scan_for_vcp(min_quality="B", ready_only=False):
             "quality": quality, "contractions": contractions,
             "vcp_ready": is_ready, "detail": ind.get("vcp_detail", ""),
             "entry": entry, "target": target, "stop_loss": stop, "risk_reward": rr,
+            "vp_backed": ind.get("vcp_vp_backed", False),
+            "vp_note": ind.get("vcp_vp_note", ""),
         })
 
     def _sort_key(s):
