@@ -73,27 +73,48 @@ _angel_state = {"checked_date": None, "healthy": False}
 
 
 def _angel_is_healthy():
-    """Cheap gate: only attempt Angel if secrets exist AND login works today.
-    Cached per calendar day so we don't re-probe login on every symbol."""
+    """Gate: only attempt Angel if secrets exist, login works, AND a real
+    historical-data call actually succeeds today (not just login).
+
+    Why a real data call, not just login: some hosting environments (e.g.
+    Streamlit Community Cloud) can log in fine but then have their outbound
+    connection to Angel's HISTORICAL DATA endpoint blocked or unreachable
+    (brokers sometimes restrict cloud-provider IP ranges). If we only checked
+    login, every one of thousands of symbols would then hang for the full
+    7s connect-timeout before falling back to Yahoo — turning a single scan
+    into hours. Testing ONE real candle fetch up front catches that in one
+    shot and routes the WHOLE DAY to Yahoo immediately if it fails.
+
+    Cached per calendar day so we don't re-probe on every symbol."""
     if not _ANGEL_AVAILABLE:
         return False
     import datetime as _dt
     today = _dt.datetime.now().date()
     if _angel_state["checked_date"] == today:
         return _angel_state["healthy"]
-    # Probe once per day
+
     ok = False
     try:
         conn = _angel.get_connection()
-        ok = conn is not None
-    except Exception:
+        if conn is not None:
+            # Real connectivity probe: try ONE actual historical fetch for a
+            # highly liquid symbol. If Angel's data endpoint is unreachable
+            # from this host, this is where it'll show up — not 2000 symbols
+            # later.
+            test_df = _angel.fetch_history("RELIANCE", days=5, interval="ONE_DAY")
+            ok = test_df is not None and not test_df.empty
+    except Exception as e:
+        print(f"[data_source] Angel connectivity probe failed: {e}")
         ok = False
+
     _angel_state["checked_date"] = today
     _angel_state["healthy"] = ok
     if ok:
-        print("[data_source] Angel One is primary today ✅")
+        print("[data_source] Angel One is primary today ✅ (connectivity probe passed)")
     else:
-        print("[data_source] Angel One unavailable — using Yahoo fallback for today")
+        print("[data_source] Angel One unreachable from this host today — "
+              "using Yahoo for ALL symbols (skipping Angel entirely, no "
+              "per-symbol timeouts)")
     return ok
 
 
