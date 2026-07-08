@@ -5869,6 +5869,7 @@ elif _page == 'vcp':
                     "To Pivot %": s.get("pivot_distance_pct"),
                     "Contractions": len(_contr),
                     "Sequence": " → ".join(f"-{c}%" for c in _contr) if _contr else "—",
+                    "Vol-backed": "🔷" if s.get("vp_backed") else "",
                     "Entry": s.get("entry"),
                     "SL": s.get("stop_loss"), "Target": s.get("target"),
                     "RR": s.get("risk_reward"),
