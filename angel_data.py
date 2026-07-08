@@ -85,12 +85,20 @@ _SCRIP_MASTER_URL = "https://margincalculator.angelbroking.com/OpenAPI_File/file
 _SCRIP_CACHE_PATH = "/tmp/angel_scrip_master.json"
 _SCRIP_CACHE_TTL  = 24 * 3600  # refresh once a day — instrument list rarely changes intraday
 
-_RATE_LIMIT_PER_SEC = 3   # SmartAPI's published getCandleData limit
+_RATE_LIMIT_PER_SEC = 2   # SmartAPI documents 3 req/sec for getCandleData,
+                          # but real-world enforcement is flaky — several
+                          # users report 403s well under the documented
+                          # limit. 2/sec + a bigger buffer (below) trades a
+                          # little speed for reliability.
 _rate_lock = threading.Lock()
 _call_timestamps = []
 
 _session = {"conn": None, "login_date": None, "jwt": None,
            "feed": None, "refresh": None}
+_last_failure = {"ts": 0, "message": None}
+_FAILURE_COOLDOWN_SEC = 120   # don't retry a failed login for 2 min —
+                              # protects Angel's 5-attempt MPIN lockout
+                              # from being burned by repeated calls
 
 
 # ══════════════════════════════════════════════════════════════════════════
@@ -103,7 +111,7 @@ def _throttle():
         while _call_timestamps and now - _call_timestamps[0] > 1.0:
             _call_timestamps.pop(0)
         if len(_call_timestamps) >= _RATE_LIMIT_PER_SEC:
-            sleep_for = 1.0 - (now - _call_timestamps[0]) + 0.02
+            sleep_for = 1.0 - (now - _call_timestamps[0]) + 0.25   # bigger safety buffer
             if sleep_for > 0:
                 time.sleep(sleep_for)
         _call_timestamps.append(time.time())
@@ -114,6 +122,16 @@ def _throttle():
 # activity, so we re-login once per calendar day and cache the connection.
 # ══════════════════════════════════════════════════════════════════════════
 def _login():
+    import time as _t
+    if (_last_failure["ts"] and
+            _t.time() - _last_failure["ts"] < _FAILURE_COOLDOWN_SEC):
+        print(f"[angel_data] skipping login retry — last attempt failed "
+              f"{int(_t.time()-_last_failure['ts'])}s ago "
+              f"({_last_failure['message']}). Waiting out the "
+              f"{_FAILURE_COOLDOWN_SEC}s cooldown to protect your "
+              f"5-attempt MPIN quota. Fix the credential, then wait "
+              f"or restart.")
+        return None
     if SmartConnect is None or pyotp is None:
         print("[angel_data] smartapi-python or pyotp not installed — "
               "run: pip install smartapi-python pyotp logzero websocket-client")
@@ -130,7 +148,12 @@ def _login():
         totp_code = pyotp.TOTP(TOTP_SECRET).now()
         data = obj.generateSession(CLIENT_CODE, PIN, totp_code)
         if not data or not data.get("status"):
+            _last_failure["ts"] = __import__("time").time()
+            _last_failure["message"] = (data or {}).get("message", "unknown")
             print(f"[angel_data] login rejected: {data}")
+            print(f"[angel_data] ⚠️ cooling down {_FAILURE_COOLDOWN_SEC}s before any "
+                  f"further attempt — this run will NOT retry login again "
+                  f"regardless of how many fetch calls follow.")
             return None
         _session["conn"]       = obj
         _session["login_date"] = datetime.now().date()
@@ -140,7 +163,11 @@ def _login():
         print(f"[angel_data] logged in fresh for {_session['login_date']}")
         return obj
     except Exception as e:
+        _last_failure["ts"] = __import__("time").time()
+        _last_failure["message"] = str(e)
         print(f"[angel_data] login exception: {e}")
+        print(f"[angel_data] ⚠️ cooling down {_FAILURE_COOLDOWN_SEC}s before any "
+              f"further attempt.")
         return None
 
 
@@ -231,7 +258,7 @@ _INTERVAL_MAX_DAYS = {
 }
 
 
-def fetch_history(symbol, days=180, interval="ONE_DAY", _retry=True):
+def fetch_history(symbol, days=180, interval="ONE_DAY", _retry=True, _rate_retries=2):
     """Fetch OHLCV history for ONE NSE equity symbol.
     Returns a DataFrame(Open, High, Low, Close, Volume) indexed by datetime,
     or None on any failure — mirrors signals.py's _fetch_history contract."""
@@ -260,6 +287,17 @@ def fetch_history(symbol, days=180, interval="ONE_DAY", _retry=True):
     try:
         resp = conn.getCandleData(params)
     except Exception as e:
+        msg = str(e)
+        # "Access denied because of exceeding access rate" is a TRANSIENT
+        # rate-limit hit, not a credential problem — back off and retry a
+        # couple of times before giving up on this symbol.
+        if "exceeding access rate" in msg.lower() and _rate_retries > 0:
+            backoff = 1.5 if _rate_retries == 2 else 3.0
+            print(f"[angel_data] rate-limited on {symbol}, backing off {backoff}s "
+                  f"({_rate_retries} retries left)")
+            time.sleep(backoff)
+            return fetch_history(symbol, days=days, interval=interval,
+                                 _retry=_retry, _rate_retries=_rate_retries - 1)
         print(f"[angel_data] getCandleData exception for {symbol}: {e}")
         return None
 
