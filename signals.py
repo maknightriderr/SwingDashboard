@@ -30,6 +30,13 @@ import xml.etree.ElementTree as ET
 from datetime import datetime
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from scipy.signal import find_peaks
+ 
+try:
+    import volume_profile as _vp
+    _VP_AVAILABLE = True
+except Exception:
+    _vp = None
+    _VP_AVAILABLE = False
 
 # ==============================================================================
 # 1. MULTI-SOURCE NSE UNIVERSE LOADER
@@ -1007,11 +1014,43 @@ def _compute_indicators_raw(symbol, period="1y", prefetched_df=None):
         smc = {}
 
     # ── VCP — Volatility Contraction Pattern (Minervini) ─────────────────────
+    # ── Volume Profile (real volume-based S/R) — computed once, reused below ──
+    vprofile = None
+    if _VP_AVAILABLE and len(close) >= 30:
+        try:
+            vprofile = _vp.compute_volume_profile(high, low, close, vol)
+        except Exception:
+            vprofile = None
+ 
     try:
         vcp = detect_vcp(close, high, low, vol, atr, lookback=80)
     except Exception:
         vcp = {"is_vcp": False, "vcp_ready": False, "contractions": [],
                "pivot": None, "quality": None, "detail": ""}
+ 
+    # ── VCP pivot validation via volume profile ──────────────────────────────
+    # A genuine VCP pivot sits at a real volume shelf (VAH / HVN) with clear
+    # LVN room above — meaning real supply to break, then a fast move. This
+    # upgrades the VCP quality when the pivot is volume-backed.
+    if vprofile and vcp.get("is_vcp") and vcp.get("pivot"):
+        try:
+            _piv = float(vcp["pivot"])
+            _vah = vprofile.get("vah")
+            _hvns = vprofile.get("hvn", [])
+            _near_shelf = any(lv and abs(_piv - lv) / _piv < 0.015
+                              for lv in ([_vah] if _vah else []) + _hvns)
+            _lvn_above = [x for x in vprofile.get("lvn", []) if x > _piv]
+            if _near_shelf and _lvn_above:
+                vcp["vp_note"] = "pivot at volume shelf + clear room"
+                vcp["vp_backed"] = True
+            elif _near_shelf:
+                vcp["vp_note"] = "pivot backed by volume"
+                vcp["vp_backed"] = True
+            else:
+                vcp["vp_note"] = ""
+                vcp["vp_backed"] = False
+        except Exception:
+            pass
 
     # ── Relative Strength vs Nifty ───────────────────────────────────────────
     try:
@@ -1053,7 +1092,15 @@ def _compute_indicators_raw(symbol, period="1y", prefetched_df=None):
         "vwap": vwap, "price_vs_vwap": price_vs_vwap,
         "patterns": chart_patterns, "candlesticks": candlesticks,
         "avg_turnover": avg_turnover, "atr_pct": (atr / cmp) if cmp > 0 else 0,
-        "liquidity_ok": liquidity_ok,   # FIX 10: visible flag, not silent None
+        "liquidity_ok": liquidity_ok,
+        "vp_poc": vprofile.get("poc") if vprofile else None,
+        "vp_vah": vprofile.get("vah") if vprofile else None,
+        "vp_val": vprofile.get("val") if vprofile else None,
+        "vp_hvn": vprofile.get("hvn") if vprofile else [],
+        "vp_lvn": vprofile.get("lvn") if vprofile else [],
+        "vp_above_value": vprofile.get("above_value_area") if vprofile else None,
+        "vcp_vp_backed": vcp.get("vp_backed", False),
+        "vcp_vp_note": vcp.get("vp_note", ""),
         # Trap signals
         "bull_trap": traps["bull_trap"],
         "bear_trap": traps["bear_trap"],
@@ -2184,11 +2231,17 @@ def scan_for_traps(min_confidence=55):
 
         # ── Bull Trap alert ───────────────────────────────────────────────────
         if ind.get("bull_trap") and ind.get("bull_trap_conf", 0) >= min_confidence:
-            # For bull traps: target = current price (exit NOW),
-            # re-entry SL shown so trader knows where to re-enter if wrong
             _, re_entry_sl, _ = _calc_risk_params(
                 cmp, atr, ind["resistance"], action="SELL"
             )
+            # Volume-backed resistance for the trap: the real supply shelf above
+            # (VAH / nearest HVN) is stronger than the 20-day high. Use it to
+            # tighten the re-entry stop when available.
+            _vp_poc = ind.get("vp_poc")
+            _vp_vah = ind.get("vp_vah")
+            if _vp_vah and _vp_vah > cmp:
+                re_entry_sl = round(min(re_entry_sl, _vp_vah), 2)
+              
             bull_traps.append({
                 "stock":              symbol,
                 "sector":             sector,
