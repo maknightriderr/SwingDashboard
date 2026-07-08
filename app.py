@@ -5851,8 +5851,12 @@ elif _page == 'vcp':
                 f'<div style="font-size:.75rem;color:var(--muted);margin:.5rem 0">'
                 f'Scanned {vs["scanned"]} · {vs["liquid"]} liquid · '
                 f'{vs["count"]} bases · {vs["ready_count"]} at pivot · '
-                f'{vs["timestamp"]}</div>',
+                f'scanned at {vs["timestamp"]}</div>',
                 unsafe_allow_html=True)
+            st.caption("ℹ️ **Close** = last daily close, not a live tick (Yahoo daily "
+                       "data, ~15–20 min delayed intraday). VCP pivots, entries and "
+                       "targets are all measured on daily closes by design — re-run "
+                       "the scan during market hours for the freshest close.")
 
             vrows = []
             for s in vs["vcp_setups"]:
@@ -5861,7 +5865,7 @@ elif _page == 'vcp':
                     "Stock": s["stock"], "Sector": s["sector"],
                     "Grade": s.get("quality"),
                     "Ready": "🎯" if s.get("vcp_ready") else "",
-                    "CMP": s.get("cmp"), "Pivot": s.get("pivot"),
+                    "Close": s.get("cmp"), "Pivot": s.get("pivot"),
                     "To Pivot %": s.get("pivot_distance_pct"),
                     "Contractions": len(_contr),
                     "Sequence": " → ".join(f"-{c}%" for c in _contr) if _contr else "—",
@@ -5875,7 +5879,9 @@ elif _page == 'vcp':
                 vdf, hide_index=True, height=_vh, use_container_width=True,
                 column_config={
                     "Stock": st.column_config.TextColumn("Stock", width="small", pinned=True),
-                    "CMP":   st.column_config.NumberColumn("CMP", format="₹%.2f"),
+                    "Close": st.column_config.NumberColumn("Close", format="₹%.2f",
+                        help="Last daily close (not a live tick). VCP pivot/entry/"
+                             "targets are all measured on daily closes."),
                     "Pivot": st.column_config.NumberColumn("Pivot", format="₹%.2f"),
                     "To Pivot %": st.column_config.NumberColumn("→Pivot", format="%.1f%%"),
                     "Entry":  st.column_config.NumberColumn("Entry", format="₹%.2f"),
