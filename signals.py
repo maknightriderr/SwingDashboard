@@ -726,13 +726,36 @@ def get_market_regime():
             else:
                 regime, trend = "Neutral", "Sideways"
 
-            if regime in ("Strong Bull", "Strong Bear"): conf = 85
-            elif regime in ("Bull", "Bear"): conf = 70
-            elif regime in ("Bull Pullback", "Bear Rally"): conf = 55
+            # ── Continuous regime conviction (0-98) — moves daily, never frozen ──
+            _conf_base = {"Strong Bull": 82, "Strong Bear": 82,
+                          "Bull": 68, "Bear": 68,
+                          "Bull Pullback": 52, "Bear Rally": 52,
+                          "Neutral": 45}.get(regime, 45)
+            _is_bull = regime in ("Strong Bull", "Bull", "Bull Pullback")
+            _is_bear = regime in ("Strong Bear", "Bear", "Bear Rally")
+            # Modifier 1: how far price sits from the 200EMA (%), trend-aligned
+            if ema200:
+                _sep = (nifty_close - ema200) / ema200 * 100
+                if _is_bull:   _sep_mod = max(-8, min(10, _sep))
+                elif _is_bear: _sep_mod = max(-8, min(10, -_sep))
+                else:          _sep_mod = 0
+            else:
+                _sep_mod = 0
+            # Modifier 2: RSI distance from neutral 50, trend-aligned (±8)
+            _rsi_mod = 0
+            if nifty_rsi is not None:
+                if _is_bull:   _rsi_mod = (nifty_rsi - 50) / 50.0 * 8
+                elif _is_bear: _rsi_mod = (50 - nifty_rsi) / 50.0 * 8
+            # Modifier 3: 20/50 EMA alignment confirms or fights the regime (±4)
+            if _is_bull:   _align = 4 if ema20 > ema50 else -4
+            elif _is_bear: _align = 4 if ema20 < ema50 else -4
+            else:          _align = 0
+            conf = int(round(max(5, min(98,
+                        _conf_base + _sep_mod + _rsi_mod + _align))))
 
-    if nifty_rsi:
-        if nifty_rsi > 70: conf = min(95, conf + 15)
-        elif nifty_rsi < 40: conf = max(20, conf - 20)
+   # if nifty_rsi:
+    #    if nifty_rsi > 70: conf = min(95, conf + 15)
+     #   elif nifty_rsi < 40: conf = max(20, conf - 20)
 
     risk = "Neutral"
     if nifty_rsi:
