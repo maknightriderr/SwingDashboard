@@ -16,6 +16,12 @@ All output keys are backward-compatible with app.py.
 
 import os
 import yfinance as yf
+try:
+    import data_source as _ds
+    _USE_UNIFIED = True
+except Exception:
+    _ds = None
+    _USE_UNIFIED = False
 import pandas as pd
 import numpy as np
 import requests
@@ -302,6 +308,11 @@ def sanitize_ticker(sym):
 
 
 def _bulk_fetch_history(symbols, period="1y"):
+    if _USE_UNIFIED:
+        try:
+            return _ds.bulk_fetch_history(symbols, period=period)
+        except Exception:
+            pass   # if the unified layer itself errors, fall through to Yahoo below
     results = {}
     with ThreadPoolExecutor(max_workers=5) as executor:
         def fetch_single(sym):
