@@ -24,6 +24,13 @@ from datetime import datetime
 
 import signals as _sg
 
+try:
+    import volume_profile as _vp
+    _VP_AVAILABLE = True
+except Exception:
+    _vp = None
+    _VP_AVAILABLE = False
+
 # ── Tunables (kept together so you can tweak later) ───────────────────────────
 MAX_RISK_PCT      = 8.0    # skip top tiers if structural stop demands more risk
 FRESH_BARS        = 2      # breakout must have happened within N bars
@@ -144,10 +151,44 @@ def _score_symbol(symbol, ind, df, is_bear, is_caution):
     if is_bear:      score -= 4.0
     elif is_caution: score -= 1.0
 
+    # ── Volume Profile: real volume-based context (POC / value area / LVN) ────
+    # This upgrades entry quality AND gives a faster-move target than a flat
+    # ATR/resistance target. Degrades silently if the module/data is unavailable.
+    vp_data = None
+    vp_score_note = ""
+    if _VP_AVAILABLE and df is not None and len(df) >= 30:
+        try:
+            vp_data = _vp.compute_volume_profile(
+                df["High"], df["Low"], df["Close"], df["Volume"])
+        except Exception:
+            vp_data = None
+    if vp_data:
+        # Entry quality from volume-profile location (0-100). Reward clean
+        # breakouts above the value area with LVN room; penalise overhead supply.
+        vpq = _vp.vp_entry_quality(vp_data, cmp, brk_level)
+        if vpq is not None:
+            if vpq >= 75:   score += 2.5; vp_score_note = "VP: clear room ↑"
+            elif vpq >= 60: score += 1.0; vp_score_note = "VP: decent room"
+            elif vpq < 40:  score -= 2.0; vp_score_note = "VP: overhead supply"
+        # Acceptance above the Point of Control = institutional support beneath
+        if vp_data.get("poc") and cmp > vp_data["poc"]:
+            score += 0.5
+
     # ── 6 & 7. Structural stop + real target → meaningful RR ──────────────────
     stop, stop_basis, risk_pct = _structural_stop(df, cmp, atr)
     target, tgt_basis = _target(cmp, atr, ind.get("resistance"),
                                 fresh, brk_level, range_low)
+    # Prefer a volume-profile fast-move target (nearest LVN gap above) when it's
+    # a better/closer objective than the generic ATR/resistance target — LVN
+    # gaps are where price accelerates, i.e. the "quick profit" zone.
+    if vp_data:
+        _entry_ref = brk_level if (fresh and brk_level) else cmp
+        vp_tgt = _vp.vp_fast_move_target(vp_data, _entry_ref)
+        if vp_tgt and vp_tgt > cmp:
+            # Use VP target if it gives a tighter, faster objective (but never
+            # below the structural target — keep the more conservative RR honest)
+            if vp_tgt < target:
+                target, tgt_basis = round(float(vp_tgt), 2), "LVN fast-move"
     if fresh and brk_level and cmp <= brk_level * 1.02:
         entry_px = round(brk_level * 1.002, 2)
     else:
@@ -169,6 +210,8 @@ def _score_symbol(symbol, ind, df, is_bear, is_caution):
         "Risk %": risk_pct,
         "Target": target, "Tgt basis": tgt_basis,
         "RR": rr,
+        "POC": vp_data.get("poc") if vp_data else None,
+        "VP note": vp_score_note,
         "_too_wide": too_wide,
     }
 
