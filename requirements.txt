@@ -8,3 +8,7 @@ plotly
 streamlit-cookies-controller
 streamlit-autorefresh
 psycopg2-binary
+smartapi-python
+pyotp
+logzero
+websocket-client
