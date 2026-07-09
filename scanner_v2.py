@@ -272,19 +272,30 @@ def generate_market_scanner_v2(max_symbols=None):
         return out
 
     rows = []
+    _diag = {"total": len(all_symbols), "no_data": 0, "no_ind": 0,
+             "score_none": 0, "exc": 0, "last_exc": ""}
     for symbol in all_symbols:
         try:
             df = bulk.get(symbol)
+            if df is None or (hasattr(df, "empty") and df.empty):
+                _diag["no_data"] += 1
+                continue
             ind = _sg.compute_indicators(symbol, period="6mo", prefetched_df=df)
             if not ind:
+                _diag["no_ind"] += 1
                 continue
             row = _score_symbol(symbol, ind, df, is_bear, is_caution)
             if row is not None:
                 rows.append(row)
-        except Exception:
+            else:
+                _diag["score_none"] += 1
+        except Exception as _e:
+            _diag["exc"] += 1
+            _diag["last_exc"] = str(_e)
             continue
 
     out["scanned"] = len(rows)
+    out["diagnostics"] = _diag
     if not rows:
         return out
 
