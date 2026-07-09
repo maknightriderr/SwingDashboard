@@ -3674,7 +3674,23 @@ elif _page == 'scanner2':
             st.info("💡 Click **Run Scan 2.0**. First run fetches history "
                     "(shares the same cache as your other scanners).")
         elif _r2["df"].empty:
-            st.warning("Scan returned nothing — Yahoo may be rate-limited; retry.")
+            st.warning("Scan returned nothing — see the breakdown below to find out why.")
+            _dg = _r2.get("diagnostics") or {}
+            if _dg:
+                st.markdown(
+                    f"**🔍 Scanner 2.0 breakdown:**\n"
+                    f"- Universe attempted: **{_dg.get('total', 0):,}**\n"
+                    f"- ❌ No data fetched (Yahoo/Angel empty): **{_dg.get('no_data', 0):,}**\n"
+                    f"- ❌ Indicators couldn't compute: **{_dg.get('no_ind', 0):,}**\n"
+                    f"- ⚠️ Fetched but couldn't be scored: **{_dg.get('score_none', 0):,}**\n"
+                    f"- 💥 Exceptions during scoring: **{_dg.get('exc', 0):,}**")
+                if _dg.get("last_exc"):
+                    st.caption(f"Last exception: `{_dg['last_exc']}`")
+                if _dg.get("no_data", 0) > _dg.get("total", 1) * 0.5:
+                    st.info("Most symbols returned no price data — the data source "
+                            "(Angel/Yahoo) is likely rate-limited or unreachable right "
+                            "now. Wait a few minutes and retry, or check the data-source "
+                            "logs.")
         else:
             _d2 = _r2["df"]
             _d2 = _d2.copy()
