@@ -43,6 +43,7 @@ SECRETS (same as the pilot — Streamlit secrets or env vars):
 """
 
 import pandas as pd
+from concurrent.futures import ThreadPoolExecutor, as_completed
 
 # Angel pilot module (from the validated pilot). If it can't import for any
 # reason, we degrade to Yahoo-only rather than breaking the whole app.
@@ -67,58 +68,66 @@ def _period_to_days(period):
     return _PERIOD_DAYS.get(str(period).lower(), 183)
 
 
+# Angel fetches ONE symbol at a time at ~2 req/sec. That's fine for a watchlist,
+# but a full universe (2000+ symbols) would take ~20 minutes sequentially —
+# far longer than Streamlit Cloud allows a single script run, so the scan gets
+# killed mid-way and never returns. For any list bigger than this, we skip Angel
+# and use fast THREADED Yahoo instead. Angel stays the primary source for small
+# lists (live prices, single-stock lookups, watchlist) where delay-free matters.
+_ANGEL_BULK_MAX = 50
+
+
 # ── Runtime health flag: once Angel login is confirmed dead for this session,
 #    stop hammering it and go straight to Yahoo (re-checked each new day). ─────
 _angel_state = {"checked_date": None, "healthy": False}
 
 
 def _angel_is_healthy():
-    """Gate: only attempt Angel if secrets exist, login works, AND a real
-    historical-data call actually succeeds today (not just login).
-
-    Why a real data call, not just login: some hosting environments (e.g.
-    Streamlit Community Cloud) can log in fine but then have their outbound
-    connection to Angel's HISTORICAL DATA endpoint blocked or unreachable
-    (brokers sometimes restrict cloud-provider IP ranges). If we only checked
-    login, every one of thousands of symbols would then hang for the full
-    7s connect-timeout before falling back to Yahoo — turning a single scan
-    into hours. Testing ONE real candle fetch up front catches that in one
-    shot and routes the WHOLE DAY to Yahoo immediately if it fails.
-
-    Cached per calendar day so we don't re-probe on every symbol."""
+    """Cheap gate: only attempt Angel if secrets exist AND login works today.
+    Cached per calendar day so we don't re-probe login on every symbol."""
     if not _ANGEL_AVAILABLE:
         return False
     import datetime as _dt
     today = _dt.datetime.now().date()
     if _angel_state["checked_date"] == today:
         return _angel_state["healthy"]
-
+    # Probe once per day
     ok = False
     try:
         conn = _angel.get_connection()
-        if conn is not None:
-            # Real connectivity probe: try ONE actual historical fetch for a
-            # highly liquid symbol. If Angel's data endpoint is unreachable
-            # from this host, this is where it'll show up — not 2000 symbols
-            # later.
-            test_df = _angel.fetch_history("RELIANCE", days=5, interval="ONE_DAY")
-            ok = test_df is not None and not test_df.empty
-    except Exception as e:
-        print(f"[data_source] Angel connectivity probe failed: {e}")
+        ok = conn is not None
+    except Exception:
         ok = False
-
     _angel_state["checked_date"] = today
     _angel_state["healthy"] = ok
     if ok:
-        print("[data_source] Angel One is primary today ✅ (connectivity probe passed)")
+        print("[data_source] Angel One is primary today ✅")
     else:
-        print("[data_source] Angel One unreachable from this host today — "
-              "using Yahoo for ALL symbols (skipping Angel entirely, no "
-              "per-symbol timeouts)")
+        print("[data_source] Angel One unavailable — using Yahoo fallback for today")
     return ok
 
 
 # ── Yahoo single-symbol fetch (mirrors signals.py's normalisation) ────────────
+def _yahoo_bulk_threaded(symbols, period="6mo"):
+    """Fast parallel Yahoo fetch for large universes (5 workers). Returns
+    {symbol: DataFrame}. Index symbols route through fetch_index."""
+    results = {}
+    def _one(sym):
+        if str(sym).startswith("^"):
+            return sym, fetch_index(sym, period)
+        return sym, _yahoo_fetch(sym, period)
+    with ThreadPoolExecutor(max_workers=5) as ex:
+        futs = {ex.submit(_one, s): s for s in symbols}
+        for f in as_completed(futs):
+            try:
+                sym, df = f.result()
+                if df is not None and not df.empty:
+                    results[sym] = df
+            except Exception:
+                continue
+    return results
+
+
 def _yahoo_fetch(symbol, period="6mo"):
     clean = str(symbol).upper().replace(".NS", "").replace(".BO", "")
     for suffix in (".NS", ".BO"):
@@ -184,8 +193,20 @@ def fetch_history(symbol, period="6mo"):
 #    Angel is sequential (rate-limited); Yahoo fallback is per-symbol so one
 #    bad symbol never sinks the batch. ─────────────────────────────────────────
 def bulk_fetch_history(symbols, period="1y"):
-    """{symbol: DataFrame} for a list of symbols. Angel-primary per symbol with
-    per-symbol Yahoo fallback. Index symbols route to Yahoo automatically."""
+    """{symbol: DataFrame} for a list of symbols.
+
+    Large lists (full universe) → fast THREADED Yahoo, skipping Angel entirely
+    (sequential Angel would take ~20 min and get killed by Streamlit). Small
+    lists → Angel-primary per symbol with per-symbol Yahoo fallback.
+    Index symbols route to Yahoo automatically either way."""
+    symbols = list(symbols)
+    # Big universe → fast parallel Yahoo (Angel is too slow sequentially here)
+    if len(symbols) > _ANGEL_BULK_MAX:
+        print(f"[data_source] {len(symbols)} symbols > {_ANGEL_BULK_MAX} — using "
+              f"fast threaded Yahoo for this scan (Angel reserved for live "
+              f"prices / watchlist / single-stock).")
+        return _yahoo_bulk_threaded(symbols, period)
+
     results = {}
     angel_ok = _angel_is_healthy()
     yahoo_fallback_count = 0
