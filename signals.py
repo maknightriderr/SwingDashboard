@@ -443,25 +443,44 @@ def detect_price_patterns(high, low, close, vol, vol_avg):
     if len(close) >= 30:
         pole   = close.iloc[-30:-10]
         flag   = close.iloc[-10:-1]
+        pole_vals = pole.values
+        # A flag-pole must be an UP move: it should END meaningfully higher than
+        # it STARTED, and its low must come BEFORE its high (a rising leg, not a
+        # decline that merely has a wide range).
+        pole_up = (pole_vals[-1] > pole_vals[0] * 1.08)
+        pole_low_before_high = (int(np.argmin(pole_vals)) < int(np.argmax(pole_vals)))
         p_gain = (pole.max() - pole.min()) / (pole.min() + 1e-8)
         f_drop = (flag.max() - flag.min()) / (flag.max() + 1e-8)
-        if p_gain > 0.08 and f_drop < 0.06 and flag.iloc[-1] < pole.max():
+        if (pole_up and pole_low_before_high and p_gain > 0.08
+                and f_drop < 0.06 and flag.iloc[-1] < pole.max()):
             if cmp > flag.max() and float(vol.iloc[-1]) > vol_avg * 2.0:
                 patterns.append("🚩 Bull Flag Breakout")
 
     if len(troughs) >= 2:
         t1, t2 = troughs[-2], troughs[-1]
         p1, p2 = c_vals[t1], c_vals[t2]
-        depth_ok    = abs(p1 - p2) / (p1 + 1e-8) < 0.08
-        price_ok    = p2 * 1.00 < cmp < p2 * 1.12
+        depth_ok = abs(p1 - p2) / (p1 + 1e-8) < 0.08
+        # Neckline = highest close BETWEEN the two troughs. A double bottom is
+        # only CONFIRMED when price breaks above that neckline (not merely a few
+        # % above the second low).
+        _mid_db = c_vals[t1:t2 + 1]
+        _neck_db = float(_mid_db.max()) if len(_mid_db) else None
+        neckline_break = _neck_db is not None and cmp > _neck_db
         vol_confirm = float(vol.iloc[-1]) > vol_avg * 1.2
-        if depth_ok and price_ok and vol_confirm:
+        if depth_ok and neckline_break and vol_confirm:
             patterns.append("📉 Double Bottom")
 
     if len(peaks) >= 2:
         p1_idx, p2_idx = peaks[-2], peaks[-1]
         v1, v2 = c_vals[p1_idx], c_vals[p2_idx]
-        if abs(v1 - v2) / (v1 + 1e-8) < 0.08 and v2 * 0.88 < cmp < v2 * 0.99:
+        equal_peaks = abs(v1 - v2) / (v1 + 1e-8) < 0.08
+        # Neckline = lowest close BETWEEN the two peaks. Confirm only on a break
+        # BELOW it, and require volume (the other patterns already gate volume).
+        _mid_dt = c_vals[p1_idx:p2_idx + 1]
+        _neck_dt = float(_mid_dt.min()) if len(_mid_dt) else None
+        neckline_break = _neck_dt is not None and cmp < _neck_dt
+        vol_confirm = float(vol.iloc[-1]) > vol_avg * 1.2
+        if equal_peaks and neckline_break and vol_confirm:
             patterns.append("📈 Double Top")
 
     if len(peaks) >= 3 and len(troughs) >= 2:
@@ -502,6 +521,20 @@ def detect_candlesticks(open_p, high, low, close):
     candles = []
     if len(close) < 5:
         return candles
+ 
+    # Prior trend (5 bars before the signal candle) — a hammer only means
+    # "bullish reversal" after a DOWN move; the identical shape at the top of an
+    # UP move is a bearish hanging man. Same for shooting star vs inverted hammer.
+    def _prior_trend():
+        if len(close) < 7:
+            return "flat"
+        _now  = float(close.iloc[-2])
+        _past = float(close.iloc[-7])
+        _chg  = (_now - _past) / (_past + 1e-8)
+        if _chg > 0.03:  return "up"
+        if _chg < -0.03: return "down"
+        return "flat"
+    _trend_before = _prior_trend()
 
     def _candle(i):
         o, h, l, c = float(open_p.iloc[i]), float(high.iloc[i]), float(low.iloc[i]), float(close.iloc[i])
