@@ -37,6 +37,13 @@ try:
 except Exception:
     _vp = None
     _VP_AVAILABLE = False
+ 
+try:
+    import chart_patterns_v2 as _cp2
+    _CP2_AVAILABLE = True
+except Exception:
+    _cp2 = None
+    _CP2_AVAILABLE = False
 
 # ==============================================================================
 # 1. MULTI-SOURCE NSE UNIVERSE LOADER
@@ -969,6 +976,18 @@ def _compute_indicators_raw(symbol, period="1y", prefetched_df=None):
     fib_618 = round(fib_h - fib_d * 0.618, 2)
 
     chart_patterns = detect_price_patterns(high, low, close, vol, vol_avg)
+    # ── Phase-2 patterns (Inside Bar / NR7 / Triangles / Pocket Pivot) ───────
+    _cp2_res = {}
+    if _CP2_AVAILABLE and len(close) >= 30:
+        try:
+            _cp2_res = _cp2.detect_all(open_p, high, low, close, vol, atr,
+                                       ema10=ema9, ema50=ema50)
+            # merge the new tags into the displayed pattern list
+            for _t in _cp2_res.get("v2_tags", []):
+                if _t not in chart_patterns:
+                    chart_patterns.append(_t)
+        except Exception:
+            _cp2_res = {}
     candlesticks   = detect_candlesticks(open_p, high, low, close)
 
     # ── FIX 5: Supertrend — numpy loop, Wilder ATR(10), multiplier 2.5 ───────
@@ -1134,6 +1153,14 @@ def _compute_indicators_raw(symbol, period="1y", prefetched_df=None):
         "vp_above_value": vprofile.get("above_value_area") if vprofile else None,
         "vcp_vp_backed": vcp.get("vp_backed", False),
         "vcp_vp_note": vcp.get("vp_note", ""),
+        # Phase-2 patterns
+        "inside_bar": _cp2_res.get("inside_bar", False),
+        "nr7": _cp2_res.get("nr7", False),
+        "ascending_triangle": _cp2_res.get("ascending_triangle", False),
+        "descending_triangle": _cp2_res.get("descending_triangle", False),
+        "pocket_pivot": _cp2_res.get("pocket_pivot", False),
+        "triangle_level": _cp2_res.get("triangle_level"),
+        "v2_tags": _cp2_res.get("v2_tags", []),
         # Trap signals
         "bull_trap": traps["bull_trap"],
         "bear_trap": traps["bear_trap"],
