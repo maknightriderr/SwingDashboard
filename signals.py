@@ -1214,13 +1214,20 @@ def _calc_risk_params(cmp, atr, resistance, buy_at=None, pct=None,
       Target = cmp (exit now), SL = re-entry zone
     """
     if action == "PICK":
-        stop_loss = round(cmp - 1.25 * atr, 2)
-        target    = round(max(cmp * 1.10, cmp + 2.5 * atr), 2)
+        stop_loss = round(cmp - 1.75 * atr, 2)          # was 1.25 — too tight
+        target    = round(max(cmp * 1.10, cmp + 3.0 * atr), 2)
     elif action in ("HOLD", "AVERAGE", "WATCH"):
         stop_loss = round(cmp - 2.0 * atr, 2)
         if supertrend_bullish and supertrend_val and supertrend_val > stop_loss:
-            stop_loss = round(supertrend_val, 2)
-        target = round(max(resistance, cmp + 2.5 * atr), 2)
+            stop_loss = round(supertrend_val, 2)         # stop still trails UP
+        # Target ANCHORED to entry price → it no longer chases new highs, so a
+        # winner can actually reach its target instead of the goalpost running
+        # away. Exit is then driven by the fixed target OR the trailing stop.
+        # Falls back to the old current-price formula if entry price is unknown.
+        if buy_at and buy_at > 0:
+            target = round(max(buy_at * 1.12, buy_at + 3.0 * atr), 2)
+        else:
+            target = round(max(resistance, cmp + 2.5 * atr), 2)
     else:   # SELL
         stop_loss = round(cmp - 2.0 * atr, 2)
         target    = round(cmp, 2)
@@ -1366,7 +1373,7 @@ def generate_signals(trades_df):
             avg_price   = cmp
             new_avg     = round((buy_at * qty + cmp * qty) / (qty + qty), 2)
             target, stop_loss, rr = _calc_risk_params(
-                cmp, atr, resistance,
+                cmp, atr, resistance, buy_at=buy_at,
                 supertrend_val=st_val, supertrend_bullish=st_bullish, action="AVERAGE")
             new_sl = stop_loss
         elif hold:
@@ -1374,7 +1381,7 @@ def generate_signals(trades_df):
             reason_base = hold[0]
             strength    = 55
             target, stop_loss, rr = _calc_risk_params(
-                cmp, atr, resistance,
+                cmp, atr, resistance, buy_at=buy_at,
                 supertrend_val=st_val, supertrend_bullish=st_bullish, action="HOLD")
             avg_price = new_avg = new_sl = None
         else:
@@ -1382,7 +1389,7 @@ def generate_signals(trades_df):
             reason_base = f"CMP ₹{cmp} | RSI {rsi if rsi else '—'} | {pct:+.1f}%"
             strength    = 30
             target, stop_loss, rr = _calc_risk_params(
-                cmp, atr, resistance,
+                cmp, atr, resistance, buy_at=buy_at,
                 supertrend_val=st_val, supertrend_bullish=st_bullish, action="WATCH")
             avg_price = new_avg = new_sl = None
 
