@@ -27,7 +27,16 @@ import numpy as np
 import requests
 import time
 import xml.etree.ElementTree as ET
-from datetime import datetime
+from datetime import datetime, timezone, timedelta
+
+# All display timestamps use IST (UTC+5:30) — Streamlit Cloud servers run in
+# UTC, so datetime.now() alone showed UTC time (e.g. "12:50" when it was
+# actually 18:20 IST), which is confusing for an NSE-only dashboard.
+_IST = timezone(timedelta(hours=5, minutes=30))
+
+
+def _now_ist():
+    return datetime.now(_IST)
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from scipy.signal import find_peaks
  
@@ -1632,7 +1641,7 @@ def send_telegram(bot_token, chat_id, message):
 
 
 def build_telegram_message(signals, sector_df, picks=None):
-    now = datetime.now().strftime("%d %b %Y %H:%M")
+    now = _now_ist().strftime("%d %b %Y %H:%M")
     lines = [f"<b>📈 Swing Dashboard</b>  <i>{now}</i>\n"]
     market = get_market_regime()
     lines.append(f"🌐 <b>Market:</b> {market['regime']} | Nifty ₹{market.get('nifty_close', '—')} | RSI {market.get('nifty_rsi', '—')}")
@@ -1752,7 +1761,7 @@ def generate_market_scanner():
         rs_str = round(float(_rs_ratio), 2) if _rs_ratio is not None else None
 
         results.append({
-            "Generated": datetime.now().strftime("%d %b %H:%M"), "Sector": sector,
+            "Generated": _now_ist().strftime("%d %b %H:%M"), "Sector": sector,
             "Stock": symbol, "CMP": float(cmp), "Entry": float(cmp),
             "Target": float(tgt), "SL": float(sl), "Support": float(ind["support"]),
             "Resist": float(ind["resistance"]), "Signal": signal, "Score": score,
@@ -1767,7 +1776,7 @@ def generate_market_scanner():
     LAST_SCANNER_DIAGNOSTICS.update({
         "total": len(all_symbols), "fetch_failed": _fetch_failed,
         "illiquid": _illiquid, "passed": len(results),
-        "timestamp": datetime.now().strftime("%d %b %Y %H:%M"),
+        "timestamp": _now_ist().strftime("%d %b %Y %H:%M"),
     })
     if not results:
         return pd.DataFrame()
@@ -2390,7 +2399,7 @@ def scan_for_traps(min_confidence=55):
         "liquid":      liquid_count,
         "bull_count":  len(bull_traps),
         "bear_count":  len(bear_traps),
-        "timestamp":   datetime.now().strftime("%d %b %Y %H:%M"),
+        "timestamp":   _now_ist().strftime("%d %b %Y %H:%M"),
     }
 
 
@@ -2588,7 +2597,7 @@ def scan_corporate_actions_universe(min_dividend=0.0):
         "recent_dividends":     recent_dividends,
         "recent_splits":        recent_splits,
         "scanned":              len(all_symbols),
-        "timestamp":            datetime.now().strftime("%d %b %Y %H:%M"),
+        "timestamp":            _now_ist().strftime("%d %b %Y %H:%M"),
     }
 
 
@@ -3293,7 +3302,7 @@ def scan_for_smc_setups(min_quality="B", action_filter="All"):
         "buy_setups": buy_setups, "sell_setups": sell_setups,
         "scanned": len(all_symbols), "liquid": liquid,
         "buy_count": len(buy_setups), "sell_count": len(sell_setups),
-        "timestamp": datetime.now().strftime("%d %b %Y %H:%M"),
+        "timestamp": _now_ist().strftime("%d %b %Y %H:%M"),
     }
 
 def scan_for_vcp(min_quality="B", ready_only=False):
@@ -3409,7 +3418,7 @@ def scan_for_vcp(min_quality="B", ready_only=False):
         "vcp_setups": vcp_setups,
         "scanned": len(all_symbols), "liquid": liquid,
         "count": len(vcp_setups), "ready_count": ready_count,
-        "timestamp": datetime.now().strftime("%d %b %Y %H:%M"),
+        "timestamp": _now_ist().strftime("%d %b %Y %H:%M"),
     }
 
 def scan_relative_strength(top_n=None, min_rating=0):
@@ -3435,7 +3444,7 @@ def scan_relative_strength(top_n=None, min_rating=0):
     bench = _get_nifty_benchmark()
     if bench is None:
         return {"leaders": [], "scanned": 0, "liquid": 0, "count": 0,
-                "nifty_returns": {}, "timestamp": datetime.now().strftime("%d %b %Y %H:%M"),
+                "nifty_returns": {}, "timestamp": _now_ist().strftime("%d %b %Y %H:%M"),
                 "error": "Could not fetch Nifty benchmark data"}
 
     all_symbols = []
@@ -3485,5 +3494,5 @@ def scan_relative_strength(top_n=None, min_rating=0):
         "leaders": rows,
         "scanned": len(all_symbols), "liquid": liquid, "count": len(rows),
         "nifty_returns": bench,
-        "timestamp": datetime.now().strftime("%d %b %Y %H:%M"),
+        "timestamp": _now_ist().strftime("%d %b %Y %H:%M"),
     }
