@@ -91,6 +91,39 @@ except Exception:
 # market_regime is global (same for all users) — safe to cache across sessions.
 # TTL 600s = 10 min. This renders the header banner in <100ms on reruns.
 @st.cache_data(ttl=600, show_spinner=False)
+def _scan_age_warning(timestamp_str):
+    """(is_stale, human_age) for a scan timestamp like '08 Jul 2026 19:42'.
+    Scans are cached in session_state and never expire on their own — so a tab
+    left open for days would keep showing old prices with no indication. Older
+    than 6 hours (one trading session) counts as stale."""
+    if not timestamp_str:
+        return False, None
+    try:
+        _ts = datetime.strptime(str(timestamp_str), "%d %b %Y %H:%M")
+    except Exception:
+        return False, None
+    _age = datetime.now() - _ts
+    _hours = _age.total_seconds() / 3600
+    if _hours < 1:
+        _human = f"{int(_age.total_seconds() // 60)} min ago"
+    elif _hours < 24:
+        _human = f"{int(_hours)} hr ago"
+    else:
+        _human = f"{_age.days} day{'s' if _age.days != 1 else ''} ago"
+    return _hours >= 6, _human
+
+
+def _stale_banner(timestamp_str, rescan_label):
+    """Show a prominent warning if a cached scan is stale (prices will be old)."""
+    _stale, _age = _scan_age_warning(timestamp_str)
+    if _stale:
+        st.warning(
+            f"⚠️ These results are from **{_age}** — prices and levels shown are "
+            f"from that scan, not today. Click **{rescan_label}** to refresh.",
+            icon="🕒")
+    return _stale
+
+
 def _cached_market_regime():
     return get_market_regime()
 
@@ -3670,6 +3703,8 @@ elif _page == 'scanner2':
 
 
         _r2 = st.session_state.scan2_cache
+        if _r2 is not None:
+            _stale_banner(_r2.get("timestamp"), "🚀 Run Scan 2.0")
         if _r2 is None:
             st.info("💡 Click **Run Scan 2.0**. First run fetches history "
                     "(shares the same cache as your other scanners).")
@@ -3998,6 +4033,7 @@ elif _page == 'traps':
     # ── Summary banner ─────────────────────────────────────────────────────────
     trap_data = st.session_state.trap_scan_cache
     if trap_data:
+        _stale_banner(trap_data.get("timestamp"), "🪤 Scan Traps")
         bull_n = trap_data.get("bull_count", 0)
         bear_n = trap_data.get("bear_count", 0)
         scanned = trap_data.get("scanned", 0)
@@ -5857,6 +5893,8 @@ elif _page == 'vcp':
                          icon="📐")
 
         vs = st.session_state.get("vcp_scan_cache")
+        if vs is not None:
+            _stale_banner(vs.get("timestamp"), "📐 Scan VCP")
         if vs is None:
             st.info("💡 Click **📐 Scan VCP** to sweep the universe for coiling bases.")
         elif not vs.get("vcp_setups"):
