@@ -2328,9 +2328,24 @@ def scan_for_traps(min_confidence=55):
 
         # ── Bear Trap alert ───────────────────────────────────────────────────
         if ind.get("bear_trap") and ind.get("bear_trap_conf", 0) >= min_confidence:
-            tgt, sl, rr = _calc_risk_params(
-                cmp, atr, ind["resistance"], action="PICK"
-            )
+            # STRUCTURAL stop: the trap low (recent 20d low) is the real
+            # invalidation for a reclaimed false breakdown — tighter and more
+            # meaningful than a generic ATR stop. Target = 2.5R measured move or
+            # the range resistance, whichever is higher. Falls back to the
+            # generic PICK params if the trap low is missing or gives >8% risk.
+            _entry     = round(cmp, 2)
+            _trap_low  = ind.get("support")
+            _struct_sl = round(_trap_low - 0.25 * atr, 2) if _trap_low else None
+            if (_struct_sl is not None and _struct_sl < _entry
+                    and (_entry - _struct_sl) / _entry * 100 <= 8.0):
+                sl    = _struct_sl
+                _risk = _entry - sl
+                tgt   = round(max(ind["resistance"], _entry + 2.5 * _risk), 2)
+                rr    = round((tgt - _entry) / _risk, 2) if _risk > 0.01 else None
+            else:
+                tgt, sl, rr = _calc_risk_params(
+                    cmp, atr, ind["resistance"], action="PICK"
+                )
             bear_traps.append({
                 "stock":              symbol,
                 "sector":             sector,
