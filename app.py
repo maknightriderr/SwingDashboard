@@ -95,14 +95,20 @@ def _scan_age_warning(timestamp_str):
     """(is_stale, human_age) for a scan timestamp like '08 Jul 2026 19:42'.
     Scans are cached in session_state and never expire on their own — so a tab
     left open for days would keep showing old prices with no indication. Older
-    than 6 hours (one trading session) counts as stale."""
+    than 6 hours (one trading session) counts as stale.
+
+    NOTE: scan timestamps are generated in IST (signals.py uses _now_ist()),
+    but Streamlit Cloud servers run in UTC — so this must compare against IST
+    "now" too, or the age would be off by 5:30 (negative, even)."""
     if not timestamp_str:
         return False, None
     try:
         _ts = datetime.strptime(str(timestamp_str), "%d %b %Y %H:%M")
     except Exception:
         return False, None
-    _age = datetime.now() - _ts
+    from datetime import timezone, timedelta
+    _ist_now = datetime.now(timezone(timedelta(hours=5, minutes=30))).replace(tzinfo=None)
+    _age = _ist_now - _ts
     _hours = _age.total_seconds() / 3600
     if _hours < 1:
         _human = f"{int(_age.total_seconds() // 60)} min ago"
