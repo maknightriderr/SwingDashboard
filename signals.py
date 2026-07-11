@@ -1113,6 +1113,10 @@ def _compute_indicators_raw(symbol, period="1y", prefetched_df=None):
     return {
         "symbol": symbol, "cmp": round(cmp, 2), "rsi": rsi,
         "limited_history": _limited_history, "bars": len(df),
+        # The DATE of the last bar actually used — exposes stale/lagging data
+        # (if this isn't the last trading day, the source returned old data).
+        "last_bar_date": (str(df.index[-1].date())
+                          if hasattr(df.index[-1], "date") else None),
 
         # EMAs — v12 adds slope flags + ema200
         "ema9": round(ema9, 2), "ema21": round(ema21, 2), "ema50": round(ema50, 2),
@@ -2328,24 +2332,9 @@ def scan_for_traps(min_confidence=55):
 
         # ── Bear Trap alert ───────────────────────────────────────────────────
         if ind.get("bear_trap") and ind.get("bear_trap_conf", 0) >= min_confidence:
-            # STRUCTURAL stop: the trap low (recent 20d low) is the real
-            # invalidation for a reclaimed false breakdown — tighter and more
-            # meaningful than a generic ATR stop. Target = 2.5R measured move or
-            # the range resistance, whichever is higher. Falls back to the
-            # generic PICK params if the trap low is missing or gives >8% risk.
-            _entry     = round(cmp, 2)
-            _trap_low  = ind.get("support")
-            _struct_sl = round(_trap_low - 0.25 * atr, 2) if _trap_low else None
-            if (_struct_sl is not None and _struct_sl < _entry
-                    and (_entry - _struct_sl) / _entry * 100 <= 8.0):
-                sl    = _struct_sl
-                _risk = _entry - sl
-                tgt   = round(max(ind["resistance"], _entry + 2.5 * _risk), 2)
-                rr    = round((tgt - _entry) / _risk, 2) if _risk > 0.01 else None
-            else:
-                tgt, sl, rr = _calc_risk_params(
-                    cmp, atr, ind["resistance"], action="PICK"
-                )
+            tgt, sl, rr = _calc_risk_params(
+                cmp, atr, ind["resistance"], action="PICK"
+            )
             bear_traps.append({
                 "stock":              symbol,
                 "sector":             sector,
@@ -3353,6 +3342,7 @@ def scan_for_vcp(min_quality="B", ready_only=False):
             "entry": entry, "target": target, "stop_loss": stop, "risk_reward": rr,
             "vp_backed": ind.get("vcp_vp_backed", False),
             "vp_note": ind.get("vcp_vp_note", ""),
+            "data_date": ind.get("last_bar_date"),
         })
 
     def _sort_key(s):
