@@ -1113,10 +1113,6 @@ def _compute_indicators_raw(symbol, period="1y", prefetched_df=None):
     return {
         "symbol": symbol, "cmp": round(cmp, 2), "rsi": rsi,
         "limited_history": _limited_history, "bars": len(df),
-        # The DATE of the last bar actually used — exposes stale/lagging data
-        # (if this isn't the last trading day, the source returned old data).
-        "last_bar_date": (str(df.index[-1].date())
-                          if hasattr(df.index[-1], "date") else None),
 
         # EMAs — v12 adds slope flags + ema200
         "ema9": round(ema9, 2), "ema21": round(ema21, 2), "ema50": round(ema50, 2),
@@ -1179,6 +1175,10 @@ def _compute_indicators_raw(symbol, period="1y", prefetched_df=None):
         "vcp_pivot": vcp.get("pivot"),
         "vcp_pivot_dist": vcp.get("pivot_distance_pct"),
         "vcp_contractions": vcp.get("contractions", []),
+        "vcp_extended": vcp.get("extended", False),
+        "vcp_extended_pct": vcp.get("extended_pct"),
+        "vcp_last_contraction_low": vcp.get("last_contraction_low"),
+        "vcp_base_depth_pct": vcp.get("base_depth_pct"),
         "vcp_detail": vcp.get("detail", ""),
         # Relative Strength vs Nifty
         "rs_ratio": rs.get("rs_ratio") if rs else None,
@@ -1971,18 +1971,42 @@ def detect_vcp(close, high, low, vol, atr, lookback=80):
     volume_dryup = right_vol < left_vol * 0.85 if left_vol > 0 else False
     out["volume_dryup"] = volume_dryup
 
-    # 6. Pivot = highest high of base; distance from current price
-    pivot = float(seg_h.max())
+    # 6. Pivot = the base's high formed BEFORE the current move.
+    #    BUG FIX: this used to be seg_h.max(), which INCLUDES today's bar — so the
+    #    pivot chased the price and could never sit above it. A stock that had
+    #    already broken out 18% still reported "0.8% below pivot / PIVOT-READY".
+    #    A real VCP pivot is a FIXED level (the last confirmed swing high, which
+    #    by definition has 2 bars after it, so it can't be today's bar).
+    if swing_hi_idx:
+        pivot = float(max(seg_h[i] for i in swing_hi_idx))
+    else:
+        pivot = float(seg_h[:-3].max()) if m > 3 else float(seg_h.max())
     pivot_distance_pct = (pivot - cmp) / cmp * 100.0 if cmp > 0 else 999
+    # How far has price ALREADY run above the pivot? (>3% = extended, missed entry)
+    extended_pct = ((cmp - pivot) / pivot * 100.0) if pivot > 0 else 0.0
     out["pivot"] = round(pivot, 2)
     out["pivot_distance_pct"] = round(pivot_distance_pct, 2)
+    out["extended_pct"] = round(extended_pct, 2)
+    out["extended"] = bool(extended_pct > 3.0)
     out["base_length"] = m
+    # Structural stop reference: the low of the FINAL contraction (the real
+    # invalidation for a VCP — if it breaks, the base has failed).
+    if swing_lo_idx:
+        out["last_contraction_low"] = round(float(seg_l[swing_lo_idx[-1]]), 2)
+    else:
+        out["last_contraction_low"] = None
+    # Base depth = the full base's high-to-low range — the honest "measured move"
+    out["base_depth_pct"] = round((seg_hi - seg_lo) / seg_lo * 100.0, 2) if seg_lo > 0 else None
 
     is_vcp = bool(tightening and len(contractions) >= 2 and pos_in_range >= 0.55)
     out["is_vcp"] = is_vcp
 
     if is_vcp:
-        vcp_ready = bool(final_tight and 0 <= pivot_distance_pct <= 6.0)
+        # Ready = tight AND still near/below the pivot AND NOT already extended.
+        # (Previously an already-broken-out stock could show as PIVOT-READY.)
+        vcp_ready = bool(final_tight
+                         and 0 <= pivot_distance_pct <= 6.0
+                         and not out.get("extended", False))
         out["vcp_ready"] = vcp_ready
         score = 0
         if len(contractions) >= 3: score += 1
@@ -3328,10 +3352,40 @@ def scan_for_vcp(min_quality="B", ready_only=False):
         # Entry just above pivot; stop below last contraction low (~1.5 ATR);
         # target a measured move (pivot + the first/biggest contraction depth).
         entry = round(pivot * 1.002, 2) if pivot else cmp
-        stop  = round(entry - 1.5 * atr, 2) if atr else (round(entry * 0.93, 2) if entry else None)
         contractions = ind.get("vcp_contractions", [])
-        move_pct = (max(contractions) / 100.0) if contractions else 0.10
-        target = round(entry * (1 + max(move_pct, 0.08)), 2) if entry else None
+
+        # STOP — structural: just under the FINAL contraction's low (the real
+        # invalidation for a VCP). Previously a flat 1.5*ATR, which gave a
+        # coiled -0.9% base and a loose -10.5% base the IDENTICAL stop and
+        # ignored the base structure entirely. ATR is the fallback / safety cap.
+        _lcl = ind.get("vcp_last_contraction_low")
+        _atr_stop = round(entry - 1.5 * atr, 2) if atr else None
+        if _lcl and entry and _lcl < entry:
+            _struct_stop = round(_lcl - 0.25 * atr, 2) if atr else round(_lcl * 0.99, 2)
+            # NOISE FLOOR: never place the stop closer than 1 ATR — ordinary daily
+            # noise would tag it regardless of how tight the base looks.
+            if atr:
+                _noise_floor = round(entry - 1.0 * atr, 2)
+                _struct_stop = min(_struct_stop, _noise_floor)
+            # reject an absurdly wide structural stop (>8% risk) — fall back to ATR
+            if (entry - _struct_stop) / entry * 100.0 <= 8.0:
+                stop = _struct_stop
+            else:
+                stop = _atr_stop
+        else:
+            stop = _atr_stop
+        if stop is None and entry:
+            stop = round(entry * 0.93, 2)
+
+        # TARGET — measured move from the BASE DEPTH (high-to-low of the whole
+        # base), the standard read. Previously it used max(contractions), i.e.
+        # the DEEPEST/OLDEST pullback, so two identical tight bases got wildly
+        # different targets purely because of how deep the first leg happened to
+        # be. Capped so R:R stays believable.
+        _base_depth = ind.get("vcp_base_depth_pct")
+        _move_pct = (_base_depth / 100.0) if _base_depth else 0.10
+        _move_pct = max(0.08, min(_move_pct, 0.30))     # sane 8%-30% band
+        target = round(entry * (1 + _move_pct), 2) if entry else None
         rr = round((target - entry) / (entry - stop), 2) if (entry and stop and entry > stop) else None
 
         vcp_setups.append({
@@ -3342,7 +3396,6 @@ def scan_for_vcp(min_quality="B", ready_only=False):
             "entry": entry, "target": target, "stop_loss": stop, "risk_reward": rr,
             "vp_backed": ind.get("vcp_vp_backed", False),
             "vp_note": ind.get("vcp_vp_note", ""),
-            "data_date": ind.get("last_bar_date"),
         })
 
     def _sort_key(s):
