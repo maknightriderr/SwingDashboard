@@ -1,36 +1,16 @@
-# ─────────────────────────────────────────────────────────────────────────────
-# PINNED to stop the Segmentation fault.
-#
-# WHY: numpy and scipy were previously unpinned. When the platform re-resolved
-# dependencies it pulled numpy 2.x, which BROKE binary (ABI) compatibility with
-# packages still compiled against numpy 1.x. That mismatch crashes at the C
-# level — which is exactly what a "Segmentation fault" is (not a Python error,
-# so there's no traceback).
-#
-# The fix is to hold numpy on the 1.26 line and pin scipy/pandas to versions
-# built against it. Do NOT unpin numpy without also checking scipy/pandas.
-# ─────────────────────────────────────────────────────────────────────────────
-
+# Pinned to avoid a numpy 2.x ABI break (numpy 2.x segfaults with packages
+# still built against numpy 1.x). Do not unpin numpy without also checking
+# scipy and pandas compatibility.
 streamlit>=1.40
-
-# ── Core numeric stack — PINNED TOGETHER (this is the segfault fix) ──────────
 numpy>=1.26,<2.0
 scipy>=1.11,<1.14
 pandas>=2.0,<2.3
-
-# ── Data ────────────────────────────────────────────────────────────────────
 yfinance>=0.2.50
 requests
-
-# ── UI ──────────────────────────────────────────────────────────────────────
 plotly
 streamlit-cookies-controller
 streamlit-autorefresh
-
-# ── Database ────────────────────────────────────────────────────────────────
 psycopg2-binary
-
-# ── Angel One SmartAPI ──────────────────────────────────────────────────────
 smartapi-python
 pyotp
 logzero
