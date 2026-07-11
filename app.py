@@ -1110,6 +1110,15 @@ html, body, .stApp, [data-testid="stAppViewContainer"], [data-testid="stApp"] {{
     -webkit-background-clip: text; -webkit-text-fill-color: transparent;
 }}
 .dash-title span.hl {{ color: var(--accent); -webkit-text-fill-color: var(--accent); }}
+/* The title uses background-clip:text + transparent fill for its gradient. That
+   works for letters but BREAKS emoji: an emoji is a colour bitmap, not a glyph
+   the gradient can show through, so it renders as a solid dark box. This class
+   opts the emoji out of the clip so it paints normally. */
+.dash-title .ttl-icon {{
+    -webkit-text-fill-color: initial; -webkit-background-clip: initial;
+    background: none; color: initial;
+    font-family: "Apple Color Emoji","Segoe UI Emoji","Noto Color Emoji",sans-serif;
+}}
 
 /* ═══ KPI cards — glass + top shimmer line + lift on hover ═══ */
 .cards {{ display: flex; gap: 1.2rem; flex-wrap: wrap; margin-bottom: 2.5rem; }}
@@ -2598,7 +2607,7 @@ with st.sidebar:
 # ── Header ─────────────────────────────────────────────────────────────────────
 st.markdown(
     '<div class="dash-title">'
-    '<div class="dash-title-text">📈 Quantitative <span class="hl">Swing Dashboard</span></div>'
+    '<div class="dash-title-text"><span class="ttl-icon">📈</span> Quantitative <span class="hl">Swing Dashboard</span></div>'
     '<span class="refresh-badge">⚡ SIGNALS LIVE · 🔄 SECTOR LIVE</span>'
     '</div>',
     unsafe_allow_html=True)
