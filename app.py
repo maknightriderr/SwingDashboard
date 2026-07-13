@@ -2666,6 +2666,59 @@ if not _idx_items:
         'refreshes automatically)</span>'
     )
 
+# ── Regime intelligence strip (VIX band · trend-vs-chop · participation · age) ──
+# The base regime only told you the direction. These add: how much RISK to take
+# (VIX), whether breakouts will even WORK (ADX chop), whether the move is BROAD,
+# and how OLD the regime is.
+_vol   = market.get("volatility")
+_tstr  = market.get("trend_strength")
+_div   = market.get("divergence")
+_age   = market.get("age")
+_pbook = market.get("playbook") or {}
+
+_chips = []
+if _vol:
+    _chips.append((f"VIX {_vol['vix']} · {_vol['band']}", _vol["color"],
+                   _vol["risk_note"]))
+if _tstr:
+    _chips.append((f"ADX {_tstr['adx']} · {_tstr['state']}", _tstr["color"],
+                   _tstr["note"]))
+if _div:
+    _chips.append((_div["state"], _div["color"], _div["note"]))
+if _age:
+    _chips.append((f"{_age['days']}d · {_age['phase']}", "#6b7280", _age["note"]))
+
+if _chips:
+    _chip_html = "".join(
+        f'<span title="{_t}" style="background:{_c}18;color:{_c};'
+        f'border:1px solid {_c}44;padding:.2rem .6rem;border-radius:6px;'
+        f'font-size:.72rem;font-weight:700;margin-right:.4rem;'
+        f'display:inline-block;margin-bottom:.3rem">{_lbl}</span>'
+        for _lbl, _c, _t in _chips)
+    st.markdown(f'<div style="margin:.4rem 0 .2rem">{_chip_html}</div>',
+                unsafe_allow_html=True)
+
+    _warns = _pbook.get("warnings") or []
+    _acts  = _pbook.get("actions") or []
+    with st.expander(f"🧭 Regime playbook — what this tape means for your trades"
+                     f"{'  ⚠️ ' + str(len(_warns)) + ' warning(s)' if _warns else ''}"):
+        if _warns:
+            for _w in _warns:
+                st.warning(_w, icon="⚠️")
+        if _acts:
+            st.markdown("**What to do:**")
+            for _a in _acts:
+                st.markdown(f"- {_a}")
+        if _div:
+            _c1, _c2, _c3 = st.columns(3)
+            _c1.metric("Nifty (1m)", f"{_div['nifty_ret']:+.1f}%")
+            if _div.get("midcap_ret") is not None:
+                _c2.metric("Midcap (1m)", f"{_div['midcap_ret']:+.1f}%")
+            if _div.get("smallcap_ret") is not None:
+                _c3.metric("Smallcap (1m)", f"{_div['smallcap_ret']:+.1f}%")
+            st.caption("A rally the broader market won't join is a narrow, "
+                       "fragile rally.")
+
 sup_str = f"₹{market.get('support'):,.0f}" if market.get("support") else "—"
 res_str = f"₹{market.get('resistance'):,.0f}" if market.get("resistance") else "—"
 
