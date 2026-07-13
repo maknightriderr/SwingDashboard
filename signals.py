@@ -54,6 +54,13 @@ except Exception:
     _cp2 = None
     _CP2_AVAILABLE = False
 
+try:
+    import regime_v2 as _rv2
+    _RV2_AVAILABLE = True
+except Exception:
+    _rv2 = None
+    _RV2_AVAILABLE = False
+
 # ==============================================================================
 # 1. MULTI-SOURCE NSE UNIVERSE LOADER
 # ==============================================================================
@@ -836,6 +843,17 @@ def get_market_regime():
         "support": support, "resistance": resistance, "confidence": conf,
         "indices_ok": len(indices_data) > 0,
     }
+
+    # India VIX, Midcap, Smallcap and Bank Nifty are ALREADY fetched above into
+    # bulk_data — but the base regime only ever read the Nifty. Put that data to
+    # work: volatility band, trend-vs-chop (ADX), index divergence, regime age
+    # and a concrete playbook. Degrades to the plain regime if the module is
+    # absent or any sub-read fails.
+    if _RV2_AVAILABLE:
+        try:
+            result = _rv2.enrich_regime(result, bulk_data)
+        except Exception:
+            pass
     # Only cache a GOOD result (with at least some index data). If everything
     # failed (transient Yahoo rate-limit), don't poison the 10-min cache with
     # an empty result — let the next call retry instead.
