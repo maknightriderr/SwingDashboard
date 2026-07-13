@@ -130,6 +130,21 @@ def _stale_banner(timestamp_str, rescan_label):
     return _stale
 
 
+try:
+    import market_news as _mnews
+    _MNEWS_AVAILABLE = True
+except Exception:
+    _mnews = None
+    _MNEWS_AVAILABLE = False
+
+try:
+    import news_analysis as _nana
+    _NANA_AVAILABLE = True
+except Exception:
+    _nana = None
+    _NANA_AVAILABLE = False
+
+
 def _cached_market_regime():
     return get_market_regime()
 
@@ -2403,6 +2418,7 @@ with st.sidebar:
             ("🌌 Universe Scanner",  "scanner"),
             ("🚀 Scanner 2.0",       "scanner2"),
             ("📊 Market Breadth",    "breadth"),
+            ("📰 Market News",       "news"),
             ("🔬 Custom Screener",   "screener"),
             ("📅 Corporate Actions", "corp_actions"),
             ("📆 Earnings Calendar", "earnings"),
@@ -5537,6 +5553,207 @@ elif _page == 'journal':
                     st.rerun()
 
 # ── Market Breadth ───────────────────────────────────────────────────────────
+elif _page == 'news':
+    st.markdown('<div class="sec">📰 Market News — Live Indian Market Feed</div>',
+                unsafe_allow_html=True)
+    st.caption("Multi-source feed across the whole market — not just your holdings. "
+               "Primary publishers (Business Standard, Livemint, Economic Times, "
+               "Moneycontrol), de-duplicated and newest-first.")
+
+    if not _MNEWS_AVAILABLE:
+        st.warning("`market_news.py` isn't in the repo yet — upload it to enable "
+                   "the market-wide news feed.", icon="⚠️")
+    else:
+        _c1, _c2 = st.columns([3, 1])
+        with _c1:
+            _cats = st.multiselect(
+                "Categories",
+                _mnews.CATEGORIES,
+                default=["Markets", "Results", "Economy", "IPO"],
+                help="Markets = indices/stocks · Results = earnings · "
+                     "Economy = RBI/policy/macro · Global = overnight cues")
+        with _c2:
+            st.write("")
+            _refresh = st.button("🔄 Refresh", use_container_width=True)
+
+        if _refresh:
+            _mnews._CACHE.update({"ts": 0, "items": None, "key": None})
+
+        _f1, _f2 = st.columns(2)
+        with _f1:
+            _sent_filter = st.radio(
+                "Sentiment", ["All", "🟢 Bullish only", "🔴 Bearish only"],
+                horizontal=True, label_visibility="collapsed")
+        with _f2:
+            _stock_filter = st.text_input(
+                "Filter by stock", placeholder="Filter by stock symbol (e.g. RELIANCE)",
+                label_visibility="collapsed").strip().upper()
+
+        with st.spinner("Fetching latest market news…"):
+            try:
+                _news = _mnews.fetch_market_news(
+                    categories=_cats or None, max_total=60)
+            except Exception as _e:
+                _news = []
+                st.error(f"News fetch failed: {_e}")
+
+        # Tag each story with the stocks it mentions + a finance sentiment score
+        if _news and _NANA_AVAILABLE:
+            try:
+                _nana.enrich_news(_news)
+                _summary = _nana.sentiment_summary(_news)
+            except Exception:
+                _summary = None
+        else:
+            _summary = None
+
+        # Apply user filters (summary above is computed on the UNFILTERED set so
+        # the market-wide gauge stays honest)
+        if _news and _sent_filter != "All":
+            _want = "Bullish" if "Bullish" in _sent_filter else "Bearish"
+            _news = [i for i in _news
+                     if (i.get("sentiment") or {}).get("label") == _want]
+        if _news and _stock_filter:
+            _news = [i for i in _news
+                     if _stock_filter in (i.get("stocks") or [])]
+
+        if not _news:
+            st.info("No stories match those filters (or feeds are unreachable — "
+                    "check the feed health panel below).")
+        else:
+            # ── News-flow sentiment gauge ────────────────────────────────────
+            if _summary:
+                _b, _r, _n = _summary["bullish"], _summary["bearish"], _summary["neutral"]
+                _tot = max(_summary["total"], 1)
+                _m1, _m2, _m3 = st.columns(3)
+                _m1.metric("🟢 Bullish stories", _b, f"{_b/_tot*100:.0f}%")
+                _m2.metric("🔴 Bearish stories", _r, f"{_r/_tot*100:.0f}%")
+                _m3.metric("⚪ Neutral / unclear", _n, f"{_n/_tot*100:.0f}%")
+                st.caption("⚠️ Sentiment is a keyword-based estimate, not a language "
+                           "model — it can misread negation and nuance. Use it to "
+                           "decide what to READ, not as a trade signal.")
+
+                if _summary["top_stocks"]:
+                    with st.expander("📈 Most-mentioned stocks in the news right now"):
+                        st.dataframe(pd.DataFrame([{
+                            "Stock": t["symbol"],
+                            "Mentions": t["mentions"],
+                            "Bullish": t["bull"],
+                            "Bearish": t["bear"],
+                            "Tilt": t["tilt"],
+                        } for t in _summary["top_stocks"]]),
+                            use_container_width=True, hide_index=True)
+                st.markdown("---")
+
+            st.caption(f"{len(_news)} stories · newest first")
+            _cat_colors = {
+                "Markets": "#3b82f6", "Results": "#8b5cf6", "Companies": "#06b6d4",
+                "Economy": "#f59e0b", "IPO": "#10b981", "Commodities": "#ef4444",
+                "Global": "#6b7280",
+            }
+            for _it in _news:
+                _col = _cat_colors.get(_it["category"], "#6b7280")
+                _title = _it["title"].replace("<", "&lt;").replace(">", "&gt;")
+                _link = _it.get("link") or ""
+                _title_html = (
+                    f'<a href="{_link}" target="_blank" '
+                    f'style="color:var(--text);text-decoration:none;font-weight:600">'
+                    f'{_title}</a>' if _link else
+                    f'<span style="font-weight:600">{_title}</span>')
+                # Sentiment badge — only shown when there was real evidence.
+                # A "low"/"none" confidence call is NOT displayed as a verdict,
+                # because a keyword scorer with one weak word is a coin-flip.
+                _sent = _it.get("sentiment") or {}
+                _lab, _conf = _sent.get("label"), _sent.get("confidence")
+                _sent_html = ""
+                if _lab and _lab != "Neutral" and _conf in ("high", "medium"):
+                    _sc = "#10b981" if _lab == "Bullish" else "#ef4444"
+                    _icon = "▲" if _lab == "Bullish" else "▼"
+                    _dim = "" if _conf == "high" else "opacity:.65;"
+                    _sent_html = (
+                        f'<span title="keyword estimate · {_conf} confidence · '
+                        f'{", ".join(_sent.get("hits", [])[:4])}" '
+                        f'style="background:{_sc}22;color:{_sc};{_dim}'
+                        f'padding:.1rem .45rem;border-radius:4px;font-size:.7rem;'
+                        f'font-weight:700;margin-left:.3rem">{_icon} {_lab}</span>')
+
+                # Stocks mentioned — chips
+                _chips = ""
+                for _s in (_it.get("stocks") or [])[:4]:
+                    _chips += (f'<span style="background:var(--border);'
+                               f'color:var(--text);padding:.1rem .4rem;'
+                               f'border-radius:4px;font-size:.7rem;font-weight:600;'
+                               f'margin-right:.25rem">{_s}</span>')
+                _cue_html = ""
+                for _cu in (_it.get("cues") or [])[:2]:
+                    _cue_html += (f'<span style="color:var(--muted);font-size:.7rem;'
+                                  f'margin-right:.4rem">🌐 {_cu}</span>')
+
+                _meta2 = ""
+                if _chips or _cue_html:
+                    _meta2 = (f'<div style="margin-top:.35rem">{_chips}{_cue_html}</div>')
+
+                st.markdown(
+                    f'<div style="padding:.7rem 0;border-bottom:1px solid var(--border)">'
+                    f'<span style="background:{_col}22;color:{_col};'
+                    f'padding:.1rem .5rem;border-radius:4px;font-size:.7rem;'
+                    f'font-weight:700;letter-spacing:.03em">{_it["category"].upper()}</span>'
+                    f'{_sent_html} '
+                    f'{_title_html}'
+                    f'{_meta2}'
+                    f'<div style="color:var(--muted);font-size:.75rem;margin-top:.25rem">'
+                    f'{_it["source"]} · {_it["age"]}</div>'
+                    f'</div>',
+                    unsafe_allow_html=True)
+
+        # ── Per-stock lookup ────────────────────────────────────────────────
+        st.markdown("---")
+        st.markdown('<div class="sec">🔍 News for a Specific Stock</div>',
+                    unsafe_allow_html=True)
+        _sc1, _sc2 = st.columns([3, 1])
+        with _sc1:
+            _sym = st.text_input("Symbol", placeholder="e.g. RELIANCE, TCS, GODREJPROP…",
+                                 label_visibility="collapsed")
+        with _sc2:
+            _go = st.button("Search", use_container_width=True)
+        if _go and _sym.strip():
+            with st.spinner(f"Fetching news for {_sym.upper()}…"):
+                _sn = _mnews.fetch_stock_news(_sym.strip())
+            if not _sn:
+                st.info(f"No recent news found for {_sym.upper()}.")
+            else:
+                for _it in _sn:
+                    _link = _it.get("link") or ""
+                    _t = _it["title"].replace("<", "&lt;").replace(">", "&gt;")
+                    _th = (f'<a href="{_link}" target="_blank" '
+                           f'style="color:var(--text);text-decoration:none;'
+                           f'font-weight:600">{_t}</a>' if _link
+                           else f'<span style="font-weight:600">{_t}</span>')
+                    st.markdown(
+                        f'<div style="padding:.6rem 0;border-bottom:1px solid var(--border)">'
+                        f'{_th}<div style="color:var(--muted);font-size:.75rem;'
+                        f'margin-top:.25rem">{_it["source"]} · {_it["age"]}</div></div>',
+                        unsafe_allow_html=True)
+
+        # ── Feed health — spot a source that changed its URL or blocked us ──
+        with st.expander("🩺 Feed health (which sources are alive)"):
+            st.caption("If a publisher changes its RSS path or starts blocking "
+                       "requests, that feed silently disappears. This shows which "
+                       "are actually returning stories right now.")
+            if st.button("Run feed health check"):
+                with st.spinner("Checking all feeds…"):
+                    _h = _mnews.feed_health()
+                _alive = sum(1 for r in _h if r["ok"])
+                st.markdown(f"**{_alive}/{len(_h)} feeds alive**")
+                st.dataframe(
+                    pd.DataFrame([{
+                        "Status": "✅ OK" if r["ok"] else "❌ FAIL",
+                        "Category": r["category"],
+                        "Source": r["source"],
+                        "Items": r["items"],
+                    } for r in _h]),
+                    use_container_width=True, hide_index=True)
+
 elif _page == 'breadth':
     st.markdown('<div class="sec">📊 Market Breadth — Universe Internals</div>',
                 unsafe_allow_html=True)
