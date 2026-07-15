@@ -128,6 +128,50 @@ def _yahoo_bulk_threaded(symbols, period="6mo"):
     return results
 
 
+def _is_market_closed_today_ist():
+    """True if it's a weekday AFTER NSE close (15:30 IST) — the window where
+    today's completed daily bar SHOULD exist. Weekends/holidays return False
+    (yesterday's bar is then correctly the latest)."""
+    import datetime as _dt
+    now_ist = _dt.datetime.now(_dt.timezone(_dt.timedelta(hours=5, minutes=30)))
+    if now_ist.weekday() >= 5:          # Sat/Sun
+        return False
+    return (now_ist.hour, now_ist.minute) >= (15, 45)   # 15-min buffer after close
+
+
+def _topup_today_bar(df, symbol):
+    """Yahoo's daily-history endpoint sometimes lags after the close — the
+    session has ended but today's bar is missing, so every indicator runs one
+    day behind (user saw 'Data Date = yesterday' after a post-close scan).
+    When that happens (weekday, post-close, last bar < today), fetch today's
+    OHLCV from the live-quote endpoint (fast_info — a different, fresher
+    endpoint) and append it as today's completed bar."""
+    try:
+        import datetime as _dt
+        if df is None or df.empty or not _is_market_closed_today_ist():
+            return df
+        today = _dt.datetime.now(
+            _dt.timezone(_dt.timedelta(hours=5, minutes=30))).date()
+        last = df.index[-1].date() if hasattr(df.index[-1], "date") else None
+        if last is None or last >= today:
+            return df                      # already current
+        clean = str(symbol).upper().replace(".NS", "").replace(".BO", "")
+        fi = yf.Ticker(clean + ".NS").fast_info
+        o = fi.get("open");      h = fi.get("dayHigh")
+        l = fi.get("dayLow");    c = fi.get("lastPrice") or fi.get("last_price")
+        v = fi.get("lastVolume") or fi.get("last_volume") or 0
+        if not c or not o:
+            return df                      # quote unavailable — keep what we have
+        row = pd.DataFrame(
+            {"Open": [float(o)], "High": [float(h or max(o, c))],
+             "Low": [float(l or min(o, c))], "Close": [float(c)],
+             "Volume": [float(v)]},
+            index=pd.DatetimeIndex([pd.Timestamp(today)]))
+        return pd.concat([df, row])
+    except Exception:
+        return df                          # never break a fetch over a top-up
+
+
 def _yahoo_fetch(symbol, period="6mo"):
     clean = str(symbol).upper().replace(".NS", "").replace(".BO", "")
     for suffix in (".NS", ".BO"):
@@ -143,7 +187,7 @@ def _yahoo_fetch(symbol, period="6mo"):
                     "Volume": df["Volume"] if "Volume" in df else 0,
                 }).dropna(subset=["Close"]).ffill().bfill()
                 if not out.empty:
-                    return out
+                    return _topup_today_bar(out, symbol)
         except Exception:
             continue
     return None
