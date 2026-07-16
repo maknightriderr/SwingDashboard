@@ -144,6 +144,29 @@ def detect_pocket_pivot(close, vol, ema10=None, ema50=None, lookback=10):
     return {"pocket_pivot": False, "detail": ""}
 
 
+def detect_coiling(high, low, close, recent_n=5, base_n=25):
+    """Volatility compression over recent bars vs the base's typical range.
+    A VCP-style coiled base is tight over WEEKS but rarely has a single bar that
+    meets the strict Inside Bar / NR7 definition, so those miss it. This fires
+    when the average bar range of the last `recent_n` bars has contracted to
+    <=60% of the `base_n`-bar average, while price is still holding (not breaking
+    down). Gives coiled bases a meaningful compression tag."""
+    h = np.asarray(high, dtype=float)
+    l = np.asarray(low, dtype=float)
+    c = np.asarray(close, dtype=float)
+    if len(h) < base_n + 1:
+        return {"coiling": False, "coil_pct": None}
+    recent = (h[-recent_n:] - l[-recent_n:]).mean()
+    base = (h[-base_n:] - l[-base_n:]).mean()
+    if base <= 0:
+        return {"coiling": False, "coil_pct": None}
+    ratio = recent / base
+    holding = c[-1] >= c[-recent_n:].min() * 0.98
+    is_coiling = bool(ratio <= 0.6 and holding)
+    return {"coiling": is_coiling,
+            "coil_pct": round((1 - ratio) * 100, 1) if is_coiling else None}
+
+
 def detect_all(open_p, high, low, close, vol, atr, ema10=None, ema50=None):
     """Convenience aggregator — runs every v2 pattern and returns a flat dict
     plus a list of human-readable pattern tags for display."""
@@ -152,6 +175,7 @@ def detect_all(open_p, high, low, close, vol, atr, ema10=None, ema50=None):
     res.update(detect_nr7(high, low))
     res.update(detect_triangles(high, low, close, atr))
     res.update(detect_pocket_pivot(close, vol, ema10, ema50))
+    res.update(detect_coiling(high, low, close))
 
     tags = []
     # NR7 + inside bar together is the strongest compression signal
@@ -167,6 +191,10 @@ def detect_all(open_p, high, low, close, vol, atr, ema10=None, ema50=None):
         tags.append("📐 Descending Triangle")
     if res.get("pocket_pivot"):
         tags.append("💰 Pocket Pivot")
+    # Coiling — only add if no stronger single-bar compression tag already fired
+    if res.get("coiling") and not (res.get("inside_bar") or res.get("nr7")):
+        _cp = res.get("coil_pct")
+        tags.append(f"🎯 Coiling ({_cp:.0f}% tighter)" if _cp else "🎯 Coiling")
     res["v2_tags"] = tags
     return res
 
