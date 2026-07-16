@@ -3423,6 +3423,9 @@ def scan_for_vcp(min_quality="B", ready_only=False):
             "entry": entry, "target": target, "stop_loss": stop, "risk_reward": rr,
             "vp_backed": ind.get("vcp_vp_backed", False),
             "vp_note": ind.get("vcp_vp_note", ""),
+            "patterns": " | ".join(
+                (ind.get("patterns", []) or []) + (ind.get("candlesticks", []) or [])
+            ) or "—",
         })
 
     def _sort_key(s):
