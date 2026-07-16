@@ -6186,6 +6186,24 @@ elif _page == 'vcp':
             st.warning("No VCP bases found at this quality filter. Try grade C or "
                        "uncheck pivot-ready.")
         else:
+            # Market regime banner — VCP breakouts need a supportive tape
+            _rfav = vs.get("regime_favorable", True)
+            _rnote = vs.get("regime_note", "")
+            if _rnote:
+                if _rfav:
+                    st.success(f"📊 Market: {_rnote}", icon="✅")
+                else:
+                    st.warning(f"📊 Market: {_rnote} — VCP breakouts fail more in "
+                               f"bear phases, so be selective and reduce size.",
+                               icon="⚠️")
+            # Sector strength — clusters signal institutional rotation
+            _strong = vs.get("strong_sectors", {})
+            if _strong:
+                _sec_txt = " · ".join(f"{sec} ({n})" for sec, n in
+                                      sorted(_strong.items(), key=lambda x: -x[1]))
+                st.info(f"🔥 Sectors with 3+ ready setups (rotation signal): "
+                        f"{_sec_txt}", icon="🔥")
+
             st.markdown(
                 f'<div style="font-size:.75rem;color:var(--muted);margin:.5rem 0">'
                 f'Scanned {vs["scanned"]} · {vs["liquid"]} liquid · '
