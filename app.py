@@ -411,7 +411,7 @@ def _q(sql):
 
 
 _PG_SCHEMA_PREFIX = "public."
-_PG_TABLES = ("users", "trades", "portfolio_history", "tg_config", "watchlist", "price_alerts", "trade_journal")
+_PG_TABLES = ("users", "trades", "portfolio_history", "tg_config", "watchlist", "price_alerts", "trade_journal", "vcp_snapshots")
 
 
 def _pg_qualify(sql):
@@ -497,6 +497,12 @@ def init_db():
                 created_date TEXT DEFAULT to_char(CURRENT_DATE,'YYYY-MM-DD'))""",
             """CREATE TABLE IF NOT EXISTS user_settings(
                 user_id INTEGER PRIMARY KEY, theme TEXT)""",
+            """CREATE TABLE IF NOT EXISTS vcp_snapshots(
+                id SERIAL PRIMARY KEY, user_id INTEGER, snapshot_date TEXT,
+                stock TEXT NOT NULL, quality TEXT, tt_score INTEGER,
+                entry REAL, pivot REAL, target REAL, stop_loss REAL,
+                cmp_at_snapshot REAL, status TEXT DEFAULT 'open',
+                outcome_price REAL, days_to_outcome INTEGER, checked_date TEXT)""",
         ]
         for ddl in table_ddls:
             try:
@@ -536,6 +542,12 @@ def init_db():
             lesson TEXT, rating INTEGER, created_date TEXT DEFAULT(date('now')))""")
         c.execute("""CREATE TABLE IF NOT EXISTS user_settings(
             user_id INTEGER PRIMARY KEY, theme TEXT)""")
+        c.execute("""CREATE TABLE IF NOT EXISTS vcp_snapshots(
+            id INTEGER PRIMARY KEY AUTOINCREMENT, user_id INTEGER,
+            snapshot_date TEXT, stock TEXT NOT NULL, quality TEXT, tt_score INTEGER,
+            entry REAL, pivot REAL, target REAL, stop_loss REAL, cmp_at_snapshot REAL,
+            status TEXT DEFAULT 'open', outcome_price REAL, days_to_outcome INTEGER,
+            checked_date TEXT)""")
         c.commit(); c.close()
 
 def register_user(username, password):
@@ -668,6 +680,99 @@ def delete_trade(tid, user_id):
 def close_trade(tid, user_id, sell):
     db("UPDATE trades SET sell_at=?,status='Closed',closed_date=? WHERE id=? AND user_id=?",
        (sell, datetime.now().strftime("%Y-%m-%d"), tid, user_id))
+
+def save_vcp_snapshot(user_id, setups):
+    """Log today's pivot-READY VCP setups so their real outcomes can be measured
+    later (hit target? stopped? how many days?). Skips duplicates (same stock,
+    same day). Defensive — a DB hiccup never blocks the dashboard."""
+    import datetime as _dt
+    today = _dt.date.today().isoformat()
+    n = 0
+    for s in setups:
+        if not s.get("vcp_ready"):
+            continue
+        try:
+            existing = db("SELECT id FROM vcp_snapshots WHERE user_id=? AND "
+                          "stock=? AND snapshot_date=?",
+                          (user_id, s["stock"], today), fetch=True)
+            if existing:
+                continue
+            db("INSERT INTO vcp_snapshots(user_id,snapshot_date,stock,quality,"
+               "tt_score,entry,pivot,target,stop_loss,cmp_at_snapshot,status) "
+               "VALUES(?,?,?,?,?,?,?,?,?,?,'open')",
+               (user_id, today, s["stock"], s.get("quality"), s.get("tt_score"),
+                s.get("entry"), s.get("pivot"), s.get("target"),
+                s.get("stop_loss"), s.get("cmp")))
+            n += 1
+        except Exception:
+            continue
+    return n
+
+
+def update_vcp_outcomes(user_id, price_lookup):
+    """For each OPEN snapshot, compare current price to target/stop and record
+    the outcome. price_lookup = {stock: current_price}. Returns count updated."""
+    import datetime as _dt
+    try:
+        rows = db("SELECT id,stock,snapshot_date,entry,target,stop_loss FROM "
+                  "vcp_snapshots WHERE user_id=? AND status='open'",
+                  (user_id,), fetch=True)
+    except Exception:
+        return 0
+    today = _dt.date.today()
+    updated = 0
+    for rid, stock, sdate, entry, target, stop in rows:
+        px = price_lookup.get(stock)
+        if px is None:
+            continue
+        try:
+            days = (today - _dt.date.fromisoformat(sdate)).days
+        except Exception:
+            days = None
+        new_status = None
+        if target and px >= target:
+            new_status = "target_hit"
+        elif stop and px <= stop:
+            new_status = "stopped"
+        elif days is not None and days > 40:
+            new_status = "expired"
+        if new_status:
+            try:
+                db("UPDATE vcp_snapshots SET status=?,outcome_price=?,"
+                   "days_to_outcome=?,checked_date=? WHERE id=?",
+                   (new_status, px, days, today.isoformat(), rid))
+                updated += 1
+            except Exception:
+                continue
+    return updated
+
+
+def load_vcp_snapshots(user_id):
+    try:
+        return db("SELECT snapshot_date,stock,quality,tt_score,entry,target,"
+                  "stop_loss,cmp_at_snapshot,status,outcome_price,days_to_outcome "
+                  "FROM vcp_snapshots WHERE user_id=? ORDER BY snapshot_date DESC",
+                  (user_id,), fetch=True) or []
+    except Exception:
+        return []
+
+
+def vcp_outcome_stats(user_id):
+    """Real measured performance of logged VCP-ready setups."""
+    rows = load_vcp_snapshots(user_id)
+    resolved = [r for r in rows if r[8] in ("target_hit", "stopped", "expired")]
+    hits = [r for r in resolved if r[8] == "target_hit"]
+    stops = [r for r in resolved if r[8] == "stopped"]
+    open_n = sum(1 for r in rows if r[8] == "open")
+    hit_rate = (len(hits) / len(resolved) * 100) if resolved else None
+    rets = [((r[9] - r[4]) / r[4] * 100) for r in resolved if r[4] and r[9]]
+    avg_ret = (sum(rets) / len(rets)) if rets else None
+    dd = [r[10] for r in hits if r[10] is not None]
+    avg_days = (sum(dd) / len(dd)) if dd else None
+    return {"total": len(rows), "open": open_n, "resolved": len(resolved),
+            "hits": len(hits), "stops": len(stops), "hit_rate": hit_rate,
+            "avg_return": avg_ret, "avg_days_to_target": avg_days}
+
 
 def save_snapshot(user_id, invested, value):
     """Save a daily portfolio snapshot. Non-critical — if it fails (e.g. DB
@@ -6214,6 +6319,69 @@ elif _page == 'vcp':
                        "data, ~15–20 min delayed intraday). VCP pivots, entries and "
                        "targets are all measured on daily closes by design — re-run "
                        "the scan during market hours for the freshest close.")
+
+            # ── Outcome logging — measure VCP's REAL reliability over time ────
+            with st.expander("📸 Track outcomes — measure VCP's real hit-rate over time"):
+                st.caption("Snapshot today's pivot-ready setups. Over the next few "
+                           "weeks the app checks each against its target/stop, so you "
+                           "get the ACTUAL hit-rate and average return — not a guess. "
+                           "This is how you'll know if VCP is genuinely working for you.")
+                _uid = st.session_state.get("user_id")
+                _c1, _c2 = st.columns(2)
+                with _c1:
+                    _ready_now = [s for s in vs["vcp_setups"] if s.get("vcp_ready")]
+                    if st.button(f"📸 Log {len(_ready_now)} ready setups",
+                                 use_container_width=True, disabled=not _ready_now):
+                        _n = save_vcp_snapshot(_uid, vs["vcp_setups"])
+                        st.success(f"Logged {_n} setups for outcome tracking.")
+                with _c2:
+                    if st.button("🔄 Update outcomes now", use_container_width=True):
+                        # price lookup for currently-open snapshots
+                        _snaps = load_vcp_snapshots(_uid)
+                        _open_syms = list({r[1] for r in _snaps if r[8] == "open"})
+                        if _open_syms:
+                            try:
+                                _pl = _cached_prices(tuple(sorted(_open_syms)))
+                            except Exception:
+                                _pl = {}
+                            _u = update_vcp_outcomes(_uid, _pl)
+                            st.success(f"Updated {_u} outcomes.")
+                        else:
+                            st.info("No open snapshots to update yet.")
+
+                _stats = vcp_outcome_stats(_uid)
+                if _stats["total"] > 0:
+                    _m1, _m2, _m3, _m4 = st.columns(4)
+                    _m1.metric("Tracked", _stats["total"], f'{_stats["open"]} open')
+                    _hr = _stats["hit_rate"]
+                    _m2.metric("Hit rate",
+                               f'{_hr:.0f}%' if _hr is not None else "—",
+                               f'{_stats["hits"]}W / {_stats["stops"]}L')
+                    _ar = _stats["avg_return"]
+                    _m3.metric("Avg return",
+                               f'{_ar:+.1f}%' if _ar is not None else "—")
+                    _ad = _stats["avg_days_to_target"]
+                    _m4.metric("Avg days to target",
+                               f'{_ad:.0f}' if _ad is not None else "—")
+                    if _stats["resolved"] < 10:
+                        st.caption("⚠️ Small sample — these numbers only become "
+                                   "meaningful after ~15-20 resolved setups. Keep "
+                                   "logging for a few weeks before drawing conclusions.")
+                    # show the tracked snapshots
+                    _snaps = load_vcp_snapshots(_uid)
+                    if _snaps:
+                        _emoji = {"target_hit": "✅ Target", "stopped": "🛑 Stopped",
+                                  "expired": "⏳ Expired", "open": "⏳ Open"}
+                        st.dataframe(pd.DataFrame([{
+                            "Date": r[0], "Stock": r[1], "Grade": r[2],
+                            "Trend": f'{r[3]}/6' if r[3] is not None else "—",
+                            "Entry": r[4], "Target": r[5], "Stop": r[6],
+                            "Status": _emoji.get(r[8], r[8]),
+                            "Days": r[10] if r[10] is not None else "",
+                        } for r in _snaps]), use_container_width=True, hide_index=True)
+                else:
+                    st.info("No setups logged yet. Click **📸 Log ready setups** to start "
+                            "building your VCP performance record.")
 
             vrows = []
             for s in vs["vcp_setups"]:
