@@ -6213,6 +6213,8 @@ elif _page == 'vcp':
                     "Entry": s.get("entry"),
                     "SL": s.get("stop_loss"), "Target": s.get("target"),
                     "RR": s.get("risk_reward"),
+                    "Trend Score": (f'{s.get("tt_score", 0)}/6'
+                                    + (" ✅" if s.get("tt_pass") else "")),
                     "Patterns": s.get("patterns", "—"),
                 })
             vdf = pd.DataFrame(vrows)
@@ -6229,7 +6231,13 @@ elif _page == 'vcp':
                     "Entry":  st.column_config.NumberColumn("Entry", format="₹%.2f"),
                     "SL":     st.column_config.NumberColumn("SL", format="₹%.2f"),
                     "Target": st.column_config.NumberColumn("Target", format="₹%.2f"),
-                    "Patterns": st.column_config.TextColumn("Patterns", width="large"),
+                    "Trend Score": st.column_config.TextColumn(
+                        "Trend Score", help="Minervini Trend Template: how many of "
+                        "the 6 Stage-2 criteria the stock meets (above 50/200 EMA, "
+                        "MA stack, near 52w high, off the lows, RS leader). 5-6 = a "
+                        "genuine leader in an uptrend; low = tight base with no "
+                        "trend/RS behind it (breakouts fail more)."),
+                    "Patterns": st.column_config.TextColumn("Patterns", width="medium"),
                     "RR":     st.column_config.NumberColumn("R:R", format="%.2f"),
                 })
             st.download_button(
