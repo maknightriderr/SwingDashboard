@@ -6320,6 +6320,66 @@ elif _page == 'vcp':
                        "targets are all measured on daily closes by design — re-run "
                        "the scan during market hours for the freshest close.")
 
+            # ── Price-source diagnostic — find WHERE a wrong CMP comes from ──
+            with st.expander("🔍 Price check — compare data sources for any stock"):
+                st.caption("Enter a symbol to see what each source reports. The VCP "
+                           "scan uses the **Yahoo daily close**. If that differs from "
+                           "Angel / the real NSE close, this shows it directly.")
+                _dcol1, _dcol2 = st.columns([3, 1])
+                with _dcol1:
+                    _dsym = st.text_input("Symbol to check",
+                                          placeholder="e.g. GODREJPROP",
+                                          label_visibility="collapsed").strip().upper()
+                with _dcol2:
+                    _dgo = st.button("Check price", use_container_width=True)
+                if _dgo and _dsym:
+                    _clean = _dsym
+                    for _sfx in [".NS", ".BO", ".NSE", ".BSE"]:
+                        if _clean.endswith(_sfx):
+                            _clean = _clean[:-len(_sfx)]
+                    _yh_close = _yh_live = _ang = None
+                    # Yahoo daily close (what the VCP scan uses)
+                    try:
+                        import yfinance as _yf
+                        _h = _yf.Ticker(_clean + ".NS").history(
+                            period="5d", interval="1d", auto_adjust=False)
+                        if not _h.empty:
+                            _yh_close = round(float(_h["Close"].iloc[-1]), 2)
+                            _yh_date = str(_h.index[-1].date())
+                        # Yahoo live last price
+                        _fi = _yf.Ticker(_clean + ".NS").fast_info
+                        _yh_live = _fi.get("lastPrice") or _fi.get("last_price")
+                        if _yh_live:
+                            _yh_live = round(float(_yh_live), 2)
+                    except Exception as _e:
+                        st.warning(f"Yahoo fetch issue: {_e}")
+                    # Angel LTP
+                    try:
+                        import angel_data as _ad
+                        _ang = _ad.get_ltp(_clean)
+                        if _ang:
+                            _ang = round(float(_ang), 2)
+                    except Exception:
+                        _ang = None
+                    _r1, _r2, _r3 = st.columns(3)
+                    _r1.metric("Yahoo daily close",
+                               f"₹{_yh_close}" if _yh_close else "—",
+                               help=f"bar date: {_yh_date}" if _yh_close else None)
+                    _r1.caption("← VCP scanner uses this")
+                    _r2.metric("Yahoo live price",
+                               f"₹{_yh_live}" if _yh_live else "—")
+                    _r3.metric("Angel LTP",
+                               f"₹{_ang}" if _ang else "— (unavailable)")
+                    if _yh_close and _ang and abs(_yh_close - _ang) / _ang > 0.003:
+                        st.warning(f"⚠️ Yahoo close (₹{_yh_close}) differs from Angel "
+                                   f"(₹{_ang}) by {abs(_yh_close-_ang)/_ang*100:.1f}%. "
+                                   f"The scanner shows the Yahoo value. If Angel is the "
+                                   f"one you trust, I can switch the scanner's CMP to "
+                                   f"Angel for the final setups.")
+                    elif _yh_close and _ang:
+                        st.success(f"✅ Sources agree (within 0.3%). The scanner's "
+                                   f"CMP is accurate.")
+
             # ── Outcome logging — measure VCP's REAL reliability over time ────
             with st.expander("📸 Track outcomes — measure VCP's real hit-rate over time"):
                 st.caption("Snapshot today's pivot-ready setups. Over the next few "
