@@ -411,7 +411,7 @@ def _q(sql):
 
 
 _PG_SCHEMA_PREFIX = "public."
-_PG_TABLES = ("users", "trades", "portfolio_history", "tg_config", "watchlist", "price_alerts", "trade_journal", "vcp_snapshots")
+_PG_TABLES = ("users", "trades", "portfolio_history", "tg_config", "watchlist", "price_alerts", "trade_journal", "vcp_snapshots", "vcp_watch")
 
 
 def _pg_qualify(sql):
@@ -503,6 +503,10 @@ def init_db():
                 entry REAL, pivot REAL, target REAL, stop_loss REAL,
                 cmp_at_snapshot REAL, status TEXT DEFAULT 'open',
                 outcome_price REAL, days_to_outcome INTEGER, checked_date TEXT)""",
+            """CREATE TABLE IF NOT EXISTS vcp_watch(
+                id SERIAL PRIMARY KEY, user_id INTEGER, stock TEXT,
+                pivot REAL, added_date TEXT, alerted INTEGER DEFAULT 0,
+                alerted_date TEXT)""",
         ]
         for ddl in table_ddls:
             try:
@@ -548,6 +552,10 @@ def init_db():
             entry REAL, pivot REAL, target REAL, stop_loss REAL, cmp_at_snapshot REAL,
             status TEXT DEFAULT 'open', outcome_price REAL, days_to_outcome INTEGER,
             checked_date TEXT)""")
+        c.execute("""CREATE TABLE IF NOT EXISTS vcp_watch(
+            id INTEGER PRIMARY KEY AUTOINCREMENT, user_id INTEGER, stock TEXT,
+            pivot REAL, added_date TEXT, alerted INTEGER DEFAULT 0,
+            alerted_date TEXT)""")
         c.commit(); c.close()
 
 def register_user(username, password):
@@ -772,6 +780,71 @@ def vcp_outcome_stats(user_id):
     return {"total": len(rows), "open": open_n, "resolved": len(resolved),
             "hits": len(hits), "stops": len(stops), "hit_rate": hit_rate,
             "avg_return": avg_ret, "avg_days_to_target": avg_days}
+
+
+def add_vcp_watch(user_id, setups):
+    """Mark today's pivot-ready setups to watch for a breakout above the pivot.
+    Skips ones already being watched (un-alerted). Defensive."""
+    import datetime as _dt
+    today = _dt.date.today().isoformat()
+    n = 0
+    for s in setups:
+        if not s.get("vcp_ready") or not s.get("pivot"):
+            continue
+        try:
+            ex = db("SELECT id FROM vcp_watch WHERE user_id=? AND stock=? AND alerted=0",
+                    (user_id, s["stock"]), fetch=True)
+            if ex:
+                continue
+            db("INSERT INTO vcp_watch(user_id,stock,pivot,added_date) VALUES(?,?,?,?)",
+               (user_id, s["stock"], s["pivot"], today))
+            n += 1
+        except Exception:
+            continue
+    return n
+
+
+def check_vcp_breakouts(user_id, price_lookup):
+    """Return watched stocks that have broken above their pivot (with a small
+    buffer to filter noise) and haven't been alerted yet. Marks them alerted so
+    the same breakout never fires twice. Runs only when the app is open — see the
+    note in the UI; Streamlit Cloud cannot check in the background."""
+    import datetime as _dt
+    try:
+        rows = db("SELECT id,stock,pivot FROM vcp_watch WHERE user_id=? AND alerted=0",
+                  (user_id,), fetch=True)
+    except Exception:
+        return []
+    today = _dt.date.today().isoformat()
+    broke = []
+    for rid, stock, pivot in rows:
+        px = price_lookup.get(stock)
+        if px is None or not pivot:
+            continue
+        if px >= pivot * 1.002:
+            broke.append({"stock": stock, "pivot": pivot, "price": px})
+            try:
+                db("UPDATE vcp_watch SET alerted=1,alerted_date=? WHERE id=?",
+                   (today, rid))
+            except Exception:
+                pass
+    return broke
+
+
+def load_vcp_watch(user_id):
+    try:
+        return db("SELECT stock,pivot,added_date,alerted,alerted_date FROM "
+                  "vcp_watch WHERE user_id=? ORDER BY alerted, added_date DESC",
+                  (user_id,), fetch=True) or []
+    except Exception:
+        return []
+
+
+def clear_vcp_watch(user_id):
+    try:
+        db("DELETE FROM vcp_watch WHERE user_id=?", (user_id,))
+    except Exception:
+        pass
 
 
 def save_snapshot(user_id, invested, value):
@@ -6379,6 +6452,62 @@ elif _page == 'vcp':
                     elif _yh_close and _ang:
                         st.success(f"✅ Sources agree (within 0.3%). The scanner's "
                                    f"CMP is accurate.")
+
+            # ── Breakout watch + Telegram alert ──────────────────────────────
+            with st.expander("🚀 Watch for pivot breakouts (Telegram alert)"):
+                st.caption("Mark ready setups to watch. Each time you open the app "
+                           "and it refreshes, watched stocks are checked — if one "
+                           "breaks above its pivot, you get a Telegram alert (once). "
+                           "⚠️ This only runs WHILE the app/tab is open — Streamlit "
+                           "Cloud can't check in the background 24/7.")
+                _uidw = st.session_state.get("user_id")
+                _wc1, _wc2, _wc3 = st.columns(3)
+                with _wc1:
+                    _ready_w = [s for s in vs["vcp_setups"] if s.get("vcp_ready")]
+                    if st.button(f"👁 Watch {len(_ready_w)} ready", use_container_width=True,
+                                 disabled=not _ready_w):
+                        _nw = add_vcp_watch(_uidw, vs["vcp_setups"])
+                        st.success(f"Now watching {_nw} setups for breakout.")
+                with _wc2:
+                    if st.button("🔍 Check breakouts now", use_container_width=True):
+                        _wl = load_vcp_watch(_uidw)
+                        _open_w = list({r[0] for r in _wl if not r[3]})
+                        if _open_w:
+                            try:
+                                _plw = _cached_prices(tuple(sorted(_open_w)))
+                            except Exception:
+                                _plw = {}
+                            _broke = check_vcp_breakouts(_uidw, _plw)
+                            if _broke:
+                                # Telegram
+                                _tg = get_tg_config(_uidw)
+                                if _tg and _tg[0] and _tg[1]:
+                                    for _b in _broke:
+                                        _msg = (f"🚀 <b>VCP Breakout</b>\n"
+                                                f"{_b['stock']} broke pivot ₹{_b['pivot']:.2f} "
+                                                f"→ now ₹{_b['price']:.2f}")
+                                        send_telegram(_tg[0], _tg[1], _msg)
+                                    st.success(f"🚀 {len(_broke)} breakout(s) — Telegram sent!")
+                                else:
+                                    st.success(f"🚀 {len(_broke)} breakout(s) detected! "
+                                               f"(Set Telegram in Settings to get alerts.)")
+                                for _b in _broke:
+                                    st.write(f"  • **{_b['stock']}** broke ₹{_b['pivot']:.2f} "
+                                             f"→ ₹{_b['price']:.2f}")
+                            else:
+                                st.info("No breakouts yet among watched setups.")
+                        else:
+                            st.info("Nothing being watched. Click **Watch ready** first.")
+                with _wc3:
+                    if st.button("🗑 Clear watchlist", use_container_width=True):
+                        clear_vcp_watch(_uidw)
+                        st.success("Breakout watchlist cleared.")
+                _wl = load_vcp_watch(_uidw)
+                if _wl:
+                    st.dataframe(pd.DataFrame([{
+                        "Stock": r[0], "Pivot": r[1], "Since": r[2],
+                        "Status": ("🚀 Broke out " + (r[4] or "") if r[3] else "👁 Watching"),
+                    } for r in _wl]), use_container_width=True, hide_index=True)
 
             # ── Outcome logging — measure VCP's REAL reliability over time ────
             with st.expander("📸 Track outcomes — measure VCP's real hit-rate over time"):
