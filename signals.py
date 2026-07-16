@@ -3347,6 +3347,16 @@ def _vcp_trend_template(ind):
     return score, (score >= 5), passed, failed
 
 
+def _vcp_regime_context(regime):
+    """VCP breakouts need a supportive tape: they work in bull/neutral markets
+    and fail far more often in bear phases. Returns (favorable, note)."""
+    if regime in ("Strong Bear", "Bear"):
+        return False, f"{regime} - breakout follow-through unreliable, size down"
+    if regime in ("Bear Rally", "Sideways", "Neutral"):
+        return True, f"{regime} - selective, wait for confirmation"
+    return True, f"{regime} - favorable"
+
+
 def scan_for_vcp(min_quality="B", ready_only=False):
     """
     Sweeps the universe for stocks forming a Volatility Contraction Pattern.
@@ -3372,6 +3382,14 @@ def scan_for_vcp(min_quality="B", ready_only=False):
         all_symbols.extend(stocks)
 
     bulk = _bulk_fetch_history(all_symbols, period="6mo")
+
+    # Market regime context — VCP breakouts need a supportive tape
+    try:
+        _mkt = get_market_regime()
+        _regime = _mkt.get("regime", "Unknown")
+    except Exception:
+        _regime = "Unknown"
+    _regime_favorable, _regime_note = _vcp_regime_context(_regime)
 
     vcp_setups = []
     liquid = 0
@@ -3464,10 +3482,23 @@ def scan_for_vcp(min_quality="B", ready_only=False):
                 -(s.get("pivot_distance_pct") or 999))
     vcp_setups.sort(key=_sort_key, reverse=True)
 
+    # Sector strength — clusters of ready setups in one sector signal rotation
+    from collections import Counter as _Counter
+    _ready_by_sector = _Counter(s["sector"] for s in vcp_setups if s.get("vcp_ready"))
+    _strong_sectors = {sec: n for sec, n in _ready_by_sector.items() if n >= 3}
+    # tag each setup if its sector is showing strength
+    for _s in vcp_setups:
+        _s["sector_ready_count"] = _ready_by_sector.get(_s["sector"], 0)
+        _s["sector_strong"] = _s["sector"] in _strong_sectors
+
     return {
         "vcp_setups": vcp_setups,
         "scanned": len(all_symbols), "liquid": liquid,
         "count": len(vcp_setups), "ready_count": ready_count,
+        "market_regime": _regime,
+        "regime_favorable": _regime_favorable,
+        "regime_note": _regime_note,
+        "strong_sectors": dict(_strong_sectors),
         "timestamp": _now_ist().strftime("%d %b %Y %H:%M"),
     }
 
