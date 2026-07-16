@@ -6213,6 +6213,7 @@ elif _page == 'vcp':
                     "Entry": s.get("entry"),
                     "SL": s.get("stop_loss"), "Target": s.get("target"),
                     "RR": s.get("risk_reward"),
+                    "Patterns": s.get("patterns", "—"),
                 })
             vdf = pd.DataFrame(vrows)
             _vh = min(max(len(vdf) * 36 + 40, 200), 600)
@@ -6228,6 +6229,7 @@ elif _page == 'vcp':
                     "Entry":  st.column_config.NumberColumn("Entry", format="₹%.2f"),
                     "SL":     st.column_config.NumberColumn("SL", format="₹%.2f"),
                     "Target": st.column_config.NumberColumn("Target", format="₹%.2f"),
+                    "Patterns": st.column_config.TextColumn("Patterns", width="large"),
                     "RR":     st.column_config.NumberColumn("R:R", format="%.2f"),
                 })
             st.download_button(
