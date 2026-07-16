@@ -156,16 +156,43 @@ def _topup_today_bar(df, symbol):
         if last is None or last >= today:
             return df                      # already current
         clean = str(symbol).upper().replace(".NS", "").replace(".BO", "")
-        fi = yf.Ticker(clean + ".NS").fast_info
-        o = fi.get("open");      h = fi.get("dayHigh")
-        l = fi.get("dayLow");    c = fi.get("lastPrice") or fi.get("last_price")
-        v = fi.get("lastVolume") or fi.get("last_volume") or 0
-        if not c or not o:
-            return df                      # quote unavailable — keep what we have
+
+        # Source today's close. Yahoo's daily endpoint LAGS for .NS symbols after
+        # the NSE close, so try the FRESHEST source first:
+        #   1. Angel LTP — genuinely delay-free (verified), if Angel is reachable
+        #   2. Yahoo fast_info — the live-quote endpoint (fresher than history)
+        o = h = l = c = v = None
+        if _angel_state.get("healthy") and _angel is not None:
+            try:
+                _ltp = _angel.get_ltp(symbol)
+                if _ltp:
+                    c = float(_ltp)         # Angel gives the last price = today's close
+            except Exception:
+                c = None
+        # Fill OHLCV from Yahoo's quote (and get close too if Angel didn't give one)
+        try:
+            fi = yf.Ticker(clean + ".NS").fast_info
+            o = fi.get("open")
+            h = fi.get("dayHigh")
+            l = fi.get("dayLow")
+            if c is None:
+                c = fi.get("lastPrice") or fi.get("last_price")
+            v = fi.get("lastVolume") or fi.get("last_volume") or 0
+        except Exception:
+            pass
+
+        if not c:
+            return df                      # no fresh price anywhere — keep as-is
+        # If OHLC is missing (e.g. Angel-only close), synthesise a sane bar from
+        # the close and the prior bar so indicators still get a today value.
+        _prev_close = float(df["Close"].iloc[-1])
+        o = float(o) if o else _prev_close
+        h = float(h) if h else max(o, c)
+        l = float(l) if l else min(o, c)
+        v = float(v) if v else float(df["Volume"].iloc[-1])
         row = pd.DataFrame(
-            {"Open": [float(o)], "High": [float(h or max(o, c))],
-             "Low": [float(l or min(o, c))], "Close": [float(c)],
-             "Volume": [float(v)]},
+            {"Open": [o], "High": [h], "Low": [l], "Close": [float(c)],
+             "Volume": [v]},
             index=pd.DatetimeIndex([pd.Timestamp(today)]))
         return pd.concat([df, row])
     except Exception:
