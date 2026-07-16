@@ -3323,6 +3323,30 @@ def scan_for_smc_setups(min_quality="B", action_filter="All"):
         "timestamp": _now_ist().strftime("%d %b %Y %H:%M"),
     }
 
+def _vcp_trend_template(ind):
+    """Minervini-style Trend Template — separates a genuine Stage-2 leader from
+    a random tight base. Uses fields already in the indicator dict. Returns
+    (score 0-6, passed, passed_reasons, failed_reasons). A high score means the
+    base sits inside a real uptrend led by a market outperformer, which is where
+    VCP breakouts actually work; a low score is a tight base with no trend/RS
+    behind it (far more likely to fail)."""
+    cmp = ind.get("cmp"); ema50 = ind.get("ema50"); ema200 = ind.get("ema200")
+    high52 = ind.get("high52"); low52 = ind.get("low52")
+    rs_ratio = ind.get("rs_ratio")
+    checks = [
+        ("Above 50EMA",          bool(ema50 and cmp and cmp > ema50)),
+        ("Above 200EMA",         bool(ema200 and cmp and cmp > ema200)),
+        ("50>200 EMA",           bool(ema50 and ema200 and ema50 > ema200)),
+        ("Near 52w high (<25%)", bool(high52 and cmp and cmp >= high52 * 0.75)),
+        ("30%+ off 52w low",     bool(low52 and cmp and cmp >= low52 * 1.30)),
+        ("RS leader (>1)",       bool(rs_ratio and rs_ratio > 1.0)),
+    ]
+    passed = [n for n, ok in checks if ok]
+    failed = [n for n, ok in checks if not ok]
+    score = len(passed)
+    return score, (score >= 5), passed, failed
+
+
 def scan_for_vcp(min_quality="B", ready_only=False):
     """
     Sweeps the universe for stocks forming a Volatility Contraction Pattern.
@@ -3380,6 +3404,7 @@ def scan_for_vcp(min_quality="B", ready_only=False):
         # target a measured move (pivot + the first/biggest contraction depth).
         entry = round(pivot * 1.002, 2) if pivot else cmp
         contractions = ind.get("vcp_contractions", [])
+        _tt_score, _tt_pass, _tt_pass_reasons, _tt_failed = _vcp_trend_template(ind)
 
         # STOP — structural: just under the FINAL contraction's low (the real
         # invalidation for a VCP). Previously a flat 1.5*ATR, which gave a
@@ -3426,6 +3451,10 @@ def scan_for_vcp(min_quality="B", ready_only=False):
             "patterns": " | ".join(
                 (ind.get("patterns", []) or []) + (ind.get("candlesticks", []) or [])
             ) or "—",
+            "tt_score": _tt_score,
+            "tt_pass": _tt_pass,
+            "tt_reasons": " · ".join(_tt_pass_reasons) if _tt_pass_reasons else "",
+            "tt_missing": " · ".join(_tt_failed) if _tt_failed else "",
         })
 
     def _sort_key(s):
