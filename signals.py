@@ -3491,31 +3491,6 @@ def scan_for_vcp(min_quality="B", ready_only=False):
         _s["sector_ready_count"] = _ready_by_sector.get(_s["sector"], 0)
         _s["sector_strong"] = _s["sector"] in _strong_sectors
 
-    # ── Accurate CMP: the universe scan runs on Yahoo daily closes (Angel
-    # historical times out for 2000+ symbols), and Yahoo's .NS close can differ
-    # from the real NSE/Angel price. The final setup list is SMALL, so here we
-    # override each setup's cmp with Angel's LTP (the user's trusted source) when
-    # Angel is reachable. Defensive: any failure leaves the Yahoo value in place.
-    try:
-        if _USE_UNIFIED and _ds is not None and getattr(_ds, "_angel", None) is not None:
-            if _ds._angel_state.get("healthy") and vcp_setups:
-                for _s in vcp_setups:
-                    try:
-                        _ltp = _ds._angel.get_ltp(_s["stock"])
-                        if _ltp and _ltp > 0:
-                            _s["cmp"] = round(float(_ltp), 2)
-                            _s["cmp_source"] = "Angel"
-                            # refresh pivot distance against the corrected price
-                            if _s.get("pivot"):
-                                _s["pivot_distance_pct"] = round(
-                                    (_s["pivot"] - _s["cmp"]) / _s["cmp"] * 100.0, 2)
-                        else:
-                            _s["cmp_source"] = "Yahoo"
-                    except Exception:
-                        _s["cmp_source"] = "Yahoo"
-    except Exception:
-        pass
-
     return {
         "vcp_setups": vcp_setups,
         "scanned": len(all_symbols), "liquid": liquid,
