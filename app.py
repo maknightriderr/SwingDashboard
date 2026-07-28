@@ -17,7 +17,7 @@ import sqlite3
 import yfinance as yf
 import plotly.express as px
 import plotly.graph_objects as go
-from datetime import datetime
+from datetime import datetime, timezone, timedelta
 import time
 import hashlib
 
@@ -3846,6 +3846,28 @@ elif _page == 'scanner':
                 "RS_Lead": st.column_config.TextColumn("Lead",    width="small"),
                 "Patterns":st.column_config.TextColumn("Patterns",width="large"),
             })
+
+        # ── CSV export ──────────────────────────────────────────────────────
+        _ist_now = datetime.now(timezone(timedelta(hours=5, minutes=30)))
+        _stamp = _ist_now.strftime("%Y%m%d_%H%M")
+        _e1, _e2 = st.columns(2)
+        with _e1:
+            st.download_button(
+                f"⬇️ Download these {len(display_df)} results (CSV)",
+                display_df.reset_index(drop=True).to_csv(index=False).encode("utf-8"),
+                file_name=f"universe_scanner_filtered_{_stamp}.csv",
+                mime="text/csv", use_container_width=True,
+                help="Exactly what's shown above — your current filters applied.")
+        with _e2:
+            st.download_button(
+                f"⬇️ Download all {len(scan_df)} scanned (CSV)",
+                scan_df.reset_index(drop=True).to_csv(index=False).encode("utf-8"),
+                file_name=f"universe_scanner_full_{_stamp}.csv",
+                mime="text/csv", use_container_width=True,
+                help="The complete scan before filtering — every column, "
+                     "including Contractions and Sequence.")
+        st.caption("Timestamps in the file are IST. Prices are the scan's daily "
+                   "closes, so re-run the scan first if you need today's numbers.")
 
 # ── Scanner 2.0 (regime-aware, RS-gated, structural stops) ──────────────────
 elif _page == 'scanner2':
