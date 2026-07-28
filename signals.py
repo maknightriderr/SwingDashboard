@@ -1785,6 +1785,12 @@ def generate_market_scanner():
             "Resist": float(ind["resistance"]), "Signal": signal, "Score": score,
             "RSI": round(float(rsi), 2) if rsi else 0.0, "Trend": trend,
             "VCP": vcp_str, "Trap": trap_str, "RS": rs_str,
+            # Contraction sequence — same read as the VCP page, so a base's
+            # tightening is visible here without switching scanners.
+            "Contractions": len(ind.get("vcp_contractions", []) or []),
+            "Sequence": (" → ".join(
+                f"-{_c}%" for _c in (ind.get("vcp_contractions") or []))
+                or "—"),
             "RS_Lead": "💪" if ind.get("rs_outperforming") else "",
             "Patterns": pat_str,
             "Turnover_Cr": round(ind.get("avg_turnover", 0) / 1e7, 1),
