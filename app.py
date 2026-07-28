@@ -2323,7 +2323,7 @@ def render_score_dashboard():
         ("News Engine",             8, "yfinance v1.4 + RSS fallback"),
         ("Liquidity Gate",          8, "Soft gate: liquidity_ok flag, ⚠️ shown on signal, gated for new picks"),
         ("Unified Risk Engine",     9, "Scanner, picks, and portfolio signals all use one engine"),
-        ("Bull/Bear Trap Scanner",  9, "5-factor confluence: geometry · volume quality · RSI extreme · Supertrend · reversal candle. Proactive sweep of full list."),
+        ("Bull/Bear Trap Scanner",  9, "5-factor confluence: geometry · volume quality · RSI extreme · Supertrend · reversal candle. Proactive sweep of full Nifty 500."),
         ("Smart Money Concepts",    8, "FVG · Order Blocks · Liquidity Pools · Premium/Discount · Displacement. NSE circuit-filter aware, ATR-normalised thresholds."),
         ("VCP (Volatility Contraction)", 8, "Minervini base detection: 2-4 tightening contractions, volume dry-up, pivot proximity, A+/A/B/C quality grading. Pivot-ready flag + dedicated scanner."),
         ("Relative Strength vs Nifty",   8, "IBD-style RS ratio (multi-period weighted) + 1-99 percentile rating across universe. Leaders boost conviction; laggards penalised. Dedicated RS Leaders ranking."),
@@ -3833,6 +3833,14 @@ elif _page == 'scanner':
                 "RSI":     st.column_config.NumberColumn("RSI",    format="%.1f"),
                 "Trend":   st.column_config.TextColumn("Trend",   width="medium"),
                 "VCP":     st.column_config.TextColumn("📐 VCP",  width="small"),
+                "Contractions": st.column_config.NumberColumn(
+                    "📉 #C", format="%d", width="small",
+                    help="Number of contractions detected in the base. "
+                         "3+ tightening pullbacks is the classic VCP shape."),
+                "Sequence": st.column_config.TextColumn(
+                    "Contraction Sequence", width="medium",
+                    help="Each pullback's depth, oldest to newest. They should get "
+                         "SHALLOWER (e.g. -16% → -6% → -3%) — that's supply drying up."),
                 "Trap":    st.column_config.TextColumn("🪤 Trap", width="medium"),
                 "RS":      st.column_config.NumberColumn("💪 RS", format="%.2f"),
                 "RS_Lead": st.column_config.TextColumn("Lead",    width="small"),
@@ -4289,7 +4297,7 @@ elif _page == 'traps':
         st.warning("🪤 Trap Scanner requires the updated **signals.py** (v12+). "
                    "Deploy the new signals.py from the project outputs to enable this tab.",
                    icon="⚠️")
-    st.markdown('<div class="sec">🪤 Bull & Bear Trap Scanner — Full </div>',
+    st.markdown('<div class="sec">🪤 Bull & Bear Trap Scanner — Full Nifty 500</div>',
                 unsafe_allow_html=True)
 
     # ── Summary banner ─────────────────────────────────────────────────────────
@@ -4318,7 +4326,7 @@ elif _page == 'traps':
     # ── Controls ────────────────────────────────────────────────────────────────
     ctrl1, ctrl2, ctrl3 = st.columns([2, 1, 1])
     with ctrl1:
-        st.caption("⚡ Sweeps all liquid stocks for false breakout / breakdown patterns.")
+        st.caption("⚡ Sweeps all Nifty 500 liquid stocks for false breakout / breakdown patterns.")
     with ctrl2:
         min_conf = st.slider("Min Confidence %", 50, 90, 60, 5, label_visibility="collapsed")
     with ctrl3:
@@ -4335,7 +4343,7 @@ elif _page == 'traps':
                 icon="🪤")
 
     if not trap_data:
-        st.info("💡 Click **🪤 Run Trap Scan** to sweep the full for active trap patterns.")
+        st.info("💡 Click **🪤 Run Trap Scan** to sweep the full Nifty 500 for active trap patterns.")
     else:
         bull_traps = trap_data.get("bull_traps", [])
         bear_traps = trap_data.get("bear_traps", [])
@@ -4499,7 +4507,7 @@ elif _page == 'corp_actions':
         st.warning("📅 Corporate Actions requires the updated **signals.py** (v12+). "
                    "Deploy the new signals.py from the project outputs to enable this tab.",
                    icon="⚠️")
-    st.markdown('<div class="sec">📅 Corporate Actions — Full</div>',
+    st.markdown('<div class="sec">📅 Corporate Actions — Full Nifty 500</div>',
                 unsafe_allow_html=True)
     st.caption("Dividends · Stock Splits · Bonus Issues — sourced from NSE via yfinance. 6-hour cache.")
 
@@ -4552,7 +4560,7 @@ elif _page == 'corp_actions':
     with ca1:
         st.markdown(
             '<div style="font-size:.85rem;font-weight:700;color:var(--text)">'
-            '🔍 Sweep full for upcoming ex-dates, recent dividends '
+            '🔍 Sweep full Nifty 500 for upcoming ex-dates, recent dividends '
             'and bonus/split events</div>',
             unsafe_allow_html=True)
     with ca2:
@@ -4571,7 +4579,7 @@ elif _page == 'corp_actions':
 
     ca_data = st.session_state.corp_actions_cache
     if ca_data is None:
-        st.info("Click **📅 Scan Corporate Actions** to fetch the full action calendar.")
+        st.info("Click **📅 Scan Corporate Actions** to fetch the full Nifty 500 action calendar.")
     else:
         ts = ca_data.get("timestamp","—"); scanned = ca_data.get("scanned",0)
         st.markdown(
