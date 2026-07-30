@@ -1311,6 +1311,10 @@ def generate_signals(trades_df):
                 "resistance": None, "risk_reward": None, "buy_at": buy_at,
                 "quantity": qty, "market_regime": market["regime"],
                 "divergence": "—", "supertrend": "—", "vwap": None, "fib_levels": {},
+                # keep the shape identical to the normal path so the UI never
+                # hits a missing key on a symbol with no data
+                "contractions": 0, "contraction_seq": "—",
+                "vcp": False, "vcp_ready": False, "vcp_quality": None,
             })
             continue
 
@@ -1485,6 +1489,12 @@ def generate_signals(trades_df):
             "vcp": ind.get("vcp", False),
             "vcp_ready": ind.get("vcp_ready", False),
             "vcp_quality": ind.get("vcp_quality"),
+            # Contraction read for a HELD position: tells you whether the stock is
+            # building a fresh tight base (constructive — hold/add) rather than
+            # just drifting. Same numbers the VCP and Universe scanners show.
+            "contractions": len(ind.get("vcp_contractions", []) or []),
+            "contraction_seq": (" → ".join(
+                f"-{_c}%" for _c in (ind.get("vcp_contractions") or [])) or "—"),
             "rs_ratio": ind.get("rs_ratio"),
             "rs_outperforming": ind.get("rs_outperforming"),
         })
