@@ -1140,6 +1140,11 @@ def _compute_indicators_raw(symbol, period="1y", prefetched_df=None):
     return {
         "symbol": symbol, "cmp": round(cmp, 2), "rsi": rsi,
         "limited_history": _limited_history, "bars": len(df),
+        # DATE of the last bar actually used. Yahoo's daily feed lags for .NS
+        # after the NSE close, so this exposes when a "current" price is really
+        # an older session's close instead of silently showing a stale number.
+        "last_bar_date": (str(df.index[-1].date())
+                          if hasattr(df.index[-1], "date") else None),
 
         # EMAs — v12 adds slope flags + ema200
         "ema9": round(ema9, 2), "ema21": round(ema21, 2), "ema50": round(ema50, 2),
@@ -1811,6 +1816,8 @@ def generate_market_scanner():
 
         results.append({
             "Generated": _now_ist().strftime("%d %b %H:%M"), "Sector": sector,
+            # Which session's close CMP actually comes from (not the scan time)
+            "Data Date": ind.get("last_bar_date"),
             "Stock": symbol, "CMP": float(cmp), "Entry": float(cmp),
             "Target": float(tgt), "SL": float(sl), "Support": float(ind["support"]),
             "Resist": float(ind["resistance"]), "Signal": signal, "Score": score,
