@@ -3889,6 +3889,32 @@ elif _page == 'scanner':
             f'💧 {liq_count} liquid</div>',
             unsafe_allow_html=True)
 
+        # ── Stale-data banner: is CMP actually from today's session? ───────────
+        # Yahoo's daily feed lags for .NS symbols after the NSE close, so a scan
+        # run at 4pm can quietly return the PREVIOUS session's closes. Rather
+        # than silently showing a wrong "current" price, say so.
+        if "Data Date" in scan_df.columns:
+            _now_i = datetime.now(timezone(timedelta(hours=5, minutes=30)))
+            _today_s = _now_i.date().isoformat()
+            _dates = [d for d in scan_df["Data Date"].dropna().unique().tolist() if d]
+            _latest = max(_dates) if _dates else None
+            _stale_n = int((scan_df["Data Date"] != _today_s).sum()) if _dates else 0
+            _weekday = _now_i.weekday() < 5
+            _after_close = (_now_i.hour, _now_i.minute) >= (15, 45)
+            if _latest and _latest != _today_s and _weekday and _after_close:
+                st.error(
+                    f"⚠️ **These prices are from {_latest}, not today.** Yahoo "
+                    f"hasn't published today's NSE closes yet — it usually catches "
+                    f"up by early evening. Re-run the scan after ~6 PM IST for "
+                    f"today's closes, or use **Refresh CMP** below for the rows "
+                    f"you care about.", icon="🕒")
+            elif _latest and _latest != _today_s:
+                st.info(f"ℹ️ Prices are {_latest} closes (last completed session).",
+                        icon="📅")
+            elif _stale_n:
+                st.caption(f"ℹ️ {_stale_n} row(s) have older data than today — see "
+                           f"the **Data Date** column.")
+
         # ── Live CMP refresh (bounded — only the rows on screen) ───────────────
         _rc1, _rc2 = st.columns([1, 3])
         with _rc1:
@@ -3931,6 +3957,11 @@ elif _page == 'scanner':
                 "Resist":  st.column_config.NumberColumn("Resist", format="₹%.2f"),
                 "RSI":     st.column_config.NumberColumn("RSI",    format="%.1f"),
                 "Trend":   st.column_config.TextColumn("Trend",   width="medium"),
+                "Data Date": st.column_config.TextColumn(
+                    "📅 Data", width="small",
+                    help="Which trading session the CMP actually comes from. If "
+                         "this isn't today's date, Yahoo hasn't published today's "
+                         "close yet — the price is the previous session's."),
                 "VCP":     st.column_config.TextColumn("📐 VCP",  width="small"),
                 "Contractions": st.column_config.NumberColumn(
                     "📉 #C", format="%d", width="small",
