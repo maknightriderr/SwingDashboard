@@ -2216,12 +2216,23 @@ def render_signals(signals, theme_t):
                          f'font-weight:700;margin-left:.3rem">🆕 {s.get("bars","")}d history</span>')
 
         badge_vcp = ""
+        _nc = s.get("contractions") or 0
+        _seq = s.get("contraction_seq") or "—"
         if s.get("vcp"):
             _vq = s.get("vcp_quality") or ""
             _vr = "▸READY" if s.get("vcp_ready") else ""
-            badge_vcp = (f'<span style="font-size:.62rem;background:rgba(16,185,129,.18);'
+            _cpart = f" · {_nc}C" if _nc else ""
+            badge_vcp = (f'<span title="Contractions: {_seq}" '
+                         f'style="font-size:.62rem;background:rgba(16,185,129,.18);'
                          f'color:#10b981;padding:.1rem .4rem;border-radius:4px;'
-                         f'font-weight:700;margin-left:.3rem">🎯 VCP {_vq}{_vr}</span>')
+                         f'font-weight:700;margin-left:.3rem">🎯 VCP {_vq}{_vr}{_cpart}</span>')
+        elif _nc >= 2:
+            # Not a full VCP, but the stock IS tightening — useful on a held
+            # position: it's building a base rather than just drifting.
+            badge_vcp = (f'<span title="Contractions: {_seq}" '
+                         f'style="font-size:.62rem;background:rgba(148,163,184,.18);'
+                         f'color:var(--muted);padding:.1rem .4rem;border-radius:4px;'
+                         f'font-weight:700;margin-left:.3rem">📉 {_nc}C {_seq}</span>')
 
         badge_rs = ""
         _rsr = s.get("rs_ratio")
