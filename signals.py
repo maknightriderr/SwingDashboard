@@ -1234,13 +1234,23 @@ def compute_indicators(symbol, period="1y", prefetched_df=None):
 def _calc_risk_params(cmp, atr, resistance, buy_at=None, pct=None,
                       supertrend_val=None, supertrend_bullish=None,
                       action="HOLD"):
-    """
-    HOLD/AVERAGE/WATCH (existing positions):
-      Target = max(20d resistance, cmp + 2.5*ATR)
+    """Risk params. The ANCHOR differs by action, which is why the Universe
+    Scanner and Active Signals legitimately show different targets for the same
+    stock — one is pricing a fresh entry, the other is managing a position you
+    already hold.
+
+    PICK (fresh entries — universe scanner, sector picks). Anchored to the
+    CURRENT price, because you haven't bought yet:
+      Target = max(cmp*1.10, cmp + 3.0*ATR)
+      SL     = cmp - 1.75*ATR
+
+    HOLD/AVERAGE/WATCH (existing positions). Target anchored to YOUR ENTRY so it
+    can't chase new highs (the moving-goalpost problem — a target that keeps
+    running away can never be reached). The stop still trails UP via Supertrend:
+      Target = max(buy_at*1.12, buy_at + 3.0*ATR)   [falls back to
+               max(20d resistance, cmp + 2.5*ATR) if buy_at is unknown]
       SL     = cmp - 2.0*ATR, raised to supertrend if bullish & higher
-    PICK (fresh entries — sector picks AND universe scanner):
-      Target = max(cmp*1.10, cmp + 2.5*ATR)
-      SL     = cmp - 1.25*ATR
+
     SELL:
       Target = cmp (exit now), SL = re-entry zone
     """
@@ -1335,8 +1345,18 @@ def generate_signals(trades_df):
 
         # ── SELL Triggers ─────────────────────────────────────────────────────
         sell = []
-        if rsi and rsi >= 75: sell.append(f"RSI overbought ({rsi})")
-        if rsi and rsi >= 70 and near52h: sell.append("Near 52w high")
+        # PROFIT-TAKING sells (exhaustion). These say "you've run up, bank some" —
+        # so they only make sense once there IS a profit. Without this gate they
+        # fired the moment a position was opened: the Universe Scanner rates a
+        # volume breakout near 52w highs with RSI 70+ as its BEST buy, and these
+        # same conditions instantly read as "overbought — sell". Buy and sell on
+        # one event. ("Momentum fading" below already had a pct>8 gate for exactly
+        # this reason; these three were simply missed.)
+        _in_profit = pct is not None and pct > 5
+        if rsi and rsi >= 75 and _in_profit:
+            sell.append(f"RSI overbought ({rsi}) — book partial")
+        if rsi and rsi >= 70 and near52h and _in_profit:
+            sell.append("Extended near 52w high — book partial")
         atr_trail = round(cmp - 2.0 * atr, 2)
         effective_trail = round(max(atr_trail, st_val), 2) if (st_bullish and st_val) else atr_trail
         if cmp < effective_trail: sell.append(f"Below Trail Stop (₹{effective_trail})")
@@ -1348,7 +1368,8 @@ def generate_signals(trades_df):
         if "📈 Double Top" in patterns: sell.append("Double Top Rejection")
         if "🏔️ Head & Shoulders (Top)" in patterns: sell.append("H&S Bearish Reversal")
         if "🟥 Bearish Engulfing" in candles and rsi and rsi > 65: sell.append("Bearish Distribution Candle")
-        if ind["vol_ratio"] > 2.5 and rsi and rsi > 65: sell.append("Volume spike at resistance")
+        if ind["vol_ratio"] > 2.5 and rsi and rsi > 65 and _in_profit:
+            sell.append("Volume spike at resistance — book partial")
         if trend in ("Downtrend", "Strong Downtrend") and pct < -8: sell.append(f"{trend} breakdown")
         if is_bear and pct < -5: sell.append("Bear Market override")
         # v12: momentum-fading early warning (histogram contracting + EMA flat + in profit)
