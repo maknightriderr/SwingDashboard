@@ -170,6 +170,64 @@ def _get_market_regime_safe():
 
 # Price cache: 5-min TTL so KPI cards don't block on every sidebar interaction.
 @st.cache_data(ttl=120, show_spinner=False)
+def _refresh_cmp_angel(symbols, max_symbols=60, deadline_s=10, _ad=None):
+    """Fetch Angel LTP for a SMALL list of symbols with a HARD deadline.
+
+    Why bounded: the universe scan runs on Yahoo daily closes because Angel's
+    bulk history times out on this host, and calling Angel per-symbol across
+    2000+ symbols hangs the scan outright (we proved that). But the rows you are
+    actually LOOKING at are a handful — those we can correct safely.
+
+    Returns (prices, status). Never raises; never blocks past the deadline.
+    """
+    import concurrent.futures as _cf
+    out = {}
+    syms = list(dict.fromkeys([str(s).upper().strip() for s in symbols if s]))[:max_symbols]
+    if not syms:
+        return out, "No symbols to refresh."
+    if _ad is None:
+        try:
+            import angel_data as _ad
+        except Exception:
+            return out, "angel_data.py not available — cannot refresh from Angel."
+    try:
+        if _ad.get_connection() is None:
+            return out, "Angel not connected — check credentials in Settings."
+    except Exception as e:
+        return out, f"Angel connection failed: {e}"
+
+    def _one(s):
+        try:
+            v = _ad.get_ltp(s)
+            return s, (round(float(v), 2) if v else None)
+        except Exception:
+            return s, None
+
+    ex = _cf.ThreadPoolExecutor(max_workers=8)
+    try:
+        futs = [ex.submit(_one, s) for s in syms]
+        try:
+            for f in _cf.as_completed(futs, timeout=deadline_s):
+                s, v = f.result()
+                if v:
+                    out[s] = v
+        except _cf.TimeoutError:
+            pass          # keep whatever arrived before the deadline
+    except Exception as e:
+        return out, f"Refresh error: {e}"
+    finally:
+        ex.shutdown(wait=False)   # never wait on stuck Angel calls
+
+    if not out:
+        status = (f"Angel returned no prices within {deadline_s}s — it is likely "
+                  f"unreachable from this host. Values left unchanged.")
+    elif len(out) < len(syms):
+        status = f"Refreshed {len(out)} of {len(syms)} (the rest timed out)."
+    else:
+        status = f"Refreshed all {len(out)} prices from Angel."
+    return out, status
+
+
 def _cached_prices(symbols_tuple):
     """Fetch ACCURATE live prices for a tuple of symbols.
 
@@ -3805,12 +3863,42 @@ elif _page == 'scanner':
 
         display_df = fdf.drop(columns=["Sector"]) if sel_sector != "All Sectors" else fdf
 
+        # Live-CMP override: the scan itself runs on Yahoo daily closes (Angel bulk
+        # history times out here), so after the close the CMP can be off. If the
+        # user pressed "Refresh CMP", patch the displayed rows with Angel's LTP.
+        _ovr = st.session_state.get("cmp_override") or {}
+        if _ovr and "Stock" in display_df.columns:
+            display_df = display_df.copy()
+            display_df["CMP"] = display_df["Stock"].map(_ovr).fillna(display_df["CMP"])
+
         liq_count = int((fdf["Liquid"]=="✅").sum()) if "Liquid" in fdf.columns else 0
         st.markdown(
             f'<div style="font-size:.78rem;color:var(--muted);margin-bottom:.4rem;'
             f'font-weight:600">Showing {len(fdf)} of {len(scan_df)} results · '
             f'💧 {liq_count} liquid</div>',
             unsafe_allow_html=True)
+
+        # ── Live CMP refresh (bounded — only the rows on screen) ───────────────
+        _rc1, _rc2 = st.columns([1, 3])
+        with _rc1:
+            if st.button("🔄 Refresh CMP (live)", use_container_width=True,
+                         help="The scan uses Yahoo daily closes, which lag after the "
+                              "NSE close. This re-fetches the price for the rows shown "
+                              "here from Angel (your broker feed). Capped at 60 rows "
+                              "with a 10s deadline so it can never hang the page."):
+                _syms = display_df["Stock"].tolist() if "Stock" in display_df.columns else []
+                with st.spinner("Fetching live prices from Angel…"):
+                    _px, _st_msg = _refresh_cmp_angel(_syms)
+                st.session_state["cmp_override"] = _px
+                st.session_state["cmp_override_msg"] = _st_msg
+                st.rerun()
+        with _rc2:
+            _msg = st.session_state.get("cmp_override_msg")
+            if _msg:
+                if st.session_state.get("cmp_override"):
+                    st.caption(f"✅ {_msg}")
+                else:
+                    st.caption(f"⚠️ {_msg}")
 
         # ── Single stable dataframe with fixed height ───────────────────────────
         st.dataframe(
