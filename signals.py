@@ -2029,10 +2029,33 @@ def detect_vcp(close, high, low, vol, atr, lookback=80):
     out["contractions"] = contractions
     out["n_contractions"] = len(contractions)
 
-    # 4. Each contraction shallower than the previous (allow one noise violation)
+    # 4. Each contraction shallower than the previous (allow one noise violation),
+    #    AND no single leg may blow out to more than 1.5x the previous leg.
+    #    Why the blowout gate: the "one violation allowed" tolerance alone let
+    #    shapes like -3% -> -15% -> -2% pass as a VCP. A mid-base leg 5x deeper
+    #    than the one before it is volatility EXPANSION — the opposite of a
+    #    contraction pattern — even though the last leg ends up shallower than
+    #    the first. The 1.5x band still tolerates ordinary noise (e.g. -9% ->
+    #    -10.2% -> -5% passes); it only rejects genuine blowouts.
     violations = sum(1 for i in range(1, len(contractions))
                      if contractions[i] > contractions[i-1] + 1.0)
-    tightening = violations <= 1 and contractions[-1] < contractions[0]
+    blowout = any(contractions[i] > contractions[i-1] * 1.5
+                  for i in range(1, len(contractions)))
+    # Absolute base depth gate (Minervini): a proper VCP base is a shallow
+    # consolidation, typically well inside ~35% high-to-low. A "base" deeper
+    # than that is a damaged stock repairing a big decline, not a tight coil —
+    # its breakouts behave very differently. This gate is more reliable than
+    # leg-ratio checks alone, because which legs the fractal finder picks up
+    # varies with noise, whereas total base depth does not.
+    _base_depth = ((seg_hi - seg_lo) / seg_hi * 100.0) if seg_hi > 0 else 999
+    _depth_ok = _base_depth <= 35.0
+
+    tightening = (violations <= 1
+                  and contractions[-1] < contractions[0]
+                  and not blowout
+                  and _depth_ok)
+    if not _depth_ok:
+        out["detail"] = f"Base too deep ({_base_depth:.0f}%) — not a tight coil"
     final_tight = contractions[-1] <= 12.0
 
     # 5. Volume dry-up: right third quieter than left third
@@ -2411,6 +2434,11 @@ def scan_for_traps(min_confidence=55):
             bull_traps.append({
                 "stock":              symbol,
                 "sector":             sector,
+                # Session in which this trap was CONFIRMED. A trap is confirmed on
+                # the bar where price reclaims the level, i.e. the latest bar of
+                # the data used — so this is the trading day it fired, which is
+                # not necessarily the day you happened to run the scan.
+                "trap_date":          ind.get("last_bar_date"),
                 "cmp":                cmp,
                 "rsi":                ind["rsi"],
                 "confidence":         ind["bull_trap_conf"],
@@ -2433,6 +2461,11 @@ def scan_for_traps(min_confidence=55):
             bear_traps.append({
                 "stock":              symbol,
                 "sector":             sector,
+                # Session in which this trap was CONFIRMED. A trap is confirmed on
+                # the bar where price reclaims the level, i.e. the latest bar of
+                # the data used — so this is the trading day it fired, which is
+                # not necessarily the day you happened to run the scan.
+                "trap_date":          ind.get("last_bar_date"),
                 "cmp":                cmp,
                 "rsi":                ind["rsi"],
                 "confidence":         ind["bear_trap_conf"],
