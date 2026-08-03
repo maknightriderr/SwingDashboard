@@ -4551,6 +4551,7 @@ elif _page == 'traps':
     <span>🚧 Resist: ₹{bt['resistance']}</span>
     <span>🔁 Re-entry SL: ₹{bt['re_entry_sl']}</span>
     <span>ST: {'🟢 Bull' if bt.get('supertrend_bullish') else '🔴 Bear'}</span>
+    <span>📅 Fired: {bt.get('trap_date') or '—'}</span>
   </div>
   {('<div style="font-size:.72rem;color:var(--muted);margin-top:.4rem">📐 ' + bt['patterns'] + '</div>') if bt.get('patterns') else ''}
 </div>""", unsafe_allow_html=True)
@@ -4616,6 +4617,7 @@ elif _page == 'traps':
     <span>🚧 Resist: ₹{brt['resistance']}</span>
     <span>📈 Trend: {brt['trend']}</span>
     <span>ST: {'🟢 Bull' if brt.get('supertrend_bullish') else '🔴 Bear'}</span>
+    <span>📅 Fired: {brt.get('trap_date') or '—'}</span>
   </div>
   {('<div style="font-size:.72rem;color:var(--muted);margin-top:.4rem">📐 ' + brt['patterns'] + '</div>') if brt.get('patterns') else ''}
 </div>""", unsafe_allow_html=True)
@@ -4631,10 +4633,10 @@ elif _page == 'traps':
         st.markdown("<br>", unsafe_allow_html=True)
         if bull_traps or bear_traps:
             bull_df = pd.DataFrame(bull_traps)[
-                ["stock","sector","cmp","rsi","confidence","detail","support","resistance","trend"]
+                ["stock","trap_date","sector","cmp","rsi","confidence","detail","support","resistance","trend"]
             ] if bull_traps else pd.DataFrame()
             bear_df = pd.DataFrame(bear_traps)[
-                ["stock","sector","cmp","rsi","confidence","detail","entry","target","stop_loss","risk_reward","trend"]
+                ["stock","trap_date","sector","cmp","rsi","confidence","detail","entry","target","stop_loss","risk_reward","trend"]
             ] if bear_traps else pd.DataFrame()
 
             exp1, exp2 = st.columns(2)
