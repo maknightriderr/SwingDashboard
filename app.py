@@ -469,7 +469,7 @@ def _q(sql):
 
 
 _PG_SCHEMA_PREFIX = "public."
-_PG_TABLES = ("users", "trades", "portfolio_history", "tg_config", "watchlist", "price_alerts", "trade_journal", "vcp_snapshots", "vcp_watch")
+_PG_TABLES = ("users", "trades", "portfolio_history", "tg_config", "watchlist", "price_alerts", "trade_journal", "vcp_snapshots", "vcp_watch", "trap_seen")
 
 
 def _pg_qualify(sql):
@@ -565,6 +565,10 @@ def init_db():
                 id SERIAL PRIMARY KEY, user_id INTEGER, stock TEXT,
                 pivot REAL, added_date TEXT, alerted INTEGER DEFAULT 0,
                 alerted_date TEXT)""",
+            """CREATE TABLE IF NOT EXISTS trap_seen(
+                id SERIAL PRIMARY KEY, user_id INTEGER, stock TEXT,
+                trap_type TEXT, trap_date TEXT, first_seen TEXT,
+                last_seen TEXT, peak_confidence INTEGER)""",
         ]
         for ddl in table_ddls:
             try:
@@ -614,6 +618,10 @@ def init_db():
             id INTEGER PRIMARY KEY AUTOINCREMENT, user_id INTEGER, stock TEXT,
             pivot REAL, added_date TEXT, alerted INTEGER DEFAULT 0,
             alerted_date TEXT)""")
+        c.execute("""CREATE TABLE IF NOT EXISTS trap_seen(
+            id INTEGER PRIMARY KEY AUTOINCREMENT, user_id INTEGER, stock TEXT,
+            trap_type TEXT, trap_date TEXT, first_seen TEXT, last_seen TEXT,
+            peak_confidence INTEGER)""")
         c.commit(); c.close()
 
 def register_user(username, password):
@@ -838,6 +846,63 @@ def vcp_outcome_stats(user_id):
     return {"total": len(rows), "open": open_n, "resolved": len(resolved),
             "hits": len(hits), "stops": len(stops), "hit_rate": hit_rate,
             "avg_return": avg_ret, "avg_days_to_target": avg_days}
+
+
+def record_traps_seen(user_id, bull_traps, bear_traps):
+    """Remember when each trap was FIRST observed. Keyed on
+    (stock, type, trap_date) so re-scanning the same trap doesn't create
+    duplicates, while a genuinely NEW trap on the same stock later gets its own
+    record. Also tracks the highest confidence ever seen for that trap.
+    Defensive — never blocks the scan."""
+    import datetime as _dt
+    today = _dt.date.today().isoformat()
+    new = 0
+    for kind, traps in (("bull", bull_traps or []), ("bear", bear_traps or [])):
+        for t in traps:
+            stock = t.get("stock")
+            if not stock:
+                continue
+            tdate = t.get("trap_date") or today
+            conf = int(t.get("confidence") or 0)
+            try:
+                row = db("SELECT id,peak_confidence FROM trap_seen WHERE user_id=? "
+                         "AND stock=? AND trap_type=? AND trap_date=?",
+                         (user_id, stock, kind, tdate), fetch=True)
+                if row:
+                    rid, peak = row[0]
+                    db("UPDATE trap_seen SET last_seen=?, peak_confidence=? WHERE id=?",
+                       (today, max(peak or 0, conf), rid))
+                else:
+                    db("INSERT INTO trap_seen(user_id,stock,trap_type,trap_date,"
+                       "first_seen,last_seen,peak_confidence) VALUES(?,?,?,?,?,?,?)",
+                       (user_id, stock, kind, tdate, today, today, conf))
+                    new += 1
+            except Exception:
+                continue
+    return new
+
+
+def get_trap_first_seen(user_id):
+    """{(stock, trap_type, trap_date): (first_seen, last_seen, peak_conf)}"""
+    out = {}
+    try:
+        rows = db("SELECT stock,trap_type,trap_date,first_seen,last_seen,"
+                  "peak_confidence FROM trap_seen WHERE user_id=?",
+                  (user_id,), fetch=True) or []
+    except Exception:
+        return out
+    for st, ty, td, fs, ls, pc in rows:
+        out[(st, ty, td)] = (fs, ls, pc)
+    return out
+
+
+def load_trap_history(user_id, limit=200):
+    try:
+        return db("SELECT stock,trap_type,trap_date,first_seen,last_seen,"
+                  "peak_confidence FROM trap_seen WHERE user_id=? "
+                  "ORDER BY first_seen DESC, stock", (user_id,), fetch=True) or []
+    except Exception:
+        return []
 
 
 def add_vcp_watch(user_id, setups):
@@ -4500,6 +4565,32 @@ elif _page == 'traps':
         bull_traps = trap_data.get("bull_traps", [])
         bear_traps = trap_data.get("bear_traps", [])
 
+        # Persist when each trap was FIRST seen, then attach that to the cards so
+        # you can tell a trap that just fired from one you've been looking at for
+        # a week (the trap_date tells you the session it formed; first_seen tells
+        # you when this dashboard first surfaced it).
+        _tuid = st.session_state.get("user_id")
+        try:
+            record_traps_seen(_tuid, bull_traps, bear_traps)
+            _seen_map = get_trap_first_seen(_tuid)
+        except Exception:
+            _seen_map = {}
+        import datetime as _dtm
+        _today_iso = _dtm.date.today().isoformat()
+        for _kind, _lst in (("bull", bull_traps), ("bear", bear_traps)):
+            for _t in _lst:
+                _key = (_t.get("stock"), _kind, _t.get("trap_date") or _today_iso)
+                _rec = _seen_map.get(_key)
+                if _rec:
+                    _t["first_seen"] = _rec[0]
+                    _t["peak_confidence"] = _rec[2]
+                    try:
+                        _days = (_dtm.date.today()
+                                 - _dtm.date.fromisoformat(_rec[0])).days
+                        _t["days_since_seen"] = _days
+                    except Exception:
+                        _t["days_since_seen"] = None
+
         # ── Filter by confidence slider ─────────────────────────────────────────
         bull_traps = [x for x in bull_traps if x["confidence"] >= min_conf]
         bear_traps = [x for x in bear_traps if x["confidence"] >= min_conf]
@@ -4552,6 +4643,7 @@ elif _page == 'traps':
     <span>🔁 Re-entry SL: ₹{bt['re_entry_sl']}</span>
     <span>ST: {'🟢 Bull' if bt.get('supertrend_bullish') else '🔴 Bear'}</span>
     <span>📅 Fired: {bt.get('trap_date') or '—'}</span>
+    <span>👁 First seen: {(bt.get('first_seen') or '—')}{(' (' + str(bt['days_since_seen']) + 'd ago)') if bt.get('days_since_seen') else ''}</span>
   </div>
   {('<div style="font-size:.72rem;color:var(--muted);margin-top:.4rem">📐 ' + bt['patterns'] + '</div>') if bt.get('patterns') else ''}
 </div>""", unsafe_allow_html=True)
@@ -4618,6 +4710,7 @@ elif _page == 'traps':
     <span>📈 Trend: {brt['trend']}</span>
     <span>ST: {'🟢 Bull' if brt.get('supertrend_bullish') else '🔴 Bear'}</span>
     <span>📅 Fired: {brt.get('trap_date') or '—'}</span>
+    <span>👁 First seen: {(brt.get('first_seen') or '—')}{(' (' + str(brt['days_since_seen']) + 'd ago)') if brt.get('days_since_seen') else ''}</span>
   </div>
   {('<div style="font-size:.72rem;color:var(--muted);margin-top:.4rem">📐 ' + brt['patterns'] + '</div>') if brt.get('patterns') else ''}
 </div>""", unsafe_allow_html=True)
@@ -4632,12 +4725,25 @@ elif _page == 'traps':
         # ── Export trap results ─────────────────────────────────────────────────
         st.markdown("<br>", unsafe_allow_html=True)
         if bull_traps or bear_traps:
-            bull_df = pd.DataFrame(bull_traps)[
-                ["stock","trap_date","sector","cmp","rsi","confidence","detail","support","resistance","trend"]
-            ] if bull_traps else pd.DataFrame()
-            bear_df = pd.DataFrame(bear_traps)[
-                ["stock","trap_date","sector","cmp","rsi","confidence","detail","entry","target","stop_loss","risk_reward","trend"]
-            ] if bear_traps else pd.DataFrame()
+            def _trap_export(rows, cols):
+                """Build the export frame, tolerating any column that a given
+                trap dict happens not to carry (a missing key must never take
+                the page down)."""
+                if not rows:
+                    return pd.DataFrame()
+                _d = pd.DataFrame(rows)
+                for _c in cols:
+                    if _c not in _d.columns:
+                        _d[_c] = None
+                return _d[cols]
+
+            bull_df = _trap_export(bull_traps,
+                ["stock","trap_date","first_seen","sector","cmp","rsi",
+                 "confidence","detail","support","resistance","trend"])
+            bear_df = _trap_export(bear_traps,
+                ["stock","trap_date","first_seen","sector","cmp","rsi",
+                 "confidence","detail","entry","target","stop_loss",
+                 "risk_reward","trend"])
 
             exp1, exp2 = st.columns(2)
             with exp1:
