@@ -3419,13 +3419,24 @@ elif _page == 'signals':
                 try:
                     _stk = _pos["stock"]
                     _buy = float(_pos["buy_at"])
-                    _cmp_p = _pos.get("cmp")
-                    if pd.isna(_cmp_p):
-                        continue
-                    _cmp_p = float(_cmp_p)
                     _sg_ = _sig_by_stock.get(_stk, {})
                     _stp = _sg_.get("stop_loss")
-                    _pct = float(_pos.get("profit_pct", 0) or 0)
+                    # Use the SIGNAL's price, not the portfolio's live quote.
+                    # They come from different sources (portfolio = live tick,
+                    # signals = last daily close), so mixing them showed two
+                    # different CMPs for one stock AND made the R-multiple
+                    # compare a live price against a close-derived stop. The
+                    # target, SL and R shown here are all computed on the daily
+                    # close, so the price must be from that same basis.
+                    _cmp_p = _sg_.get("cmp")
+                    if _cmp_p is None:
+                        _cmp_p = _pos.get("cmp")      # fallback: no signal row
+                    if _cmp_p is None or pd.isna(_cmp_p):
+                        continue
+                    _cmp_p = float(_cmp_p)
+                    # Recompute P&L off the same price for consistency
+                    _pct = (round((_cmp_p - _buy) / _buy * 100, 2) if _buy
+                            else float(_pos.get("profit_pct", 0) or 0))
                     try:
                         _days = (datetime.now() -
                                  pd.to_datetime(_pos.get("added_date"))).days
