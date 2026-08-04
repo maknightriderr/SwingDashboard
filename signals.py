@@ -960,8 +960,16 @@ def _compute_indicators_raw(symbol, period="1y", prefetched_df=None):
     # ── Volume & Liquidity (FIX 10: soft gate, not silent None) ──────────────
     vol_avg   = float(vol.rolling(20).mean().iloc[-1]) if len(vol) >= 20 else float(vol.mean())
     vol_ratio = float(vol.iloc[-1]) / vol_avg if vol_avg > 0 else 1.0
-    avg_turnover = vol_avg * cmp
-    liquidity_ok = avg_turnover >= 10_000_000   # ₹1 Cr daily turnover
+    # Liquidity uses the MEDIAN, not the mean. A single block deal or news-day
+    # spike drags the 20-day mean up enormously (one 50x day lifts a 20-day mean
+    # ~3.5x), which made a genuinely thin stock look tradeable. The median
+    # ignores that one bar and reflects what you can actually transact on a
+    # normal day. vol_ratio above still uses the mean — spike detection WANTS
+    # to be spike-sensitive.
+    _vol_med = (float(vol.rolling(20).median().iloc[-1]) if len(vol) >= 20
+                else float(vol.median()))
+    avg_turnover = (_vol_med if _vol_med and _vol_med > 0 else vol_avg) * cmp
+    liquidity_ok = avg_turnover >= 10_000_000   # ₹1 Cr typical daily turnover
 
     # ── 20-day S/R ─────────────────────────────────────────────────────────────
     _sr_window = min(20, len(close))
