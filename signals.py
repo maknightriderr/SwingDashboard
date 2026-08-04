@@ -1777,6 +1777,11 @@ def generate_market_scanner():
         if ind.get("macd_hist_expanding"): score += 1
         if ind.get("bb_squeeze"): score += 1
         if rsi and 60 <= rsi <= 75: score += 3
+        # Extreme overbought: Active Signals treats RSI>=75 as an exhaustion/
+        # book-partial trigger, so the scanner must not keep rating such a stock
+        # as a fresh entry — otherwise one page says BUY while the other says
+        # overbought on the very same reading.
+        elif rsi and rsi > 80: score -= 2
         if "🚀 Vol Breakout" in patterns: score += 5
         if "🚩 Bull Flag Breakout" in patterns: score += 4
         if "☕ Cup & Handle Breakout" in patterns: score += 4
@@ -1796,11 +1801,29 @@ def generate_market_scanner():
                 "🟥 Bearish Engulfing" in candles):
             score -= 5
         if trend in ("Downtrend", "Strong Downtrend"): score -= 4
-        if score >= 8: signal = "🔥 STRONG BUY"
+        # A real SETUP (something actually happening now), as opposed to the
+        # generic trend indicators. Uptrend + Supertrend + MACD + expanding
+        # histogram sum to exactly 8 on their own, yet they all measure the same
+        # thing — "price is above rising moving averages" — so a stock with no
+        # breakout, no pattern and no base could be labelled STRONG BUY purely
+        # from one signal counted four times. STRONG BUY now requires at least
+        # one genuine setup component; without it the ceiling is BUY SETUP.
+        _has_setup = bool(
+            "🚀 Vol Breakout" in patterns
+            or "🚩 Bull Flag Breakout" in patterns
+            or "☕ Cup & Handle Breakout" in patterns
+            or ind.get("vcp")
+            or (_rs_sc is not None and _rs_sc >= 1.15)
+        )
+        # Banding: AVOID is a bearish WARNING, so it must mean a negative score.
+        # Previously score 0 (a featureless stock with no signals at all) got the
+        # same "AVOID" as a genuinely bearish -9, and NEUTRAL covered only the
+        # single score 1.
+        if score >= 8 and _has_setup: signal = "🔥 STRONG BUY"
         elif score >= 5: signal = "🟢 BUY SETUP"
         elif score >= 2: signal = "🟡 ACCUMULATE"
-        elif score <= 0: signal = "🔴 AVOID"
-        else: signal = "⚪ NEUTRAL"
+        elif score >= 0: signal = "⚪ NEUTRAL"
+        else: signal = "🔴 AVOID"
         all_pats = patterns + candles
         pat_str  = " | ".join(all_pats) if all_pats else "—"
 
