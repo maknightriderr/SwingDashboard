@@ -1861,6 +1861,13 @@ def generate_market_scanner():
                 f"-{_c}%" for _c in (ind.get("vcp_contractions") or []))
                 or "—"),
             "RS_Lead": "💪" if ind.get("rs_outperforming") else "",
+            # Levels needed to describe a concrete entry trigger rather than
+            # just "buy at CMP": the VCP pivot is the breakout line, EMA21 is
+            # the usual pullback line, and ATR sizes the buffer/stop.
+            "Pivot": (round(float(ind["vcp_pivot"]), 2)
+                      if ind.get("vcp_pivot") else None),
+            "EMA21": (round(float(ind["ema21"]), 2) if ind.get("ema21") else None),
+            "ATR": round(float(ind.get("atr", 0)), 2),
             "Patterns": pat_str,
             "Turnover_Cr": round(ind.get("avg_turnover", 0) / 1e7, 1),
             "Liquid": "✅" if ind.get("liquidity_ok", True) else "⚠️ Low",
