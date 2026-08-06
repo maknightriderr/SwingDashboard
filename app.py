@@ -171,26 +171,55 @@ def _get_market_regime_safe():
 # Price cache: 5-min TTL so KPI cards don't block on every sidebar interaction.
 @st.cache_data(ttl=120, show_spinner=False)
 def _why_ranked(r):
-    """Human reason built ONLY from what actually scored — no invented narrative."""
-    bits = []
+    """Human reason built ONLY from what actually scored — no invented narrative.
+    Ordered strongest-evidence-first so the lead clause is the real driver."""
+    strong, context, warn = [], [], []
     pats = str(r.get("Patterns") or "")
-    if "Vol Breakout" in pats:      bits.append("volume breakout")
-    if "Bull Flag" in pats:         bits.append("bull-flag breakout")
-    if "Cup & Handle" in pats:      bits.append("cup & handle")
-    if "Coiling" in pats:           bits.append("coiling tightly")
+
+    # --- the actual setup (what is happening NOW) ---
+    if "Vol Breakout" in pats:   strong.append("breaking out on heavy volume")
+    if "Bull Flag" in pats:      strong.append("bull-flag breakout")
+    if "Cup & Handle" in pats:   strong.append("cup-and-handle breakout")
+    if "Pocket Pivot" in pats:   strong.append("pocket pivot (institutional buying)")
+    if "NR7 Inside Bar" in pats: strong.append("coiled into an NR7 inside bar")
+    elif "Coiling" in pats:      strong.append("volatility coiling tight")
     vcp = str(r.get("VCP") or "—")
     if vcp != "—":
-        bits.append(f"VCP base {vcp.replace('🎯','').strip()}")
-    if r.get("RS_Lead"):            bits.append("outperforming the index")
+        _v = vcp.replace("🎯", "").strip()
+        _nc = r.get("Contractions") or 0
+        _seq = str(r.get("Sequence") or "")
+        _extra = f" ({_nc} contractions: {_seq})" if _nc and _seq != "—" else ""
+        strong.append(f"VCP base grade {_v}{_extra}")
+
+    # --- supporting context ---
+    if r.get("RS_Lead"):
+        _rs = r.get("RS")
+        context.append(f"leading the index (RS {_rs})" if _rs else "leading the index")
     tr = str(r.get("Trend") or "")
-    if "Strong Uptrend" in tr:      bits.append("strong uptrend")
-    elif "Uptrend" in tr:           bits.append("uptrend")
+    if "Strong Uptrend" in tr: context.append("strong uptrend")
+    elif "Uptrend" in tr:      context.append("uptrend")
     rsi = r.get("RSI") or 0
-    if 60 <= rsi <= 75:             bits.append(f"RSI {rsi:.0f} in the momentum band")
-    elif rsi > 80:                  bits.append(f"⚠️ RSI {rsi:.0f} extended")
+    if 60 <= rsi <= 75:  context.append(f"RSI {rsi:.0f} in the momentum band")
+    elif 50 <= rsi < 60: context.append(f"RSI {rsi:.0f}, room to run")
+    _turn = r.get("Turnover_Cr")
+    if _turn and float(_turn) >= 25:
+        context.append(f"liquid (₹{float(_turn):.0f} Cr/day)")
+
+    # --- things that argue against it ---
+    if rsi > 80: warn.append(f"RSI {rsi:.0f} extended — poor risk/reward to chase")
     trap = str(r.get("Trap") or "—")
-    if trap != "—":                 bits.append(f"⚠️ {trap}")
-    return ", ".join(bits) if bits else "score from trend indicators only"
+    if trap != "—": warn.append(str(trap))
+    _id = r.get("_ideal") or {}
+    if isinstance(_id, dict) and (_id.get("run_pct") or 0) >= 12:
+        warn.append(f"already {_id['run_pct']:.0f}% off its trigger")
+
+    parts = []
+    if strong:  parts.append(" + ".join(strong))
+    if context: parts.append(", ".join(context))
+    txt = " · ".join(parts) if parts else "scored on trend indicators alone"
+    if warn:
+        txt += "  ⚠️ " + "; ".join(warn)
+    return txt
 
 
 def _entry_plan(r):
@@ -4090,6 +4119,31 @@ elif _page == 'scanner':
                     _lvl, _lab, _note = _entry_plan(_r)
                     _why = _why_ranked(_r)
                     _medal = {1:"🥇",2:"🥈",3:"🥉"}.get(_i, f"#{_i}")
+                    # Where the move actually began — pure hindsight, labelled as
+                    # such. Useful for judging whether you are early or chasing,
+                    # NOT a level you can still buy.
+                    _hindsight = ""
+                    _idl = _r.get("_ideal")
+                    if isinstance(_idl, dict) and _idl.get("price"):
+                        _kindtxt = ("breakout" if _idl.get("kind") == "breakout"
+                                    else "base low")
+                        _run = _idl.get("run_pct") or 0
+                        _tone = ("#ef4444" if _run >= 12 else
+                                 "#f59e0b" if _run >= 6 else "#10b981")
+                        _verdict = ("you are late — that is a chase" if _run >= 12
+                                    else "still reasonably close" if _run >= 6
+                                    else "you are early — near the trigger")
+                        _hindsight = (
+                            f'<div style="font-size:.75rem;margin-top:.35rem;'
+                            f'padding-top:.35rem;border-top:1px dashed var(--border)">'
+                            f'<span style="color:var(--muted)">Best entry (hindsight): '
+                            f'</span><b>₹{_idl["price"]:.2f}</b> '
+                            f'<span style="color:var(--muted)">on {_idl.get("date","—")} '
+                            f'({_idl.get("days_ago","?")}d ago, the {_kindtxt}) · '
+                            f'price has run </span>'
+                            f'<b style="color:{_tone}">{_run:+.1f}%</b>'
+                            f'<span style="color:var(--muted)"> since — {_verdict}.'
+                            f'</span></div>')
                     # The scanner's SL/Target are measured from CMP. If the plan
                     # is to enter LOWER (e.g. a pullback to EMA21), that stop can
                     # sit ABOVE the entry — an incoherent plan. Recompute the
@@ -4120,6 +4174,7 @@ elif _page == 'scanner':
                         f'{"  ·  R:R " + str(_rr) if _rr else ""}</div>'
                         f'<div style="font-size:.75rem;color:var(--muted);'
                         f'margin-top:.25rem">{_note}</div>'
+                        f'{_hindsight}'
                         f'</div>', unsafe_allow_html=True)
 
         # ── Live CMP refresh (bounded — only the rows on screen) ───────────────
