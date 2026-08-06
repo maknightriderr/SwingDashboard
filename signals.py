@@ -1750,6 +1750,61 @@ def get_scanner_diagnostics():
     return msg
 
 # ─── Master Universe Scanner — FIX 9: unified engine + liquidity gate ─────────
+def _ideal_entry_from_history(df, lookback=90, brk_window=20):
+    """Where the CURRENT move actually began — the most recent day price closed
+    above the prior `brk_window`-day high (the breakout that started this leg).
+    If no breakout has happened yet, fall back to the base low (the best price
+    available inside the current consolidation).
+
+    This is HINDSIGHT: it says where the ideal fill was, not where to buy now.
+    Returns dict(price, date, days_ago, run_pct, kind) or None.
+    """
+    try:
+        if df is None or len(df) < brk_window + 5:
+            return None
+        c = df["Close"].astype(float)
+        seg = c.iloc[-lookback:] if len(c) > lookback else c
+        prior_high = c.rolling(brk_window).max().shift(1)   # high BEFORE each bar
+        cross = (c > prior_high) & prior_high.notna()
+        seg_cross = cross.iloc[-lookback:] if len(cross) > lookback else cross
+
+        cmp_ = float(c.iloc[-1])
+        idx_dates = df.index
+
+        if seg_cross.any():
+            # most recent breakout that STARTED the current leg: walk back to the
+            # first breakout of this uninterrupted run
+            positions = np.where(seg_cross.values)[0]
+            last = positions[-1]
+            first_of_run = last
+            for p in reversed(positions):
+                if last - p <= 15:      # same leg if breakouts cluster
+                    first_of_run = p
+                    last = p
+                else:
+                    break
+            offset = len(c) - len(seg_cross)
+            gi = offset + first_of_run
+            price = float(c.iloc[gi])
+            date = idx_dates[gi]
+            days = len(c) - 1 - gi
+            return {"price": round(price, 2),
+                    "date": str(date.date()) if hasattr(date, "date") else None,
+                    "days_ago": int(days),
+                    "run_pct": round((cmp_ - price) / price * 100, 2),
+                    "kind": "breakout"}
+        # no breakout yet — best available fill is the base low
+        gi = int(np.argmin(seg.values)) + (len(c) - len(seg))
+        price = float(c.iloc[gi]); date = idx_dates[gi]
+        return {"price": round(price, 2),
+                "date": str(date.date()) if hasattr(date, "date") else None,
+                "days_ago": int(len(c) - 1 - gi),
+                "run_pct": round((cmp_ - price) / price * 100, 2),
+                "kind": "base low"}
+    except Exception:
+        return None
+
+
 def generate_market_scanner():
     all_symbols = []
     for sector, stocks in SECTOR_STOCKS.items():
@@ -1868,6 +1923,9 @@ def generate_market_scanner():
                       if ind.get("vcp_pivot") else None),
             "EMA21": (round(float(ind["ema21"]), 2) if ind.get("ema21") else None),
             "ATR": round(float(ind.get("atr", 0)), 2),
+            # Where this move actually began (hindsight) — lets the UI say
+            # "the ideal fill was X on DATE, price has run Y% since".
+            "_ideal": _ideal_entry_from_history(df),
             "Patterns": pat_str,
             "Turnover_Cr": round(ind.get("avg_turnover", 0) / 1e7, 1),
             "Liquid": "✅" if ind.get("liquidity_ok", True) else "⚠️ Low",
