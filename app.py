@@ -170,6 +170,61 @@ def _get_market_regime_safe():
 
 # Price cache: 5-min TTL so KPI cards don't block on every sidebar interaction.
 @st.cache_data(ttl=120, show_spinner=False)
+def _why_ranked(r):
+    """Human reason built ONLY from what actually scored — no invented narrative."""
+    bits = []
+    pats = str(r.get("Patterns") or "")
+    if "Vol Breakout" in pats:      bits.append("volume breakout")
+    if "Bull Flag" in pats:         bits.append("bull-flag breakout")
+    if "Cup & Handle" in pats:      bits.append("cup & handle")
+    if "Coiling" in pats:           bits.append("coiling tightly")
+    vcp = str(r.get("VCP") or "—")
+    if vcp != "—":
+        bits.append(f"VCP base {vcp.replace('🎯','').strip()}")
+    if r.get("RS_Lead"):            bits.append("outperforming the index")
+    tr = str(r.get("Trend") or "")
+    if "Strong Uptrend" in tr:      bits.append("strong uptrend")
+    elif "Uptrend" in tr:           bits.append("uptrend")
+    rsi = r.get("RSI") or 0
+    if 60 <= rsi <= 75:             bits.append(f"RSI {rsi:.0f} in the momentum band")
+    elif rsi > 80:                  bits.append(f"⚠️ RSI {rsi:.0f} extended")
+    trap = str(r.get("Trap") or "—")
+    if trap != "—":                 bits.append(f"⚠️ {trap}")
+    return ", ".join(bits) if bits else "score from trend indicators only"
+
+
+def _entry_plan(r):
+    """Concrete trigger level + what it depends on. Returns (level, label, note)."""
+    cmp_ = float(r.get("CMP") or 0)
+    piv  = r.get("Pivot")
+    res  = float(r.get("Resist") or 0)
+    ema  = r.get("EMA21")
+    atr  = float(r.get("ATR") or 0)
+    pats = str(r.get("Patterns") or "")
+
+    # 1. VCP base with a pivot that price hasn't cleared yet — the classic buy
+    if piv and cmp_ < piv:
+        return (round(piv*1.002, 2), "Buy on break above pivot",
+                f"Pivot ₹{piv:.2f}. Trigger only if it closes above with volume.")
+    # 2. Breakout already happened — the clean entry was the breakout level
+    if ("Vol Breakout" in pats or "Bull Flag" in pats or "Cup & Handle" in pats):
+        if res and cmp_ > res:
+            ext = (cmp_ - res) / res * 100
+            return (round(res, 2), "Breakout already through — wait for retest",
+                    f"Ideal entry was ₹{res:.2f} (the breakout line); price is "
+                    f"{ext:.1f}% past it. Chasing here widens your risk.")
+        return (round(res*1.002, 2) if res else None, "Buy above the breakout line",
+                f"Breakout line ₹{res:.2f}." if res else "")
+    # 3. Trending stock, no fresh trigger — pullback entry
+    if ema and cmp_ > ema:
+        dist = (cmp_ - ema) / ema * 100
+        return (round(ema, 2), "Buy on pullback to EMA21",
+                f"EMA21 ₹{ema:.2f}, {dist:.1f}% below CMP. No fresh trigger today.")
+    # 4. Nothing clean
+    return (None, "No clean trigger",
+            "Wait for a breakout or a pullback to support.")
+
+
 def _refresh_cmp_angel(symbols, max_symbols=60, deadline_s=10, _ad=None):
     """Fetch Angel LTP for a SMALL list of symbols with a HARD deadline.
 
@@ -3900,10 +3955,22 @@ elif _page == 'scanner':
                            "🟡 ACCUMULATE","⚪ NEUTRAL","🔴 AVOID"]
             sel_signal = st.selectbox("Signal", signal_opts, label_visibility="collapsed")
         with fc3:
-            _has_liq_col2 = "Liquid" in scan_df.columns if scan_df is not None else False
-            liq_opts = (["All","✅ Liquid Only","⚠️ Low Liq Only"]
-                        if _has_liq_col2 else ["All"])
-            sel_liq = st.selectbox("Liquidity", liq_opts, label_visibility="collapsed")
+            # The universe scan already EXCLUDES stocks under the ₹1 Cr/day
+            # turnover gate before results are built, so every row here is
+            # liquid by construction. Offering a "Low Liq Only" option promised
+            # rows that can never exist (it always returned an empty table).
+            # Only show a liquidity selector if the data genuinely contains a
+            # mix — otherwise say plainly that the gate was already applied.
+            _liq_vals = (set(scan_df["Liquid"].dropna().unique())
+                         if scan_df is not None and "Liquid" in scan_df.columns
+                         else set())
+            if len(_liq_vals) > 1:
+                sel_liq = st.selectbox("Liquidity",
+                                       ["All", "✅ Liquid Only", "⚠️ Low Liq Only"],
+                                       label_visibility="collapsed")
+            else:
+                sel_liq = "All"
+                st.caption("✅ All liquid (₹1 Cr+/day)")
         with fc4:
             search_stock = st.text_input("Search", placeholder="Symbol",
                                          label_visibility="collapsed")
@@ -3990,6 +4057,70 @@ elif _page == 'scanner':
             elif _stale_n:
                 st.caption(f"ℹ️ {_stale_n} row(s) have older data than today — see "
                            f"the **Data Date** column.")
+
+        # ── Top picks: rank the filtered results and explain each one ─────────
+        with st.expander("🏆 Top 5 picks — ranked, with reasons and entry levels",
+                         expanded=True):
+            # Only rank ACTIONABLE candidates. Listing an AVOID/NEUTRAL row as a
+            # "top pick" just because it sorted highest among weak results would
+            # be actively misleading.
+            _rank_src = display_df.copy()
+            if "Score" in _rank_src.columns:
+                _rank_src = _rank_src[
+                    pd.to_numeric(_rank_src["Score"], errors="coerce").fillna(-99) >= 2]
+            if _rank_src.empty:
+                st.info("No actionable candidates right now (nothing scored "
+                        "ACCUMULATE or better at these filters). That is itself "
+                        "a useful read — not every day has a good setup.")
+            else:
+                # Rank on Score, then RS leadership, then liquidity — the same
+                # inputs the table already shows, so the ranking is auditable.
+                _rank_src["_rs_num"] = pd.to_numeric(
+                    _rank_src.get("RS"), errors="coerce").fillna(0)
+                _rank_src["_liq"] = pd.to_numeric(
+                    _rank_src.get("Turnover_Cr"), errors="coerce").fillna(0)
+                _top = _rank_src.sort_values(
+                    ["Score", "_rs_num", "_liq"], ascending=False).head(5)
+
+                st.caption("Ranked by the scanner's own score. This orders the "
+                           "candidates — it does not predict which will work. "
+                           "Levels below are triggers to plan around, not "
+                           "instructions.")
+                for _i, (_, _r) in enumerate(_top.iterrows(), start=1):
+                    _lvl, _lab, _note = _entry_plan(_r)
+                    _why = _why_ranked(_r)
+                    _medal = {1:"🥇",2:"🥈",3:"🥉"}.get(_i, f"#{_i}")
+                    # The scanner's SL/Target are measured from CMP. If the plan
+                    # is to enter LOWER (e.g. a pullback to EMA21), that stop can
+                    # sit ABOVE the entry — an incoherent plan. Recompute the
+                    # stop from the planned entry whenever that happens.
+                    _sl = _r.get("SL"); _tg = _r.get("Target")
+                    _atr_v = float(_r.get("ATR") or 0)
+                    if _lvl and _sl is not None and float(_sl) >= _lvl and _atr_v > 0:
+                        _sl = round(_lvl - 1.75 * _atr_v, 2)
+                    _rr = None
+                    if _lvl and _sl and _tg and _lvl > float(_sl):
+                        _risk = _lvl - float(_sl)
+                        if _risk > 0.01:
+                            _rr = round((float(_tg) - _lvl) / _risk, 2)
+                    st.markdown(
+                        f'<div style="padding:.6rem .8rem;margin:.4rem 0;'
+                        f'border:1px solid var(--border);border-radius:8px">'
+                        f'<div style="font-weight:700">{_medal} {_r["Stock"]} '
+                        f'<span style="color:var(--muted);font-weight:400;'
+                        f'font-size:.8rem">· {_r.get("Sector","")} · score '
+                        f'{_r["Score"]} · {_r.get("Signal","")}</span></div>'
+                        f'<div style="font-size:.82rem;margin-top:.3rem">'
+                        f'<b>Why:</b> {_why}</div>'
+                        f'<div style="font-size:.82rem;margin-top:.25rem">'
+                        f'<b>{_lab}:</b> '
+                        f'{("₹" + format(_lvl, ".2f")) if _lvl else "—"}'
+                        f'{"  ·  SL ₹" + format(float(_sl), ".2f") if _sl else ""}'
+                        f'{"  ·  Target ₹" + format(float(_tg), ".2f") if _tg else ""}'
+                        f'{"  ·  R:R " + str(_rr) if _rr else ""}</div>'
+                        f'<div style="font-size:.75rem;color:var(--muted);'
+                        f'margin-top:.25rem">{_note}</div>'
+                        f'</div>', unsafe_allow_html=True)
 
         # ── Live CMP refresh (bounded — only the rows on screen) ───────────────
         _rc1, _rc2 = st.columns([1, 3])
