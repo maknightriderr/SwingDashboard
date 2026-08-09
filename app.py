@@ -204,6 +204,13 @@ def _why_ranked(r):
     _turn = r.get("Turnover_Cr")
     if _turn and float(_turn) >= 25:
         context.append(f"liquid (₹{float(_turn):.0f} Cr/day)")
+    # Position in the dealing range. Deliberately NOT treated as bullish or
+    # bearish on its own: a breakout leader is *supposed* to sit in premium,
+    # while a discount reading can equally mean a stock that is simply falling.
+    _zone = str(r.get("Zone") or "")
+    _zpct = r.get("Zone %")
+    if _zone in ("Discount", "Equilibrium", "Premium") and _zpct is not None:
+        context.append(f"{_zone.lower()} of its range ({float(_zpct):.0f}%)")
 
     # --- things that argue against it ---
     if rsi > 80: warn.append(f"RSI {rsi:.0f} extended — poor risk/reward to chase")
@@ -3990,6 +3997,23 @@ elif _page == 'scanner':
             # rows that can never exist (it always returned an empty table).
             # Only show a liquidity selector if the data genuinely contains a
             # mix — otherwise say plainly that the gate was already applied.
+            if scan_df is not None and "Pattern Strength" in scan_df.columns:
+                sel_ps = st.selectbox(
+                    "Pattern strength",
+                    ["Any pattern", "🔥 Very Strong", "🟢 Strong+", "🟡 Medium+"],
+                    label_visibility="collapsed",
+                    help="Filter by how well-confirmed the pattern evidence is.")
+            else:
+                sel_ps = "Any pattern"
+
+            if scan_df is not None and "Zone" in scan_df.columns:
+                sel_zone = st.selectbox(
+                    "Zone", ["All zones", "🟢 Discount", "⚖️ Equilibrium", "🔴 Premium"],
+                    label_visibility="collapsed",
+                    help="Filter by position in the dealing range.")
+            else:
+                sel_zone = "All zones"
+
             _liq_vals = (set(scan_df["Liquid"].dropna().unique())
                          if scan_df is not None and "Liquid" in scan_df.columns
                          else set())
@@ -4018,6 +4042,18 @@ elif _page == 'scanner':
                 fdf = fdf[fdf["Liquid"] == "✅"]
             elif sel_liq == "⚠️ Low Liq Only":
                 fdf = fdf[fdf["Liquid"] == "⚠️ Low"]
+        # Pattern-strength filter (applied, not decorative)
+        if sel_ps != "Any pattern" and "PS Score" in fdf.columns:
+            _min_ps = {"🔥 Very Strong": 9, "🟢 Strong+": 7, "🟡 Medium+": 4}
+            fdf = fdf[pd.to_numeric(fdf["PS Score"], errors="coerce").fillna(0)
+                      >= _min_ps.get(sel_ps, 0)]
+
+        # Zone filter — actually applied (a selector that filters nothing is
+        # worse than no selector at all).
+        if sel_zone != "All zones" and "Zone" in fdf.columns:
+            _zmap = {"🟢 Discount": "Discount", "⚖️ Equilibrium": "Equilibrium",
+                     "🔴 Premium": "Premium"}
+            fdf = fdf[fdf["Zone"] == _zmap.get(sel_zone, sel_zone)]
         if search_stock.strip():
             fdf = fdf[fdf["Stock"].str.upper().str.contains(
                 search_stock.strip().upper())]
@@ -4219,6 +4255,26 @@ elif _page == 'scanner':
                 "Resist":  st.column_config.NumberColumn("Resist", format="₹%.2f"),
                 "RSI":     st.column_config.NumberColumn("RSI",    format="%.1f"),
                 "Trend":   st.column_config.TextColumn("Trend",   width="medium"),
+                "Pattern Strength": st.column_config.TextColumn(
+                    "💪 Pattern", width="small",
+                    help="Grades the pattern EVIDENCE, not just its name. "
+                         "Strongest pattern present sets the base (Strong 3 / "
+                         "Medium 2 / Weak 1), then volume expansion, trend "
+                         "alignment and proximity to a key level add or subtract. "
+                         "A bullish pattern in a downtrend is penalised."),
+                "PS Score": st.column_config.NumberColumn(
+                    "PS", format="%d", width="small",
+                    help="Numeric pattern-strength score behind the label."),
+                "Zone": st.column_config.TextColumn(
+                    "📍 Zone", width="small",
+                    help="Where price sits inside its 40-day dealing range. "
+                         "DISCOUNT = lower 40% of the range, EQUILIBRIUM = "
+                         "middle, PREMIUM = upper 40%. This is POSITIONAL, not "
+                         "valuation — a strong breakout stock is normally in "
+                         "premium, and that is not a reason to avoid it."),
+                "Zone %": st.column_config.NumberColumn(
+                    "Zone %", format="%.0f%%", width="small",
+                    help="0% = at the range low, 100% = at the range high."),
                 "Data Date": st.column_config.TextColumn(
                     "📅 Data", width="small",
                     help="Which trading session the CMP actually comes from. If "
