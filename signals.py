@@ -55,6 +55,13 @@ except Exception:
     _CP2_AVAILABLE = False
 
 try:
+    import chart_patterns_v3 as _cp3
+    _CP3_AVAILABLE = True
+except Exception:
+    _cp3 = None
+    _CP3_AVAILABLE = False
+
+try:
     import regime_v2 as _rv2
     _RV2_AVAILABLE = True
 except Exception:
@@ -1023,6 +1030,17 @@ def _compute_indicators_raw(symbol, period="1y", prefetched_df=None):
                     chart_patterns.append(_t)
         except Exception:
             _cp2_res = {}
+
+    # ── Phase-3 patterns (wedges / pennants / rectangle / saucer / sym-tri) ──
+    _cp3_res = {}
+    if _CP3_AVAILABLE and len(close) >= 65:
+        try:
+            _cp3_res = _cp3.detect_all_v3(high, low, close, vol, vol_avg)
+            for _t in _cp3_res.get("v3_tags", []):
+                if _t not in chart_patterns:
+                    chart_patterns.append(_t)
+        except Exception:
+            _cp3_res = {}
     candlesticks   = detect_candlesticks(open_p, high, low, close)
 
     # ── FIX 5: Supertrend — numpy loop, Wilder ATR(10), multiplier 2.5 ───────
@@ -1201,6 +1219,14 @@ def _compute_indicators_raw(symbol, period="1y", prefetched_df=None):
         "pocket_pivot": _cp2_res.get("pocket_pivot", False),
         "triangle_level": _cp2_res.get("triangle_level"),
         "v2_tags": _cp2_res.get("v2_tags", []),
+        "v3_tags": _cp3_res.get("v3_tags", []),
+        "falling_wedge": _cp3_res.get("falling_wedge", False),
+        "rising_wedge": _cp3_res.get("rising_wedge", False),
+        "bullish_pennant": _cp3_res.get("bullish_pennant", False),
+        "bear_flag": _cp3_res.get("bear_flag", False),
+        "rectangle_breakout": _cp3_res.get("rectangle_breakout", False),
+        "rounding_bottom": _cp3_res.get("rounding_bottom", False),
+        "symmetrical_triangle": _cp3_res.get("symmetrical_triangle", False),
         # Trap signals
         "bull_trap": traps["bull_trap"],
         "bear_trap": traps["bear_trap"],
@@ -1900,6 +1926,29 @@ def generate_market_scanner():
         _rs_ratio = ind.get("rs_ratio")
         rs_str = round(float(_rs_ratio), 2) if _rs_ratio is not None else None
 
+        # Premium/Discount zone — computed from the same df the indicators used.
+        # (high/low/close aren't local here; they live on the dataframe.)
+        try:
+            _pdz = premium_discount_zone(df["High"], df["Low"], df["Close"])
+        except Exception:
+            _pdz = {}
+
+        # Pattern strength — grades the evidence, not just the pattern name:
+        # a setup with volume expansion and a matching trend is worth far more
+        # than the same shape with neither.
+        _pstr = {"label": "—", "score": 0}
+        if _CP3_AVAILABLE:
+            try:
+                _near_lvl = bool(ind.get("resistance") and cmp >=
+                                 float(ind["resistance"]) * 0.98)
+                _pstr = _cp3.pattern_strength(
+                    patterns + candles,
+                    vol_ratio=ind.get("vol_ratio"),
+                    trend=trend,
+                    near_resistance=_near_lvl)
+            except Exception:
+                _pstr = {"label": "—", "score": 0}
+
         results.append({
             "Generated": _now_ist().strftime("%d %b %H:%M"), "Sector": sector,
             # Which session's close CMP actually comes from (not the scan time)
@@ -1923,6 +1972,16 @@ def generate_market_scanner():
                       if ind.get("vcp_pivot") else None),
             "EMA21": (round(float(ind["ema21"]), 2) if ind.get("ema21") else None),
             "ATR": round(float(ind.get("atr", 0)), 2),
+            # Where price sits inside its recent dealing range (SMC premium/
+            # discount). Reuses the same premium_discount_zone() the SMC page
+            # uses, so both pages always agree.
+            "Pattern Strength": _pstr.get("label", "—"),
+            "PS Score": _pstr.get("score", 0),
+            "Zone": _pdz.get("zone", "Unknown"),
+            "Zone %": _pdz.get("pct_in_range"),
+            "Range Low": _pdz.get("range_low"),
+            "Equilibrium": _pdz.get("equilibrium"),
+            "Range High": _pdz.get("range_high"),
             # Where this move actually began (hindsight) — lets the UI say
             # "the ideal fill was X on DATE, price has run Y% since".
             "_ideal": _ideal_entry_from_history(df),
