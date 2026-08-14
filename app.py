@@ -3312,19 +3312,37 @@ if _page == 'portfolio':
             _render_trades_table(_closed_df)
 
         st.markdown('<div class="sec">Manage Positions</div>', unsafe_allow_html=True)
-        opts = [f"{r['id']} — {r['stock']}" for _, r in fdf.iterrows()]
+        # Default to OPEN trades only. Mixing closed ones in made this dropdown
+        # as long as the whole trade history, when the thing you nearly always
+        # want to act on is a live position. Closed trades stay reachable via
+        # the scope toggle so an old entry can still be corrected or removed.
+        _mc1, _mc2 = st.columns([1, 3])
+        with _mc1:
+            _scope = st.radio("Scope", ["Open", "Closed"], horizontal=True,
+                              label_visibility="collapsed",
+                              help="Which trades to manage. Closing only applies "
+                                   "to open positions.")
+        _mdf = fdf[fdf["status"] == _scope]
+        opts = [f"{r['id']} — {r['stock']}" for _, r in _mdf.iterrows()]
+        with _mc2:
+            if not opts:
+                st.caption(f"No {_scope.lower()} trades to manage.")
         if opts:
+            _is_open = (_scope == "Open")
             ca, cb, cc, cd = st.columns([3, 1, 1, 1])
             with ca:
                 sel_id = int(
-                    st.selectbox("Select Trade ID", opts,
+                    st.selectbox(f"Select {_scope} Trade", opts,
                                  label_visibility="collapsed").split(" — ")[0])
             with cb:
                 if st.button("✏️ Modify", width="stretch"):
                     st.session_state.edit_id = sel_id
                     st.rerun()
             with cc:
-                if st.button("🔒 Close Pos", width="stretch"):
+                # Closing a already-closed trade is meaningless — disable rather
+                # than let it silently do nothing.
+                if st.button("🔒 Close Pos", width="stretch", disabled=not _is_open,
+                             help=None if _is_open else "Already closed"):
                     st.session_state.close_id = sel_id
                     st.rerun()
             with cd:
