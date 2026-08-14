@@ -3225,53 +3225,91 @@ if _page == 'portfolio':
         if sort_col in fdf.columns:
             fdf = fdf.sort_values(sort_col, ascending=asc, na_position="last")
 
-        st.markdown(
-            f'<div class="sec">Open Positions & History ({len(fdf)})</div>',
-            unsafe_allow_html=True)
+        def _render_trades_table(_rows):
+            """Render one trades table. Extracted so Open and History can be
+            shown as separate tabs — keeping closed trades in the same list made
+            it long enough that the positions you actually manage got buried."""
+            if _rows.empty:
+                # A tab can look empty simply because a sidebar filter is on —
+                # say so, rather than implying there are no such trades.
+                _active = []
+                if st.session_state.filter_status != "All":
+                    _active.append(f"status = {st.session_state.filter_status}")
+                if st.session_state.filter_pnl != "All":
+                    _active.append(f"P&L = {st.session_state.filter_pnl}")
+                if st.session_state.search.strip():
+                    _active.append(f'search = "{st.session_state.search.strip()}"')
+                if _active:
+                    st.info("Nothing matches the active filters ("
+                            + ", ".join(_active) + "). Clear them in the sidebar "
+                            "to see everything.")
+                else:
+                    st.info("Nothing here yet.")
+                return
+            rows_html = ""
+            for _, r in _rows.iterrows():
+                row_cls = ("row-profit" if r.get("profit", 0) > 0
+                           else "row-loss" if r.get("profit", 0) < 0 else "row-neutral")
+                cmp_cell = (
+                    '<td class="zero-cell">—</td>' if pd.isna(r.get("cmp"))
+                    else f'<td class="pos">{fi2(r["cmp"])}</td>' if r["cmp"] > r["buy_at"]
+                    else f'<td class="neg">{fi2(r["cmp"])}</td>' if r["cmp"] < r["buy_at"]
+                    else f'<td>{fi2(r["cmp"])}</td>'
+                )
+                cur_cell = (
+                    '<td>—</td>' if pd.isna(r.get("current_amt", 0))
+                    else f'<td class="pos">{fi(r["current_amt"])}</td>'
+                         if r["current_amt"] > r["invested"]
+                    else f'<td class="neg">{fi(r["current_amt"])}</td>'
+                         if r["current_amt"] < r["invested"]
+                    else f'<td>{fi(r["current_amt"])}</td>'
+                )
+                rows_html += (
+                    f"<tr class='{row_cls}'>"
+                    f"<td class='l'><span class='nse-lbl'>{r.get('nse_label','')}</span></td>"
+                    f"<td class='l'><b style='font-size:.9rem'>{r['stock']}</b><br>"
+                    f"<span style='font-size:.7rem;color:var(--muted)'>"
+                    f"{get_sector(r['stock'])} · {r.get('added_date','')}</span></td>"
+                    f"<td>{int(r['quantity'])}</td>"
+                    f"<td>{fi2(r['buy_at'])}</td>"
+                    f"{cmp_cell}"
+                    f"<td>{'—' if pd.isna(r.get('sell_at')) else fi2(r['sell_at'])}</td>"
+                    f"<td>{fi(r['invested'])}</td>"
+                    f"{cur_cell}"
+                    f"{cv_cell(r.get('profit', 0), fi)}"
+                    f"{cv_cell(r.get('profit_pct', 0), fp)}"
+                    f"<td>{badge(r['status'], r.get('profit', 0))}</td>"
+                    f"</tr>"
+                )
+            st.markdown(
+                f'<div class="tbl-wrap"><table class="t"><thead><tr>'
+                f'<th class="l">NSE</th><th class="l">Asset</th>'
+                f'<th>Qty</th><th>Entry</th><th>CMP</th><th>Exit</th>'
+                f'<th>Invested</th><th>Value</th><th>P&L ₹</th><th>P&L %</th>'
+                f'<th>Status</th></tr></thead><tbody>{rows_html}</tbody></table></div>',
+                unsafe_allow_html=True)
 
-        rows_html = ""
-        for _, r in fdf.iterrows():
-            row_cls = ("row-profit" if r.get("profit", 0) > 0
-                       else "row-loss" if r.get("profit", 0) < 0 else "row-neutral")
-            cmp_cell = (
-                '<td class="zero-cell">—</td>' if pd.isna(r.get("cmp"))
-                else f'<td class="pos">{fi2(r["cmp"])}</td>' if r["cmp"] > r["buy_at"]
-                else f'<td class="neg">{fi2(r["cmp"])}</td>' if r["cmp"] < r["buy_at"]
-                else f'<td>{fi2(r["cmp"])}</td>'
-            )
-            cur_cell = (
-                '<td>—</td>' if pd.isna(r.get("current_amt", 0))
-                else f'<td class="pos">{fi(r["current_amt"])}</td>'
-                     if r["current_amt"] > r["invested"]
-                else f'<td class="neg">{fi(r["current_amt"])}</td>'
-                     if r["current_amt"] < r["invested"]
-                else f'<td>{fi(r["current_amt"])}</td>'
-            )
-            rows_html += (
-                f"<tr class='{row_cls}'>"
-                f"<td class='l'><span class='nse-lbl'>{r.get('nse_label','')}</span></td>"
-                f"<td class='l'><b style='font-size:.9rem'>{r['stock']}</b><br>"
-                f"<span style='font-size:.7rem;color:var(--muted)'>"
-                f"{get_sector(r['stock'])} · {r.get('added_date','')}</span></td>"
-                f"<td>{int(r['quantity'])}</td>"
-                f"<td>{fi2(r['buy_at'])}</td>"
-                f"{cmp_cell}"
-                f"<td>{'—' if pd.isna(r.get('sell_at')) else fi2(r['sell_at'])}</td>"
-                f"<td>{fi(r['invested'])}</td>"
-                f"{cur_cell}"
-                f"{cv_cell(r.get('profit', 0), fi)}"
-                f"{cv_cell(r.get('profit_pct', 0), fp)}"
-                f"<td>{badge(r['status'], r.get('profit', 0))}</td>"
-                f"</tr>"
-            )
-
-        st.markdown(
-            f'<div class="tbl-wrap"><table class="t"><thead><tr>'
-            f'<th class="l">NSE</th><th class="l">Asset</th>'
-            f'<th>Qty</th><th>Entry</th><th>CMP</th><th>Exit</th>'
-            f'<th>Invested</th><th>Value</th><th>P&L ₹</th><th>P&L %</th>'
-            f'<th>Status</th></tr></thead><tbody>{rows_html}</tbody></table></div>',
-            unsafe_allow_html=True)
+        _open_df = fdf[fdf["status"] == "Open"]
+        _closed_df = fdf[fdf["status"] == "Closed"]
+        _t_open, _t_hist = st.tabs([
+            f"📈 Open Positions ({len(_open_df)})",
+            f"📜 History ({len(_closed_df)})",
+        ])
+        with _t_open:
+            _render_trades_table(_open_df)
+        with _t_hist:
+            if not _closed_df.empty:
+                _w = _closed_df[_closed_df["profit"] > 0]
+                _l = _closed_df[_closed_df["profit"] < 0]
+                _net = float(_closed_df["profit"].sum())
+                _wr = (len(_w) / len(_closed_df) * 100) if len(_closed_df) else 0
+                _h1, _h2, _h3 = st.columns(3)
+                _h1.metric("Closed trades", len(_closed_df))
+                _h2.metric("Win rate", f"{_wr:.0f}%", f"{len(_w)}W / {len(_l)}L")
+                _h3.metric("Realised P&L", fi(_net))
+                st.caption("Closed trades are kept for reference only — they no "
+                           "longer affect your open exposure.")
+            _render_trades_table(_closed_df)
 
         st.markdown('<div class="sec">Manage Positions</div>', unsafe_allow_html=True)
         opts = [f"{r['id']} — {r['stock']}" for _, r in fdf.iterrows()]
