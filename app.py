@@ -4179,6 +4179,26 @@ elif _page == 'scanner':
                 st.caption(f"ℹ️ {_stale_n} row(s) have older data than today — see "
                            f"the **Data Date** column.")
 
+        # ── Regime banner: explain WHY scores may be suppressed today ─────────
+        if scan_df is not None and "Regime" in scan_df.columns and not scan_df.empty:
+            _rg = str(scan_df["Regime"].iloc[0])
+            _radj = scan_df["Regime Adj"].iloc[0]
+            try:
+                _radj = int(_radj)
+            except Exception:
+                _radj = 0
+            if _radj < 0:
+                st.warning(
+                    f"📉 Market regime: **{_rg}** — every score below is reduced by "
+                    f"**{abs(_radj)}** point(s). Breakouts fail more often in this "
+                    f"tape, so only exceptional setups should reach STRONG BUY.",
+                    icon="⚠️")
+            elif _radj > 0:
+                st.success(f"📈 Market regime: **{_rg}** — favourable for breakouts "
+                           f"(+{_radj} to every score).", icon="✅")
+            else:
+                st.caption(f"📊 Market regime: **{_rg}** — neutral, no score adjustment.")
+
         # ── Top picks: rank the filtered results and explain each one ─────────
         with st.expander("🏆 Top 5 picks — ranked, with reasons and entry levels",
                          expanded=True):
