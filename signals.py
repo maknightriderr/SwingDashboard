@@ -1831,11 +1831,44 @@ def _ideal_entry_from_history(df, lookback=90, brk_window=20):
         return None
 
 
+def _regime_score_adj(regime):
+    """Score adjustment by market regime.
+
+    This exists to remove a CONTRADICTION, not to chase returns: regime_v2's
+    playbook already tells the user "avoid new longs" in a bear, while this
+    scanner used to keep emitting STRONG BUY with identical enthusiasm in every
+    regime. The scanner now agrees with the playbook it ships with.
+
+    Deliberately conservative, and deliberately NOT a blanket block — an
+    exceptional setup can still surface in a bear market, it just has to clear a
+    higher bar. Bear Rally is treated as hostile as Bear because the playbook
+    calls it "a SELLING rally, not a bottom".
+    """
+    return {
+        "Strong Bull":   +1,
+        "Bull":           0,
+        "Bull Pullback":  0,
+        "Neutral":       -1,
+        "Bear Rally":    -4,
+        "Bear":          -4,
+        "Strong Bear":   -6,
+    }.get(regime, 0)          # unknown regime -> no adjustment
+
+
 def generate_market_scanner():
     all_symbols = []
     for sector, stocks in SECTOR_STOCKS.items():
         all_symbols.extend(stocks)
     bulk_data = _bulk_fetch_history(all_symbols, period="6mo")
+
+    # Market regime, read once for the whole scan
+    try:
+        _mkt = get_market_regime()
+        _regime = _mkt.get("regime", "Unknown")
+    except Exception:
+        _regime = "Unknown"
+    _reg_adj = _regime_score_adj(_regime)
+
     results = []
     _fetch_failed = 0
     _illiquid = 0
@@ -1882,6 +1915,10 @@ def generate_market_scanner():
                 "🟥 Bearish Engulfing" in candles):
             score -= 5
         if trend in ("Downtrend", "Strong Downtrend"): score -= 4
+        # Market regime — breakouts behave very differently depending on the
+        # tape, and the app's own playbook already says so.
+        score += _reg_adj
+
         # A real SETUP (something actually happening now), as opposed to the
         # generic trend indicators. Uptrend + Supertrend + MACD + expanding
         # histogram sum to exactly 8 on their own, yet they all measure the same
@@ -1975,6 +2012,8 @@ def generate_market_scanner():
             # Where price sits inside its recent dealing range (SMC premium/
             # discount). Reuses the same premium_discount_zone() the SMC page
             # uses, so both pages always agree.
+            "Regime": _regime,
+            "Regime Adj": _reg_adj,
             "Pattern Strength": _pstr.get("label", "—"),
             "PS Score": _pstr.get("score", 0),
             "Zone": _pdz.get("zone", "Unknown"),
