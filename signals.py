@@ -6,7 +6,7 @@ All v11 scorecard gaps fixed:
   3. Bollinger  — bb_pos clamped [0,1], bandwidth + squeeze       (6 → 8)
   4. ATR        — Wilder's EWM smoothing (matches Zerodha/TV)     (6 → 9)
   5. Supertrend — numpy array loop, Wilder ATR, mult 2.5          (5 → 9)
-  6. VWAP       — 20-day rolling + price_vs_vwap %                (4 → 8)
+  6. VWMA(20)   — 20-day volume-weighted MA (was mislabelled 'VWAP')
   7. EMA/Trend  — slope check, momentum-fading flag, EMA200 back  (7 → 8)
   8. Fibonacci  — swing-peak based (scipy), not fixed window      (6 → 8)
   9. Risk Engine— find_sector_picks + scanner now use unified     (7 → 9)
@@ -60,6 +60,13 @@ try:
 except Exception:
     _cp3 = None
     _CP3_AVAILABLE = False
+
+try:
+    import market_structure as _mstr
+    _MSTR_AVAILABLE = True
+except Exception:
+    _mstr = None
+    _MSTR_AVAILABLE = False
 
 try:
     import regime_v2 as _rv2
@@ -1084,20 +1091,32 @@ def _compute_indicators_raw(symbol, period="1y", prefetched_df=None):
     except Exception:
         pass
 
-    # ── FIX 6: VWAP — 20-day rolling, anchored to typical price ──────────────
-    vwap, price_vs_vwap = None, None
+    # ── 20-day Volume-Weighted Moving Average (VWMA) ─────────────────────────
+    # NOTE ON THE NAME: this used to be called "VWAP", which it is not. A true
+    # VWAP is SESSION-anchored — it resets every trading day — and is an
+    # intraday execution benchmark. This is a 20-day ROLLING volume-weighted
+    # average, i.e. a VWMA. Calling it VWAP invited the reader to treat it as
+    # an intraday reference level it can never be.
+    #
+    # It is also largely redundant here: Volume Profile's POC already answers
+    # "where did the volume actually trade" more directly, and the EMAs cover
+    # trend. It is kept because it is harmless and cheap, but it is display
+    # metadata only — nothing scores off it.
+    vwma20, price_vs_vwma = None, None
     try:
         typical = (high + low + close) / 3
         roll_n  = min(20, len(close))
         cum_tpv = (typical * vol).rolling(roll_n).sum()
         cum_v   = vol.rolling(roll_n).sum().replace(0, np.nan)
-        vwap_s  = cum_tpv / cum_v
-        v = float(vwap_s.iloc[-1])
+        vwma_s  = cum_tpv / cum_v
+        v = float(vwma_s.iloc[-1])
         if not pd.isna(v) and v > 0:
-            vwap = round(v, 2)
-            price_vs_vwap = round((cmp - vwap) / vwap * 100, 2)
+            vwma20 = round(v, 2)
+            price_vs_vwma = round((cmp - vwma20) / vwma20 * 100, 2)
     except Exception:
         pass
+    # Legacy aliases so nothing downstream breaks on the rename.
+    vwap, price_vs_vwap = vwma20, price_vs_vwma
 
     # ── Bull / Bear Trap detection (v4 — ATR-normalised, RSI-at-peak) ────────
     # Pull cached market regime so the regime-context factor activates live.
@@ -1117,6 +1136,19 @@ def _compute_indicators_raw(symbol, period="1y", prefetched_df=None):
         smc = compute_smc(open_p, high, low, close, vol, atr)
     except Exception:
         smc = {}
+
+    # ── Market structure (HH/HL, BOS, CHoCH) ────────────────────────────────
+    # This is the layer SMC is meant to sit ON TOP of: order blocks and FVGs are
+    # only supposed to be traded in the direction of the prevailing structure.
+    _mstruct = {}
+    if _MSTR_AVAILABLE and len(close) >= 30:
+        try:
+            _mstruct = _mstr.analyse_structure(high, low, close)
+            for _t in _mstr.structure_tags(_mstruct):
+                if _t not in chart_patterns:
+                    chart_patterns.append(_t)
+        except Exception:
+            _mstruct = {}
 
     # ── VCP — Volatility Contraction Pattern (Minervini) ─────────────────────
     # ── Volume Profile (real volume-based S/R) — computed once, reused below ──
@@ -1199,6 +1231,8 @@ def _compute_indicators_raw(symbol, period="1y", prefetched_df=None):
         "trend": trend,
         "fib_236": fib_236, "fib_382": fib_382, "fib_500": fib_500, "fib_618": fib_618,
         "supertrend": supertrend, "supertrend_bullish": supertrend_bullish,
+        "vwma20": vwma20, "price_vs_vwma": price_vs_vwma,
+        # deprecated aliases — same values under the old, inaccurate names
         "vwap": vwap, "price_vs_vwap": price_vs_vwap,
         "patterns": chart_patterns, "candlesticks": candlesticks,
         "avg_turnover": avg_turnover, "atr_pct": (atr / cmp) if cmp > 0 else 0,
@@ -1220,6 +1254,12 @@ def _compute_indicators_raw(symbol, period="1y", prefetched_df=None):
         "triangle_level": _cp2_res.get("triangle_level"),
         "v2_tags": _cp2_res.get("v2_tags", []),
         "v3_tags": _cp3_res.get("v3_tags", []),
+        "structure": _mstruct.get("structure", "Unknown"),
+        "bos": _mstruct.get("bos"),
+        "choch": _mstruct.get("choch"),
+        "structure_detail": _mstruct.get("detail", ""),
+        "last_swing_high": _mstruct.get("last_swing_high"),
+        "last_swing_low": _mstruct.get("last_swing_low"),
         "falling_wedge": _cp3_res.get("falling_wedge", False),
         "rising_wedge": _cp3_res.get("rising_wedge", False),
         "bullish_pennant": _cp3_res.get("bullish_pennant", False),
@@ -1353,6 +1393,8 @@ def generate_signals(trades_df):
                 # keep the shape identical to the normal path so the UI never
                 # hits a missing key on a symbol with no data
                 "contractions": 0, "contraction_seq": "—",
+                "structure": "Unknown", "bos": None, "choch": None,
+                "structure_detail": "",
                 "vcp": False, "vcp_ready": False, "vcp_quality": None,
             })
             continue
@@ -1418,6 +1460,13 @@ def generate_signals(trades_df):
         # v12: momentum-fading early warning (histogram contracting + EMA flat + in profit)
         if hist_fading and ema_fading and pct > 8 and rsi and rsi > 60:
             sell.append("Momentum fading — book partial profits")
+        # Structure break — the earliest objective warning that an uptrend has
+        # changed character. It fires before a trailing stop does, which is the
+        # whole point: a Supertrend/ATR trail is lagging by construction.
+        if ind.get("choch") == "Bearish":
+            sell.append("⚡ Bearish CHoCH — uptrend broke its higher low")
+        elif ind.get("bos") == "Bearish":
+            sell.append("📉 Bearish BOS — downtrend confirmed")
         # Trap signals
         if bull_trap:
             sell.append(f"🪤 Bull Trap (conf {bt_conf}%) — {bt_detail}")
@@ -1531,6 +1580,10 @@ def generate_signals(trades_df):
             # Contraction read for a HELD position: tells you whether the stock is
             # building a fresh tight base (constructive — hold/add) rather than
             # just drifting. Same numbers the VCP and Universe scanners show.
+            "structure": ind.get("structure", "Unknown"),
+            "bos": ind.get("bos"),
+            "choch": ind.get("choch"),
+            "structure_detail": ind.get("structure_detail", ""),
             "contractions": len(ind.get("vcp_contractions", []) or []),
             "contraction_seq": (" → ".join(
                 f"-{_c}%" for _c in (ind.get("vcp_contractions") or [])) or "—"),
@@ -1831,6 +1884,49 @@ def _ideal_entry_from_history(df, lookback=90, brk_window=20):
         return None
 
 
+def _relabel_frame(df):
+    """Assign Signal labels using PERCENTILE-within-scan, not just absolute score.
+
+    Why percentile: an absolute cut ("score >= 8 = STRONG BUY") means the number
+    of STRONG BUYs swings wildly with the tape — dozens in a hot market, none in
+    a dull one — even though your job each day is the same: find the best
+    candidates AVAILABLE TODAY. Ranking against the day's own distribution keeps
+    the label meaningful across regimes.
+
+    Absolute floors are still enforced on top, so a weak day cannot promote a
+    genuinely poor setup just because everything else is worse.
+    """
+    import numpy as _np
+    s = pd.to_numeric(df["Score"], errors="coerce").fillna(-99)
+    # percentile rank of each row within this scan (0-100)
+    pct = s.rank(pct=True) * 100 if len(s) > 1 else pd.Series([100.0] * len(s),
+                                                             index=s.index)
+
+    def _lab(i):
+        _s = float(s.loc[i])
+        _p = float(pct.loc[i])
+        _setup = bool(df.loc[i].get("_has_setup"))
+        # STRONG BUY: top decile of today's scan AND an absolute floor AND a
+        # real setup (not just lagging trend context).
+        if _p >= 90 and _s >= 8 and _setup:
+            return "🔥 STRONG BUY"
+        # BUY SETUP now also requires a genuine setup component — previously a
+        # stock could reach it purely on trend indicators that had been true for
+        # weeks, which is how you end up late to a move with no trigger.
+        if _p >= 75 and _s >= 5 and _setup:
+            return "🟢 BUY SETUP"
+        if _s >= 5 and not _setup:
+            # Strong context, nothing happening today. Say exactly that.
+            return "🟡 ACCUMULATE (trend only, no trigger)"
+        if _s >= 2:
+            return "🟡 ACCUMULATE"
+        if _s >= 0:
+            return "⚪ NEUTRAL"
+        return "🔴 AVOID"
+
+    return pd.Series([_lab(i) for i in df.index], index=df.index)
+
+
 def _regime_score_adj(regime):
     """Score adjustment by market regime.
 
@@ -1885,10 +1981,19 @@ def generate_market_scanner():
         cmp, rsi, trend = ind["cmp"], ind["rsi"], ind["trend"]
         patterns = ind.get("patterns", []); candles = ind.get("candlesticks", [])
         score = 0
-        if trend in ("Uptrend", "Strong Uptrend"): score += 3
-        if ind.get("supertrend_bullish"): score += 2
-        if ind.get("macd_bullish"): score += 2
-        if ind.get("macd_hist_expanding"): score += 1
+        # ── Momentum cluster, CAPPED ────────────────────────────────────────
+        # Trend / Supertrend / MACD / histogram all answer the same question:
+        # "is price above rising averages?" Scored separately they stacked to
+        # +8 on any trending stock, letting a name with no actual setup reach
+        # BUY SETUP purely on lagging context. Capping the cluster stops one
+        # signal being counted four times, which was the single biggest source
+        # of inflated scores.
+        _mom = 0.0
+        if trend in ("Uptrend", "Strong Uptrend"): _mom += 3
+        if ind.get("supertrend_bullish"): _mom += 2
+        if ind.get("macd_bullish"): _mom += 2
+        if ind.get("macd_hist_expanding"): _mom += 1
+        score += min(_mom, 5.0)
         if ind.get("bb_squeeze"): score += 1
         if rsi and 60 <= rsi <= 75: score += 3
         # Extreme overbought: Active Signals treats RSI>=75 as an exhaustion/
@@ -1915,6 +2020,46 @@ def generate_market_scanner():
                 "🟥 Bearish Engulfing" in candles):
             score -= 5
         if trend in ("Downtrend", "Strong Downtrend"): score -= 4
+        # ── Extension penalty — how stretched is price from its 21EMA? ───────
+        # A breakout 3 ATRs above the mean is not the same trade as one at the
+        # line: same pattern, far worse entry. Scanner 2.0 had this and the
+        # universe scanner did not, which is why it happily rated already-run
+        # stocks as fresh buys.
+        _ema_ref = ind.get("ema21") or ind.get("ema50") or ind.get("ema9")
+        _ext_atr = None
+        if _ema_ref and float(_ema_ref) > 0 and ind.get("atr"):
+            _ext_atr = (cmp - float(_ema_ref)) / float(ind["atr"])
+            if _ext_atr > 2.5:
+                score -= 4
+            elif _ext_atr > 1.5:
+                score -= 2
+
+        # ── Market structure — the directional context for everything above ──
+        # A bullish pattern inside bearish structure (LH/LL) is a counter-trend
+        # bet, not a setup. CHoCH against us is an early warning that fires well
+        # before a trailing stop does.
+        _struct = ind.get("structure", "Unknown")
+        if _struct == "Bullish":
+            score += 2
+        elif _struct == "Bearish":
+            score -= 3
+        if ind.get("bos") == "Bullish":
+            score += 2          # continuation confirmed
+        elif ind.get("bos") == "Bearish":
+            score -= 2
+        if ind.get("choch") == "Bearish":
+            score -= 3          # uptrend just broke its higher low
+        elif ind.get("choch") == "Bullish":
+            score += 1          # possible bottom, but unconfirmed — small credit
+
+        # ── Smart Money score — was used by find_sector_picks (+12/-12) but had
+        # NO effect here, so one stock could score very differently on two pages.
+        _smc_sc = ind.get("smc_score", 0) or 0
+        if _smc_sc >= 35:
+            score += 3
+        elif _smc_sc <= -35:
+            score -= 3
+
         # Market regime — breakouts behave very differently depending on the
         # tape, and the app's own playbook already says so.
         score += _reg_adj
@@ -2012,6 +2157,12 @@ def generate_market_scanner():
             # Where price sits inside its recent dealing range (SMC premium/
             # discount). Reuses the same premium_discount_zone() the SMC page
             # uses, so both pages always agree.
+            "_has_setup": _has_setup,
+            "Ext (ATR)": (round(_ext_atr, 2) if _ext_atr is not None else None),
+            "Structure": ind.get("structure", "Unknown"),
+            "BOS/CHoCH": ("BOS " + ind["bos"] if ind.get("bos")
+                          else "CHoCH " + ind["choch"] if ind.get("choch") else "—"),
+            "SMC": _smc_sc,
             "Regime": _regime,
             "Regime Adj": _reg_adj,
             "Pattern Strength": _pstr.get("label", "—"),
@@ -2036,7 +2187,71 @@ def generate_market_scanner():
     })
     if not results:
         return pd.DataFrame()
-    return pd.DataFrame(results).sort_values(by=["Sector", "Score"], ascending=[True, False])
+    _df = pd.DataFrame(results)
+    if _df.empty:
+        return _df
+
+    # ── Industry group strength ─────────────────────────────────────────────
+    # O'Neil's finding: a large share of a stock's move comes from its GROUP, so
+    # the same setup in a leading group is worth more than in a lagging one. The
+    # app already knew each stock's sector but never ranked the sectors, so this
+    # information was sitting unused.
+    #
+    # Group score = median stock score in that sector (median, not mean, so one
+    # runaway name can't make a weak group look strong) blended with the share
+    # of its members in an uptrend. Only sectors with >=3 scanned names are
+    # ranked — a "sector" of one stock is not a group read.
+    try:
+        _g = _df.groupby("Sector")
+        _stats = _g.agg(_median_score=("Score", "median"),
+                        _n=("Score", "size")).reset_index()
+        _up = _g["Trend"].apply(
+            lambda s: float((s.astype(str).str.contains("Uptrend")).mean())
+        ).reset_index(name="_up_share")
+        _stats = _stats.merge(_up, on="Sector", how="left")
+        _ranked = _stats[_stats["_n"] >= 3].copy()
+        if not _ranked.empty:
+            _ranked["_grp"] = (_ranked["_median_score"]
+                               + _ranked["_up_share"].fillna(0) * 4)
+            _ranked = _ranked.sort_values("_grp", ascending=False).reset_index(drop=True)
+            _ranked["_rank"] = _ranked.index + 1
+            _total = len(_ranked)
+            _rank_map = dict(zip(_ranked["Sector"], _ranked["_rank"]))
+            _grp_map = dict(zip(_ranked["Sector"], _ranked["_grp"].round(1)))
+            _df["Group Rank"] = _df["Sector"].map(
+                lambda s: (f"{_rank_map[s]}/{_total}" if s in _rank_map else "—"))
+            _df["Group Score"] = _df["Sector"].map(_grp_map)
+            # Top third of groups is a tailwind; bottom third a headwind.
+            _lead_cut = max(1, _total // 3)
+            _lag_cut = _total - max(1, _total // 3)
+            def _grp_adj(sec):
+                r = _rank_map.get(sec)
+                if r is None:
+                    return 0
+                if r <= _lead_cut:
+                    return 2
+                if r > _lag_cut:
+                    return -2
+                return 0
+            _df["Group Adj"] = _df["Sector"].map(_grp_adj)
+            _df["Score"] = _df["Score"] + _df["Group Adj"]
+            # The Signal label was computed per-row BEFORE this adjustment, so
+            # it must be recomputed or the label and the score would disagree.
+            # (labels are recomputed once for the whole frame below)
+        else:
+            _df["Group Rank"] = "—"; _df["Group Score"] = None; _df["Group Adj"] = 0
+    except Exception:
+        _df["Group Rank"] = "—"; _df["Group Score"] = None; _df["Group Adj"] = 0
+
+    # Labels are assigned ONCE, on the final frame, after every score adjustment
+    # (regime, group rank) has been applied. Doing it per-row inside the loop
+    # meant the label reflected a score that later changed.
+    try:
+        _df["Signal"] = _relabel_frame(_df)
+    except Exception:
+        pass
+
+    return _df.sort_values(by=["Sector", "Score"], ascending=[True, False])
 
 
 # ==============================================================================
