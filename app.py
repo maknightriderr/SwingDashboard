@@ -6,7 +6,7 @@ Fixes vs v13:
     badge, focus-glow inputs, P&L row rails, tabular numerals
   - Tab 9 scorecard updated to signals.py v12 (avg 8.4, every component >= 8)
   - signals.py v12 already deployed: unified risk engine, Wilder ATR/RSI,
-    numpy Supertrend, 20-day VWAP, swing-peak Fibonacci, MACD histogram
+    numpy Supertrend, 20-day VWMA, swing-peak Fibonacci, MACD histogram
 """
 
 import streamlit as st
@@ -14,6 +14,7 @@ import streamlit.components.v1 as components
 import pandas as pd
 import numpy as np
 import sqlite3
+import os
 import yfinance as yf
 import plotly.express as px
 import plotly.graph_objects as go
@@ -207,6 +208,30 @@ def _why_ranked(r):
     # Position in the dealing range. Deliberately NOT treated as bullish or
     # bearish on its own: a breakout leader is *supposed* to sit in premium,
     # while a discount reading can equally mean a stock that is simply falling.
+    # Structure is directional context, so it leads the context clause — and a
+    # long inside bearish structure is a warning, not a footnote.
+    _gr = str(r.get("Group Rank") or "")
+    _ga = r.get("Group Adj")
+    if _gr and _gr != "—" and _ga:
+        try:
+            if int(_ga) > 0:
+                context.append(f"leading sector ({_gr})")
+            elif int(_ga) < 0:
+                warn.append(f"lagging sector ({_gr}) — the group is a headwind")
+        except Exception:
+            pass
+
+    _stc = str(r.get("Structure") or "")
+    _bc = str(r.get("BOS/CHoCH") or "")
+    if "CHoCH Bearish" in _bc:
+        warn.append("bearish CHoCH — structure just broke")
+    elif "BOS Bullish" in _bc:
+        strong.append("bullish BOS (structure confirms continuation)")
+    if _stc == "Bullish":
+        context.append("bullish structure (HH/HL)")
+    elif _stc == "Bearish":
+        warn.append("bearish structure (LH/LL) — this is counter-trend")
+
     _zone = str(r.get("Zone") or "")
     _zpct = r.get("Zone %")
     if _zone in ("Discount", "Equilibrium", "Premium") and _zpct is not None:
@@ -259,6 +284,21 @@ def _entry_plan(r):
     # 4. Nothing clean
     return (None, "No clean trigger",
             "Wait for a breakout or a pullback to support.")
+
+
+try:
+    import earnings_guard as _eg
+    _EG_AVAILABLE = True
+except Exception:
+    _eg = None
+    _EG_AVAILABLE = False
+
+try:
+    import nse_data as _nse
+    _NSE_AVAILABLE = True
+except Exception:
+    _nse = None
+    _NSE_AVAILABLE = False
 
 
 def _refresh_cmp_angel(symbols, max_symbols=60, deadline_s=10, _ad=None):
@@ -508,16 +548,35 @@ def parse_signed_uid(token):
 DB = "trades_v2.db"   # SQLite fallback (used if psycopg2 unavailable)
 
 # ── NEON DB CONNECTION ─────────────────────────────────────────────────────────
-def _load_pg_params():
-    """Read Neon credentials from Streamlit Secrets (never hardcode in a
-    public repo). If secrets are missing, returns None -> SQLite fallback."""
+def _secret(key, default=None):
+    """Read a secret from Streamlit Secrets, falling back to environment
+    variables. The env fallback matters when the app is NOT on Streamlit Cloud
+    (Railway, Docker, a local script) — st.secrets simply doesn't exist there,
+    and without this the app would silently drop to SQLite on every deploy and
+    appear to have lost all your trades."""
     try:
+        if key in st.secrets:
+            return st.secrets[key]
+    except Exception:
+        pass
+    return os.environ.get(key, default)
+
+
+def _load_pg_params():
+    """Neon credentials from Streamlit Secrets OR environment variables (never
+    hardcoded — this repo is public). Returns None -> SQLite fallback."""
+    try:
+        _host = _secret("pg_host")
+        _user = _secret("pg_user")
+        _pass = _secret("pg_password")
+        if not (_host and _user and _pass):
+            return None
         return dict(
-            host            = st.secrets["pg_host"],
-            port            = int(st.secrets.get("pg_port", 5432)),
-            dbname          = st.secrets.get("pg_dbname", "neondb"),
-            user            = st.secrets["pg_user"],
-            password        = st.secrets["pg_password"],
+            host            = _host,
+            port            = int(_secret("pg_port", 5432)),
+            dbname          = _secret("pg_dbname", "neondb"),
+            user            = _user,
+            password        = _pass,
             sslmode         = "require",
             connect_timeout = 15,
         )
@@ -652,6 +711,7 @@ def init_db():
                 entry REAL, pivot REAL, target REAL, stop_loss REAL,
                 cmp_at_snapshot REAL, status TEXT DEFAULT 'open',
                 outcome_price REAL, days_to_outcome INTEGER, checked_date TEXT)""",
+            """ALTER TABLE vcp_snapshots ADD COLUMN IF NOT EXISTS source TEXT DEFAULT 'VCP'""",
             """CREATE TABLE IF NOT EXISTS vcp_watch(
                 id SERIAL PRIMARY KEY, user_id INTEGER, stock TEXT,
                 pivot REAL, added_date TEXT, alerted INTEGER DEFAULT 0,
@@ -705,6 +765,13 @@ def init_db():
             entry REAL, pivot REAL, target REAL, stop_loss REAL, cmp_at_snapshot REAL,
             status TEXT DEFAULT 'open', outcome_price REAL, days_to_outcome INTEGER,
             checked_date TEXT)""")
+        # SQLite has no "ADD COLUMN IF NOT EXISTS", so add it only when absent.
+        try:
+            _cols = [r[1] for r in c.execute("PRAGMA table_info(vcp_snapshots)")]
+            if "source" not in _cols:
+                c.execute("ALTER TABLE vcp_snapshots ADD COLUMN source TEXT DEFAULT 'VCP'")
+        except Exception:
+            pass
         c.execute("""CREATE TABLE IF NOT EXISTS vcp_watch(
             id INTEGER PRIMARY KEY AUTOINCREMENT, user_id INTEGER, stock TEXT,
             pivot REAL, added_date TEXT, alerted INTEGER DEFAULT 0,
@@ -846,32 +913,47 @@ def close_trade(tid, user_id, sell):
     db("UPDATE trades SET sell_at=?,status='Closed',closed_date=? WHERE id=? AND user_id=?",
        (sell, datetime.now().strftime("%Y-%m-%d"), tid, user_id))
 
-def save_vcp_snapshot(user_id, setups):
-    """Log today's pivot-READY VCP setups so their real outcomes can be measured
-    later (hit target? stopped? how many days?). Skips duplicates (same stock,
-    same day). Defensive — a DB hiccup never blocks the dashboard."""
+def save_picks_snapshot(user_id, setups, source="VCP", ready_key="vcp_ready"):
+    """Log today's candidate picks from ANY scanner so their real outcomes can be
+    measured later (hit target? stopped? how many days?).
+
+    Generalised from the VCP-only version: with three scanners and logging on
+    only one, you could never tell which was actually working. `source` tags the
+    scanner so their hit-rates can be compared side by side.
+
+    ready_key: which flag marks a row as actionable ("vcp_ready" for VCP; pass
+    None to log every row given).
+    Skips duplicates (same stock, same day, same source). Defensive — a DB
+    hiccup never blocks the dashboard.
+    """
     import datetime as _dt
     today = _dt.date.today().isoformat()
     n = 0
     for s in setups:
-        if not s.get("vcp_ready"):
+        if ready_key and not s.get(ready_key):
             continue
         try:
             existing = db("SELECT id FROM vcp_snapshots WHERE user_id=? AND "
-                          "stock=? AND snapshot_date=?",
-                          (user_id, s["stock"], today), fetch=True)
+                          "stock=? AND snapshot_date=? AND source=?",
+                          (user_id, s["stock"], today, source), fetch=True)
             if existing:
                 continue
             db("INSERT INTO vcp_snapshots(user_id,snapshot_date,stock,quality,"
-               "tt_score,entry,pivot,target,stop_loss,cmp_at_snapshot,status) "
-               "VALUES(?,?,?,?,?,?,?,?,?,?,'open')",
+               "tt_score,entry,pivot,target,stop_loss,cmp_at_snapshot,status,source) "
+               "VALUES(?,?,?,?,?,?,?,?,?,?,'open',?)",
                (user_id, today, s["stock"], s.get("quality"), s.get("tt_score"),
                 s.get("entry"), s.get("pivot"), s.get("target"),
-                s.get("stop_loss"), s.get("cmp")))
+                s.get("stop_loss"), s.get("cmp"), source))
             n += 1
         except Exception:
             continue
     return n
+
+
+def save_vcp_snapshot(user_id, setups):
+    """Backwards-compatible wrapper for the original VCP-only entry point."""
+    return save_picks_snapshot(user_id, setups, source="VCP",
+                               ready_key="vcp_ready")
 
 
 def update_vcp_outcomes(user_id, price_lookup):
@@ -920,6 +1002,39 @@ def load_vcp_snapshots(user_id):
                   (user_id,), fetch=True) or []
     except Exception:
         return []
+
+
+def outcome_stats_by_source(user_id):
+    """Hit-rate and average return PER SCANNER, so you can see which one is
+    actually earning its place instead of guessing."""
+    try:
+        rows = db("SELECT source,status,entry,outcome_price,days_to_outcome "
+                  "FROM vcp_snapshots WHERE user_id=?", (user_id,), fetch=True) or []
+    except Exception:
+        return {}
+    out = {}
+    for src_, status, entry, px, days in rows:
+        e = out.setdefault(src_ or "VCP",
+                           {"total": 0, "open": 0, "hits": 0, "stops": 0,
+                            "rets": [], "days": []})
+        e["total"] += 1
+        if status == "open":
+            e["open"] += 1
+        elif status == "target_hit":
+            e["hits"] += 1
+        elif status == "stopped":
+            e["stops"] += 1
+        if status in ("target_hit", "stopped", "expired") and entry and px:
+            e["rets"].append((px - entry) / entry * 100)
+        if status == "target_hit" and days is not None:
+            e["days"].append(days)
+    for e in out.values():
+        resolved = e["total"] - e["open"]
+        e["resolved"] = resolved
+        e["hit_rate"] = (e["hits"] / resolved * 100) if resolved else None
+        e["avg_return"] = (sum(e["rets"]) / len(e["rets"])) if e["rets"] else None
+        e["avg_days"] = (sum(e["days"]) / len(e["days"])) if e["days"] else None
+    return out
 
 
 def vcp_outcome_stats(user_id):
@@ -2371,6 +2486,28 @@ def render_signals(signals, theme_t):
                          f'color:#f59e0b;padding:.1rem .4rem;border-radius:4px;'
                          f'font-weight:700;margin-left:.3rem">🆕 {s.get("bars","")}d history</span>')
 
+        # Structure badge — CHoCH on a held position is an early warning that
+        # fires before the trailing stop, so it deserves to be visible.
+        badge_struct = ""
+        _st = s.get("structure"); _bos = s.get("bos"); _ch = s.get("choch")
+        _sd = (s.get("structure_detail") or "").replace('"', "'")
+        if _ch == "Bearish":
+            badge_struct = (f'<span title="{_sd}" style="font-size:.62rem;'
+                            f'background:rgba(239,68,68,.18);color:#ef4444;'
+                            f'padding:.1rem .4rem;border-radius:4px;font-weight:700;'
+                            f'margin-left:.3rem">⚡ CHoCH</span>')
+        elif _bos == "Bullish":
+            badge_struct = (f'<span title="{_sd}" style="font-size:.62rem;'
+                            f'background:rgba(16,185,129,.18);color:#10b981;'
+                            f'padding:.1rem .4rem;border-radius:4px;font-weight:700;'
+                            f'margin-left:.3rem">📶 BOS</span>')
+        elif _st in ("Bullish", "Bearish"):
+            _sc = "#10b981" if _st == "Bullish" else "#ef4444"
+            badge_struct = (f'<span title="{_sd}" style="font-size:.62rem;'
+                            f'background:{_sc}18;color:{_sc};padding:.1rem .4rem;'
+                            f'border-radius:4px;font-weight:600;margin-left:.3rem">'
+                            f'{_st} structure</span>')
+
         badge_vcp = ""
         _nc = s.get("contractions") or 0
         _seq = s.get("contraction_seq") or "—"
@@ -2397,7 +2534,18 @@ def render_signals(signals, theme_t):
                         f'color:#3b82f6;padding:.1rem .4rem;border-radius:4px;'
                         f'font-weight:700;margin-left:.3rem">💪 RS {_rsr:.2f}</span>')
 
-        badges = badge_new + badge_vcp + badge_rs
+        _en = s.get("earnings_note") or ""
+        badge_earn = ""
+        if _en:
+            _ew = (s.get("earnings") or {}).get("window")
+            _ec = "#ef4444" if _ew == "imminent" else "#f59e0b" if _ew == "near" else "var(--muted)"
+            _edays = (s.get("earnings") or {}).get("days_away")
+            badge_earn = (f'<span title="{_en}" style="font-size:.62rem;'
+                          f'background:{_ec}22;color:{_ec};padding:.1rem .4rem;'
+                          f'border-radius:4px;font-weight:700;margin-left:.3rem">'
+                          f'📅 Earnings {_edays}d</span>')
+
+        badges = badge_new + badge_struct + badge_earn + badge_vcp + badge_rs
 
         html += f"""
 <div class="sig-card {c}">
@@ -2538,7 +2686,7 @@ def render_score_dashboard():
         ("Bollinger Bands",         8, "bb_pos clamped [0,1], bandwidth + squeeze + breakout flags"),
         ("ATR",                     9, "Wilder's EWM smoothing — stops now match Zerodha/TV"),
         ("Supertrend",              9, "Numpy array loop, Wilder ATR(10), mult 2.5 for NSE swing"),
-        ("VWAP",                    8, "20-day rolling VWAP + price_vs_vwap % deviation"),
+        ("VWMA(20)",                8, "20-day volume-weighted MA (display only; was mislabelled VWAP - a real VWAP is session-anchored)"),
         ("EMA / Trend",             8, "Slope flags (rising/flattening), momentum-fading label, EMA200 back"),
         ("Fibonacci",               8, "Swing-peak based via scipy with degenerate-swing fallback"),
         ("Chart Patterns",          8, "Neckline + Cup&Handle + vol gates"),
@@ -2563,7 +2711,7 @@ def render_score_dashboard():
       <div style="font-size:2.5rem;font-weight:800;color:var(--accent)">{avg:.1f}<span
            style="font-size:1rem;color:var(--muted);font-weight:400"> / 10</span></div>
       <div style="font-size:.8rem;color:var(--muted);margin-top:.3rem">
-        Core engine v12 (Wilder ATR/RSI, numpy Supertrend, 20-day VWAP, swing-peak
+        Core engine v12 (Wilder ATR/RSI, numpy Supertrend, 20-day VWMA, swing-peak
         Fibonacci, unified risk engine) plus momentum stack: Trap detection, Smart
         Money Concepts, VCP base detection, and Relative Strength leadership ranking.
       </div>
@@ -2679,6 +2827,21 @@ if _fast_due:
                     generate_signals(open_raw) if not open_raw.empty else [])
                 st.session_state.news_cache = (
                     fetch_portfolio_news(open_raw) if not open_raw.empty else [])
+                # Earnings proximity for HELD positions. Knowing a stock you own
+                # reports in two days is arguably more useful than knowing it for
+                # one you might buy — it changes whether you hold through the
+                # print or trim first. Bounded: only your open positions.
+                if _EG_AVAILABLE and not open_raw.empty:
+                    try:
+                        _e_map = _eg.earnings_proximity(
+                            open_raw["stock"].tolist())
+                        for _s in st.session_state.signals_cache or []:
+                            _ei = _e_map.get(str(_s.get("stock", "")).upper())
+                            if _ei:
+                                _s["earnings"] = _ei
+                                _s["earnings_note"] = _eg.earnings_note(_ei)
+                    except Exception:
+                        pass
                 st.session_state._trade_hash = _trade_hash
             st.session_state.last_auto_scan = _now
         except Exception as _e:
@@ -2819,7 +2982,7 @@ with st.sidebar:
             ("🎯 Theme Scanner",     "themes"),
             ("💪 RS Leaders",        "rs"),
             ("🌌 Universe Scanner",  "scanner"),
-            ("🚀 Scanner 2.0",       "scanner2"),
+            ("🗄 Scanner 2.0 (retired)", "scanner2"),
             ("📊 Market Breadth",    "breadth"),
             ("📰 Market News",       "news"),
             ("🔬 Custom Screener",   "screener"),
@@ -3590,19 +3753,25 @@ elif _page == 'signals':
                     except Exception:
                         _days = None
                     # R-multiple: profit measured in units of entry risk
-                    _r_mult = None
+                    # Keep an unrounded R for the threshold comparisons below.
+                    # Comparing on the DISPLAY value meant 0.998R rounded to
+                    # 1.00 and tripped the breakeven rule a fraction early —
+                    # harmless in effect, but a rules ladder should trigger on
+                    # the real number, not on its formatting.
+                    _r_mult = _r_exact = None
                     if _stp and float(_stp) < _buy:
                         _risk0 = _buy - float(_stp)
                         if _risk0 > 0.01:
-                            _r_mult = round((_cmp_p - _buy) / _risk0, 2)
+                            _r_exact = (_cmp_p - _buy) / _risk0
+                            _r_mult = round(_r_exact, 2)
                     # Exit rule ladder (first match wins)
                     if _stp and _cmp_p <= float(_stp):
                         _act = "🛑 EXIT — stop violated"
                     elif _pct <= -8:
                         _act = "⚠️ Review — beyond 8% risk cap"
-                    elif _r_mult is not None and _r_mult >= 2:
+                    elif _r_exact is not None and _r_exact >= 2:
                         _act = "📤 Book ⅓–½ profit, trail the rest"
-                    elif _r_mult is not None and _r_mult >= 1:
+                    elif _r_exact is not None and _r_exact >= 1:
                         _act = f"🛡 Move SL to breakeven (₹{_buy:,.2f})"
                     elif _days is not None and _days >= 15 and -2 <= _pct <= 2:
                         _act = "⏰ Time stop — dead money, redeploy"
@@ -4153,6 +4322,29 @@ elif _page == 'scanner':
             f'💧 {liq_count} liquid</div>',
             unsafe_allow_html=True)
 
+        # ── NSE data availability — say plainly whether it works from here ────
+        with st.expander("🩺 NSE data check (delivery % / bulk deals)"):
+            st.caption("Delivery % and bulk deals come from NSE, which blocks "
+                       "many cloud hosts. This tells you in seconds whether that "
+                       "data is available where this app runs — better than "
+                       "silently showing nothing and assuming it's fine.")
+            if not _NSE_AVAILABLE:
+                st.warning("`nse_data.py` isn't in the repo yet.", icon="⚠️")
+            elif st.button("Run NSE check"):
+                with st.spinner("Contacting NSE…"):
+                    try:
+                        _h = _nse.health_check()
+                    except Exception as _e:
+                        _h = {"session": False, "note": f"Check failed: {_e}"}
+                _c1, _c2, _c3 = st.columns(3)
+                _c1.metric("Session", "✅" if _h.get("session") else "❌")
+                _c2.metric("Delivery %", "✅" if _h.get("delivery") else "❌")
+                _c3.metric("Bulk deals", "✅" if _h.get("bulk_deals") else "❌")
+                if _h.get("session") and _h.get("delivery"):
+                    st.success(_h.get("note", ""))
+                else:
+                    st.warning(_h.get("note", ""))
+
         # ── Stale-data banner: is CMP actually from today's session? ───────────
         # Yahoo's daily feed lags for .NS symbols after the NSE close, so a scan
         # run at 4pm can quietly return the PREVIOUS session's closes. Rather
@@ -4227,10 +4419,56 @@ elif _page == 'scanner':
                            "candidates — it does not predict which will work. "
                            "Levels below are triggers to plan around, not "
                            "instructions.")
+
+                # Earnings proximity for JUST these few names. A perfect setup
+                # that reports in 3 days is a bet on the number, not the chart —
+                # and the scanner was completely blind to that.
+                _earn = {}
+                if _EG_AVAILABLE:
+                    try:
+                        _earn = _eg.earnings_proximity(_top["Stock"].tolist())
+                    except Exception:
+                        _earn = {}
+
+                # Delivery % and bulk deals for JUST these names. Both come from
+                # NSE, which blocks many hosts — if it's unavailable the panel
+                # simply shows nothing rather than pretending.
+                _deliv, _bulk = {}, {}
+                if _NSE_AVAILABLE:
+                    try:
+                        _deliv = _nse.delivery_bulk(_top["Stock"].tolist())
+                    except Exception:
+                        _deliv = {}
+                    try:
+                        _bulk = _nse.bulk_deal_map(7)
+                    except Exception:
+                        _bulk = {}
                 for _i, (_, _r) in enumerate(_top.iterrows(), start=1):
                     _lvl, _lab, _note = _entry_plan(_r)
                     _why = _why_ranked(_r)
                     _medal = {1:"🥇",2:"🥈",3:"🥉"}.get(_i, f"#{_i}")
+                    _ei = _earn.get(str(_r["Stock"]).upper()) if _earn else None
+                    _en = _eg.earnings_note(_ei) if (_EG_AVAILABLE and _ei) else ""
+                    _sym_u = str(_r["Stock"]).upper()
+                    _dv = (_deliv or {}).get(_sym_u)
+                    _dnote = _nse.delivery_note(_dv) if (_NSE_AVAILABLE and _dv) else ""
+                    _bd = (_bulk or {}).get(_sym_u)
+                    _bd_txt = ""
+                    if _bd and (_bd.get("buys") or _bd.get("sells")):
+                        _bd_txt = (f" · 🏦 bulk deals: {_bd.get('buys',0)} buy / "
+                                   f"{_bd.get('sells',0)} sell (7d)")
+                    _flow_html = ""
+                    if _dnote or _bd_txt:
+                        _flow_html = (f'<div style="font-size:.75rem;margin-top:.25rem;'
+                                      f'color:var(--muted)">{_dnote}{_bd_txt}</div>')
+
+                    _earn_html = ""
+                    if _en:
+                        _etone = ("#ef4444" if _ei.get("window") == "imminent"
+                                  else "#f59e0b" if _ei.get("window") == "near"
+                                  else "var(--muted)")
+                        _earn_html = (f'<div style="font-size:.75rem;margin-top:.3rem;'
+                                      f'color:{_etone};font-weight:600">{_en}</div>')
                     # Where the move actually began — pure hindsight, labelled as
                     # such. Useful for judging whether you are early or chasing,
                     # NOT a level you can still buy.
@@ -4287,7 +4525,39 @@ elif _page == 'scanner':
                         f'<div style="font-size:.75rem;color:var(--muted);'
                         f'margin-top:.25rem">{_note}</div>'
                         f'{_hindsight}'
+                        f'{_flow_html}'
+                        f'{_earn_html}'
                         f'</div>', unsafe_allow_html=True)
+
+        # ── Log these picks for outcome measurement ───────────────────────────
+        _luid = st.session_state.get("user_id")
+        _lc1, _lc2 = st.columns([1, 3])
+        with _lc1:
+            _n_disp = len(display_df)
+            if st.button(f"📸 Log top {min(10, _n_disp)} picks",
+                         use_container_width=True, disabled=_n_disp == 0,
+                         help="Snapshot today's best candidates so their real "
+                              "outcomes can be measured. Tagged 'Universe' so "
+                              "each scanner's hit-rate can be compared."):
+                _rows = display_df.head(10).to_dict("records")
+                _payload = [{"stock": r.get("Stock"), "quality": r.get("Signal"),
+                             "tt_score": r.get("Score"), "entry": r.get("Entry"),
+                             "pivot": r.get("Pivot"), "target": r.get("Target"),
+                             "stop_loss": r.get("SL"), "cmp": r.get("CMP")}
+                            for r in _rows]
+                _n = save_picks_snapshot(_luid, _payload, source="Universe",
+                                         ready_key=None)
+                st.success(f"Logged {_n} picks for outcome tracking.")
+        with _lc2:
+            try:
+                _by_src = outcome_stats_by_source(_luid)
+            except Exception:
+                _by_src = {}
+            if _by_src:
+                st.caption(" · ".join(
+                    f"**{k}**: {v['total']} logged"
+                    + (f", {v['hit_rate']:.0f}% hit" if v.get("hit_rate") is not None else "")
+                    for k, v in _by_src.items()))
 
         # ── Live CMP refresh (bounded — only the rows on screen) ───────────────
         _rc1, _rc2 = st.columns([1, 3])
@@ -4331,6 +4601,36 @@ elif _page == 'scanner':
                 "Resist":  st.column_config.NumberColumn("Resist", format="₹%.2f"),
                 "RSI":     st.column_config.NumberColumn("RSI",    format="%.1f"),
                 "Trend":   st.column_config.TextColumn("Trend",   width="medium"),
+                "Group Rank": st.column_config.TextColumn(
+                    "🏭 Group", width="small",
+                    help="Where this stock's sector ranks against all other "
+                         "sectors scanned today (median member score + share of "
+                         "members in an uptrend). O'Neil's finding is that a "
+                         "large part of a stock's move comes from its group, so "
+                         "the top third get +2 and the bottom third -2. Sectors "
+                         "with fewer than 3 scanned names are not ranked."),
+                "Group Adj": st.column_config.NumberColumn(
+                    "Grp±", format="%d", width="small",
+                    help="Score adjustment from the sector's rank."),
+                "Structure": st.column_config.TextColumn(
+                    "🏗 Structure", width="small",
+                    help="Market structure from confirmed swings. Bullish = "
+                         "higher highs AND higher lows; Bearish = lower highs "
+                         "and lower lows. This is the directional context that "
+                         "patterns, order blocks and FVGs are meant to be traded "
+                         "WITH — a bullish pattern inside bearish structure is a "
+                         "counter-trend bet."),
+                "BOS/CHoCH": st.column_config.TextColumn(
+                    "BOS/CHoCH", width="small",
+                    help="BOS = Break of Structure (continuation, healthy). "
+                         "CHoCH = Change of Character — the first break AGAINST "
+                         "the trend, an early reversal warning that fires before "
+                         "a trailing stop does."),
+                "SMC": st.column_config.NumberColumn(
+                    "🏦 SMC", format="%d", width="small",
+                    help="Smart-Money score (order blocks, FVGs, liquidity, "
+                         "displacement). Now affects this scanner's score too — "
+                         "it previously only counted on the Sector Picks page."),
                 "Pattern Strength": st.column_config.TextColumn(
                     "💪 Pattern", width="small",
                     help="Grades the pattern EVIDENCE, not just its name. "
@@ -4395,8 +4695,19 @@ elif _page == 'scanner':
 
 # ── Scanner 2.0 (regime-aware, RS-gated, structural stops) ──────────────────
 elif _page == 'scanner2':
-    st.markdown('<div class="sec">🚀 Universe Scanner 2.0</div>',
+    st.markdown('<div class="sec">🗄 Scanner 2.0 — retired</div>',
                 unsafe_allow_html=True)
+    st.warning(
+        "**This scanner is retired.** Its three genuinely distinct ideas — the "
+        "capped momentum cluster, the extension penalty, and percentile-based "
+        "tiering — now live in the main **🌌 Universe Scanner**, which also has "
+        "VCP, SMC, market structure, regime and sector-group ranking that this "
+        "one never had.\n\n"
+        "Running two overlapping scanners meant neither could be judged: you "
+        "could not tell which one produced a given idea, and only one had "
+        "outcome logging. This page is kept read-only so nothing you relied on "
+        "vanishes — but new picks should come from the Universe Scanner, which "
+        "now logs its own outcomes.", icon="🗄")
     st.caption("Audit-grade rework: regime gating · RS gate · extension penalty · "
                "fresh-breakout-only credit · structural stops · measured-move targets "
                "· percentile ranking · outcome logging. Your original scanner is "
@@ -4828,7 +5139,7 @@ elif _page == 'scores':
      border:1px solid rgba(16,185,129,.3);border-radius:8px;font-size:.85rem;
      color:var(--muted);line-height:1.8">
 <b style="color:var(--text)">✅ Engine capabilities:</b><br>
-1. <b>Core indicators</b> — Wilder RSI/ATR, single-pass MACD, numpy Supertrend, clamped Bollinger, 20-day VWAP, swing-peak Fibonacci<br>
+1. <b>Core indicators</b> — Wilder RSI/ATR, single-pass MACD, numpy Supertrend, clamped Bollinger, 20-day VWMA, swing-peak Fibonacci<br>
 2. <b>Risk engine</b> — unified <code>_calc_risk_params</code> across signals, picks, and scanner (zero phantom RR)<br>
 3. <b>Trap scanner</b> — 5-factor bull/bear trap confluence across the full universe<br>
 4. <b>Smart Money (SMC)</b> — FVG, order blocks, liquidity pools, premium/discount, displacement<br>
@@ -5920,7 +6231,15 @@ elif _page == 'sizing':
         st.error("Stop loss must be BELOW entry price for a long trade.")
     else:
         risk_per_share = entry_p - sl_p
-        qty = int(max_risk // risk_per_share) if risk_per_share > 0 else 0
+        _qty_by_risk = int(max_risk // risk_per_share) if risk_per_share > 0 else 0
+        # A very tight stop makes the risk-based size enormous — e.g. a Rs.10,000
+        # stock with a Rs.0.50 stop sized 2,000 shares (Rs.2 crore) on Rs.1 lakh
+        # of capital. The RISK was correct, but the position is unbuyable, so the
+        # number was useless. Cap by what the capital can actually purchase and
+        # say which constraint bound.
+        _qty_by_capital = int(cap_total // entry_p) if entry_p > 0 else 0
+        qty = min(_qty_by_risk, _qty_by_capital)
+        _capped_by_capital = qty < _qty_by_risk
         position_value = qty * entry_p
         pos_pct_capital = position_value / cap_total * 100 if cap_total > 0 else 0
         actual_risk = qty * risk_per_share
@@ -5930,7 +6249,10 @@ elif _page == 'sizing':
         st.markdown(
             '<div class="cards">'
             + card("Max Risk", fi(max_risk), f"{risk_pct}% of capital", "yellow")
-            + card("Quantity", f"{qty:,}", f"₹{risk_per_share:.2f} risk/share", "blue")
+            + card("Quantity", f"{qty:,}",
+                   (f"capped by capital (risk allows {_qty_by_risk:,})"
+                    if _capped_by_capital else f"₹{risk_per_share:.2f} risk/share"),
+                   "yellow" if _capped_by_capital else "blue")
             + card("Position Size", fi(position_value),
                    f"{pos_pct_capital:.1f}% of capital",
                    "red" if pos_pct_capital > 25 else "")
@@ -5958,6 +6280,99 @@ elif _page == 'risk':
     if df.empty or odf.empty:
         st.info("Risk dashboard requires open positions.")
     else:
+        # ── 🔥 PORTFOLIO HEAT — total open risk ──────────────────────────────
+        # The most important number on this page, and the one that was missing.
+        # Concentration measures how much capital is DEPLOYED; heat measures how
+        # much is AT RISK. They are not the same: a Rs.50,000 position with a 2%
+        # stop risks Rs.1,000, while a Rs.20,000 position with a 15% stop risks
+        # Rs.3,000 — the smaller position is the riskier one.
+        #
+        # Per-trade sizing already caps each trade at ~1%, but ten such trades
+        # is 10% of capital at risk simultaneously. That aggregate is what
+        # actually damages an account in a gap-down, and nothing in the app
+        # was computing it.
+        _sig_map = {s.get("stock"): s for s in (st.session_state.signals_cache or [])}
+        _heat_rows, _unknown_stop = [], []
+        for _, _p in odf.iterrows():
+            _stk = _p["stock"]
+            _sg = _sig_map.get(_stk, {})
+            _stp = _sg.get("stop_loss")
+            _px = _sg.get("cmp")
+            if _px is None:
+                _px = _p.get("cmp")
+            _q = float(_p.get("quantity", 0) or 0)
+            if _stp is None or _px is None or pd.isna(_px) or not _q:
+                _unknown_stop.append(_stk)
+                continue
+            # Risk FROM HERE. A stop already trailed above the market cannot
+            # lose money, so it contributes zero rather than a negative.
+            _r = max(0.0, float(_px) - float(_stp)) * _q
+            _heat_rows.append({"Stock": _stk, "Sector": get_sector(_stk),
+                               "Qty": int(_q), "CMP": float(_px),
+                               "Stop": float(_stp), "Open Risk": round(_r, 2)})
+        _total_risk = sum(r["Open Risk"] for r in _heat_rows)
+        _cap_input = st.number_input(
+            "Trading capital for heat calculation ₹", min_value=1000.0,
+            value=float(st.session_state.get("_sz_cap", 100000.0)), step=5000.0,
+            format="%.0f",
+            help="Heat is expressed against your TOTAL trading capital, not just "
+                 "what is currently invested — idle cash is part of the base.")
+        _heat_pct = (_total_risk / _cap_input * 100) if _cap_input else None
+
+        def _heat_band(h):
+            if h is None: return ("—", "")
+            if h >= 10: return ("🔴 Overexposed", "red")
+            if h >= 6:  return ("🟠 High", "yellow")
+            if h >= 3:  return ("🟡 Moderate", "yellow")
+            return ("🟢 Comfortable", "green")
+        _hb, _hc = _heat_band(_heat_pct)
+
+        _h1, _h2, _h3 = st.columns(3)
+        _h1.metric("🔥 Portfolio Heat",
+                   f"{_heat_pct:.2f}%" if _heat_pct is not None else "—", _hb)
+        _h2.metric("Total Open Risk", fi(_total_risk),
+                   f"across {len(_heat_rows)} position(s)")
+        _h3.metric("Positions Priced", f"{len(_heat_rows)}/{len(odf)}",
+                   f"{len(_unknown_stop)} without a stop" if _unknown_stop else "all covered")
+
+        if _heat_pct is not None and _heat_pct >= 6:
+            st.warning(
+                f"Total open risk is {_heat_pct:.1f}% of capital. Many swing "
+                f"traders cap this near 6% — beyond that a single bad session "
+                f"hits every position at once. Consider trailing stops up or "
+                f"trimming before adding anything new.", icon="🔥")
+        if _unknown_stop:
+            st.info(f"No stop available for: {', '.join(_unknown_stop[:8])}"
+                    f"{'…' if len(_unknown_stop) > 8 else ''}. These are NOT "
+                    f"counted as zero risk — their risk is simply unknown, which "
+                    f"is its own problem.", icon="❔")
+
+        if _heat_rows:
+            _hdf = pd.DataFrame(_heat_rows).sort_values("Open Risk", ascending=False)
+            _sec_risk = _hdf.groupby("Sector")["Open Risk"].sum().sort_values(ascending=False)
+            if len(_sec_risk) and _total_risk > 0:
+                _top_sec_risk = _sec_risk.iloc[0] / _total_risk * 100
+                if _top_sec_risk > 40:
+                    st.warning(
+                        f"⚠️ {_sec_risk.index[0]} carries {_top_sec_risk:.0f}% of "
+                        f"your total open RISK. Correlated names move together, "
+                        f"so several 1% trades in one sector behave like a single "
+                        f"larger bet — not like diversification.", icon="🔗")
+            with st.expander("🔥 Risk breakdown by position"):
+                st.dataframe(_hdf, use_container_width=True, hide_index=True,
+                             column_config={
+                                 "CMP": st.column_config.NumberColumn("CMP", format="₹%.2f"),
+                                 "Stop": st.column_config.NumberColumn("Stop", format="₹%.2f"),
+                                 "Open Risk": st.column_config.NumberColumn(
+                                     "Open Risk", format="₹%.0f",
+                                     help="What this position loses from the "
+                                          "CURRENT price if its stop is hit."),
+                             })
+                st.caption("Risk by sector: " + " · ".join(
+                    f"{k} {fi(v)}" for k, v in _sec_risk.items()))
+
+        st.markdown("---")
+
         # ── Concentration analysis ───────────────────────────────────────────
         conc = odf.groupby("stock")["invested"].sum().sort_values(ascending=False)
         total_inv = conc.sum()
