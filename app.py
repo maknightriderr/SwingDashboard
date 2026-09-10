@@ -997,7 +997,8 @@ def update_vcp_outcomes(user_id, price_lookup):
 def load_vcp_snapshots(user_id):
     try:
         return db("SELECT snapshot_date,stock,quality,tt_score,entry,target,"
-                  "stop_loss,cmp_at_snapshot,status,outcome_price,days_to_outcome "
+                  "stop_loss,cmp_at_snapshot,status,outcome_price,days_to_outcome,"
+                  "COALESCE(source,'VCP') "
                   "FROM vcp_snapshots WHERE user_id=? ORDER BY snapshot_date DESC",
                   (user_id,), fetch=True) or []
     except Exception:
@@ -4434,15 +4435,29 @@ elif _page == 'scanner':
                 # NSE, which blocks many hosts — if it's unavailable the panel
                 # simply shows nothing rather than pretending.
                 _deliv, _bulk = {}, {}
-                if _NSE_AVAILABLE:
+                _nse_err = None
+                if not _NSE_AVAILABLE:
+                    _nse_err = "`nse_data.py` isn't in the repo."
+                else:
                     try:
                         _deliv = _nse.delivery_bulk(_top["Stock"].tolist())
-                    except Exception:
-                        _deliv = {}
+                    except Exception as _e:
+                        _deliv, _nse_err = {}, str(_e)
                     try:
                         _bulk = _nse.bulk_deal_map(7)
                     except Exception:
                         _bulk = {}
+                    # Distinguish "NSE gave us nothing" from "these stocks have
+                    # no delivery data". Silently showing nothing left you unable
+                    # to tell whether the feature was working at all.
+                    if not _nse_err and not any(
+                            (v or {}).get("deliverable_pct") is not None
+                            for v in (_deliv or {}).values()):
+                        _nse_err = ("NSE returned no delivery data for these "
+                                    "symbols — this host is most likely blocked.")
+                if _nse_err:
+                    st.caption(f"📦 Delivery % / bulk deals unavailable: {_nse_err} "
+                               f"Run **🩺 NSE data check** above to confirm.")
                 for _i, (_, _r) in enumerate(_top.iterrows(), start=1):
                     _lvl, _lab, _note = _entry_plan(_r)
                     _why = _why_ranked(_r)
@@ -4558,6 +4573,113 @@ elif _page == 'scanner':
                     f"**{k}**: {v['total']} logged"
                     + (f", {v['hit_rate']:.0f}% hit" if v.get("hit_rate") is not None else "")
                     for k, v in _by_src.items()))
+
+        # ── Where the logged picks actually live ──────────────────────────────
+        # Logging without a place to review it is just writing to /dev/null, so
+        # the tracker sits next to the button that fills it.
+        with st.expander("📋 Tracked picks — outcomes of what you logged"):
+            _tr = load_vcp_snapshots(_luid)
+            if not _tr:
+                st.info("Nothing logged yet. Use **📸 Log top picks** above (or the "
+                        "VCP page) and the outcomes will appear here as they resolve.")
+            else:
+                _tc1, _tc2 = st.columns([1, 3])
+                with _tc1:
+                    if st.button("🔄 Update outcomes", use_container_width=True,
+                                 help="Check every open pick against its target "
+                                      "and stop using current prices."):
+                        _open_syms = list({r[1] for r in _tr if r[8] == "open"})
+                        if _open_syms:
+                            try:
+                                _pl = _cached_prices(tuple(sorted(_open_syms)))
+                            except Exception:
+                                _pl = {}
+                            _u = update_vcp_outcomes(_luid, _pl)
+                            st.success(f"Updated {_u} outcome(s).")
+                            st.rerun()
+                        else:
+                            st.info("No open picks to update.")
+                with _tc2:
+                    _bs = outcome_stats_by_source(_luid) or {}
+                    for _k, _v in _bs.items():
+                        _hr = (f"{_v['hit_rate']:.0f}% hit"
+                               if _v.get("hit_rate") is not None else "no resolved trades yet")
+                        _ar = (f", avg {_v['avg_return']:+.1f}%"
+                               if _v.get("avg_return") is not None else "")
+                        st.caption(f"**{_k}** — {_v['total']} logged, "
+                                   f"{_v['open']} open · {_hr}{_ar}")
+                    if any((_v.get("resolved") or 0) < 10 for _v in _bs.values()):
+                        st.caption("⚠️ Under ~15-20 resolved picks these numbers are "
+                                   "noise, not evidence. Keep logging before drawing "
+                                   "conclusions.")
+                _emo = {"target_hit": "✅ Target", "stopped": "🛑 Stopped",
+                        "expired": "⏳ Expired", "open": "⏳ Open"}
+                st.dataframe(pd.DataFrame([{
+                    "Date": r[0], "Source": (r[11] if len(r) > 11 else "VCP"),
+                    "Stock": r[1], "Entry": r[4], "Target": r[5], "Stop": r[6],
+                    "Status": _emo.get(r[8], r[8]),
+                    "Days": r[10] if r[10] is not None else "",
+                } for r in _tr]), use_container_width=True, hide_index=True)
+
+        # ── Where the logged picks actually live ─────────────────────────────
+        with st.expander("📊 Tracked picks — outcomes across every scanner"):
+            st.caption("Everything logged from any scanner, tagged by source. "
+                       "This is how you find out which scanner is actually "
+                       "earning its place instead of assuming.")
+            _tc1, _tc2 = st.columns(2)
+            with _tc1:
+                if st.button("🔄 Update outcomes", use_container_width=True,
+                             key="uni_update_outcomes"):
+                    _snaps_all = load_vcp_snapshots(_luid)
+                    _open_syms = list({r[1] for r in _snaps_all if r[8] == "open"})
+                    if _open_syms:
+                        try:
+                            _pl = _cached_prices(tuple(sorted(_open_syms)))
+                        except Exception:
+                            _pl = {}
+                        _u = update_vcp_outcomes(_luid, _pl)
+                        st.success(f"Updated {_u} outcome(s).")
+                    else:
+                        st.info("Nothing open to update yet.")
+            with _tc2:
+                _src_filter = st.selectbox(
+                    "Source", ["All", "Universe", "VCP"],
+                    key="uni_src_filter", label_visibility="collapsed")
+
+            _stats_all = outcome_stats_by_source(_luid)
+            if _stats_all:
+                _cols = st.columns(len(_stats_all))
+                for _i, (_srcname, _v) in enumerate(_stats_all.items()):
+                    _hr = _v.get("hit_rate")
+                    _ar = _v.get("avg_return")
+                    _cols[_i].metric(
+                        f"{_srcname}",
+                        f'{_hr:.0f}% hit' if _hr is not None else f'{_v["total"]} logged',
+                        (f'{_v["hits"]}W/{_v["stops"]}L · '
+                         f'{("%+.1f%%" % _ar) if _ar is not None else "—"} avg'))
+                _min_resolved = min((v.get("resolved", 0) for v in _stats_all.values()),
+                                    default=0)
+                if _min_resolved < 10:
+                    st.caption("⚠️ Small sample — these only become meaningful after "
+                               "roughly 15-20 RESOLVED picks per scanner. Until then "
+                               "treat them as a record, not a verdict.")
+
+            _snaps = load_vcp_snapshots(_luid)
+            if _src_filter != "All":
+                _snaps = [r for r in _snaps if (r[11] or "VCP") == _src_filter]
+            if _snaps:
+                _emoji = {"target_hit": "✅ Target", "stopped": "🛑 Stopped",
+                          "expired": "⏳ Expired", "open": "👁 Open"}
+                st.dataframe(pd.DataFrame([{
+                    "Date": r[0], "Source": r[11] or "VCP", "Stock": r[1],
+                    "Signal": r[2], "Score": r[3], "Entry": r[4],
+                    "Target": r[5], "Stop": r[6],
+                    "Status": _emoji.get(r[8], r[8]),
+                    "Exit": r[9], "Days": r[10],
+                } for r in _snaps]), use_container_width=True, hide_index=True)
+            else:
+                st.info("Nothing logged yet. Use **📸 Log top picks** above to start "
+                        "building the record.")
 
         # ── Live CMP refresh (bounded — only the rows on screen) ───────────────
         _rc1, _rc2 = st.columns([1, 3])
@@ -7574,7 +7696,8 @@ elif _page == 'vcp':
                         _emoji = {"target_hit": "✅ Target", "stopped": "🛑 Stopped",
                                   "expired": "⏳ Expired", "open": "⏳ Open"}
                         st.dataframe(pd.DataFrame([{
-                            "Date": r[0], "Stock": r[1], "Grade": r[2],
+                            "Date": r[0], "Source": (r[11] if len(r) > 11 else "VCP"),
+                            "Stock": r[1], "Grade": r[2],
                             "Trend": f'{r[3]}/6' if r[3] is not None else "—",
                             "Entry": r[4], "Target": r[5], "Stop": r[6],
                             "Status": _emoji.get(r[8], r[8]),
